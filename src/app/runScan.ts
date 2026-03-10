@@ -40,6 +40,12 @@ type OptionsCandidate = Stage1Candidate & {
 
 type Stage2SymbolDiagnostic = {
   symbol: string;
+  underlyingQuoteRequestTarget: string | null;
+  underlyingQuoteStatus: number | null;
+  underlyingPriceFieldCandidates: { field: string; rawValue: string | number | null; parsedValue: number | null }[];
+  underlyingPriceFieldUsed: string | null;
+  underlyingPrice: number | null;
+  underlyingPriceFallback: string | null;
   expirationsFound: boolean;
   rawStrikeCount: number | null;
   normalizedStrikeCount: number | null;
@@ -53,6 +59,7 @@ type Stage2SymbolDiagnostic = {
   spreadWidth: number | null;
   spreadPercent: number | null;
   openInterest: number | null;
+  optionQuoteAttempts: { optionSymbol: string; requestTarget: string; status: number; outcome: string }[];
   pass: boolean;
   reason: string;
 };
@@ -343,6 +350,12 @@ async function runStage2OptionsTradability(
   for (const candidate of stage1Passed) {
     const diagnostic: Stage2SymbolDiagnostic = {
       symbol: candidate.symbol,
+      underlyingQuoteRequestTarget: null,
+      underlyingQuoteStatus: null,
+      underlyingPriceFieldCandidates: [],
+      underlyingPriceFieldUsed: null,
+      underlyingPrice: null,
+      underlyingPriceFallback: null,
       expirationsFound: false,
       rawStrikeCount: null,
       normalizedStrikeCount: null,
@@ -356,9 +369,55 @@ async function runStage2OptionsTradability(
       spreadWidth: null,
       spreadPercent: null,
       openInterest: null,
+      optionQuoteAttempts: [],
       pass: false,
       reason: "Not evaluated.",
     };
+
+    const quotePath = `/marketdata/quotes/${encodeURIComponent(candidate.symbol)}`;
+    diagnostic.underlyingQuoteRequestTarget = quotePath;
+    const underlyingQuoteResponse = await get(quotePath);
+    diagnostic.underlyingQuoteStatus = underlyingQuoteResponse.status;
+
+    const underlyingPriceFields = ["Last", "LastTrade", "Trade", "Mark", "Close"];
+    let underlyingPrice = candidate.lastPrice;
+
+    if (underlyingQuoteResponse.ok) {
+      const underlyingQuotePayload = await underlyingQuoteResponse.json();
+      const underlyingQuote = pickFirstQuote(underlyingQuotePayload);
+      let selectedField: string | null = null;
+
+      for (const field of underlyingPriceFields) {
+        const rawValue = underlyingQuote ? underlyingQuote[field] : null;
+        const parsedValue = readNumber(underlyingQuote, [field]);
+        diagnostic.underlyingPriceFieldCandidates.push({
+          field,
+          rawValue: typeof rawValue === "number" || typeof rawValue === "string" ? rawValue : null,
+          parsedValue,
+        });
+
+        if (selectedField === null && parsedValue !== null) {
+          selectedField = field;
+          underlyingPrice = parsedValue;
+        }
+      }
+
+      diagnostic.underlyingPriceFieldUsed = selectedField;
+      if (selectedField === null) {
+        diagnostic.underlyingPriceFallback = "No preferred quote field parsed; fell back to Stage 1 lastPrice.";
+      }
+    } else {
+      diagnostic.underlyingPriceFallback = "Underlying quote request failed; fell back to Stage 1 lastPrice.";
+    }
+
+    diagnostic.underlyingPrice = Number.isFinite(underlyingPrice) && underlyingPrice > 0 ? underlyingPrice : null;
+    if (diagnostic.underlyingPrice === null) {
+      diagnostic.reason = "Unable to resolve underlying price for strike selection.";
+      diagnostics.push(diagnostic);
+      continue;
+    }
+
+    const underlyingPriceForStrikeSelection = diagnostic.underlyingPrice;
 
     const expirationsResponse = await get(`/marketdata/options/expirations/${encodeURIComponent(candidate.symbol)}`);
     if (!expirationsResponse.ok) {
@@ -410,7 +469,7 @@ async function runStage2OptionsTradability(
     }
 
     const selectedStrike = [...strikes].sort(
-      (a, b) => Math.abs(a.strike - candidate.lastPrice) - Math.abs(b.strike - candidate.lastPrice),
+      (a, b) => Math.abs(a.strike - underlyingPriceForStrikeSelection) - Math.abs(b.strike - underlyingPriceForStrikeSelection),
     )[0];
 
     if (!selectedStrike) {
@@ -438,8 +497,15 @@ async function runStage2OptionsTradability(
 
     let quoteData: { optionSymbol: string; openInterest: number; spread: number; mid: number; bid: number; ask: number } | null = null;
     for (const optionSymbol of symbolsToTry) {
-      const optionQuoteResponse = await get(`/marketdata/quotes/${encodeURIComponent(optionSymbol)}`);
+      const requestTarget = `/marketdata/quotes/${encodeURIComponent(optionSymbol)}`;
+      const optionQuoteResponse = await get(requestTarget);
       if (!optionQuoteResponse.ok) {
+        diagnostic.optionQuoteAttempts.push({
+          optionSymbol,
+          requestTarget,
+          status: optionQuoteResponse.status,
+          outcome: "HTTP request failed.",
+        });
         continue;
       }
 
@@ -449,12 +515,24 @@ async function runStage2OptionsTradability(
       const bid = readNumber(optionQuote, ["Bid"]);
       const ask = readNumber(optionQuote, ["Ask"]);
       if (openInterest === null || bid === null || ask === null || ask <= bid || bid <= 0) {
+        diagnostic.optionQuoteAttempts.push({
+          optionSymbol,
+          requestTarget,
+          status: optionQuoteResponse.status,
+          outcome: "Quote payload missing OI/bid/ask or contains invalid spread.",
+        });
         continue;
       }
 
       const spread = ask - bid;
       const mid = (ask + bid) / 2;
       quoteData = { optionSymbol, openInterest, spread, mid, bid, ask };
+      diagnostic.optionQuoteAttempts.push({
+        optionSymbol,
+        requestTarget,
+        status: optionQuoteResponse.status,
+        outcome: "Usable quote payload found.",
+      });
       break;
     }
 
@@ -691,7 +769,7 @@ export async function runStage2DebugForStarterUniverse(): Promise<Stage2SymbolDi
   const get = await createTradeStationGetFetcher();
   const stage1Candidates: Stage1Candidate[] = STARTER_UNIVERSE.map((symbol) => ({
     symbol,
-    lastPrice: 0,
+    lastPrice: 1,
     averageVolume: null,
   }));
   const { diagnostics } = await runStage2OptionsTradability(get, stage1Candidates);
