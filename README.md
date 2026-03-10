@@ -150,6 +150,11 @@ npm run tradestation:test
 
 - `https://tradestation-mcp-scanner.vercel.app/api/mcp`
 
+It uses the same scan tool input as the direct MCP curl example for easier result comparison:
+
+- `prompt`: `find bullish setups`
+- `excludedTickers`: `["AAPL"]`
+
 This endpoint must stay live and publicly reachable so OpenAI can connect to it during tool use.
 
 Run locally:
