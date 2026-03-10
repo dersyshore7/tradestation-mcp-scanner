@@ -61,6 +61,33 @@ src/
 vercel.json
 ```
 
+## TradeStation read-only auth smoke test (starter)
+
+This phase adds only a **read-only** TradeStation auth helper + one smoke test script.
+
+It does **not** place orders, does **not** add options-chain scanning, and does **not** wire TradeStation into the MCP flow yet.
+
+Set these environment variables:
+
+```bash
+TRADESTATION_API_KEY=your_api_key
+TRADESTATION_API_SECRET=your_api_secret
+TRADESTATION_REFRESH_TOKEN=your_refresh_token
+TRADESTATION_BASE_URL=https://api.tradestation.com/v3
+```
+
+Run the smoke test (defaults to `AAPL`):
+
+```bash
+npm run tradestation:test
+```
+
+Optional symbol override:
+
+```bash
+npm run tradestation:test -- MSFT
+```
+
 ## OpenAI remote MCP scanner test
 
 `npm run scanner:test` now uses the OpenAI Responses API with the deployed remote MCP server:
