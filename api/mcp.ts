@@ -1,4 +1,4 @@
-import { fail, handleRpc, type JsonRpcRequest } from "../src/mcp/rpc.ts";
+import { fail, handleRpc, type JsonRpcRequest } from "../src/mcp/rpc.js";
 
 type VercelRequestLike = {
   method?: string;
@@ -22,6 +22,11 @@ export default function handler(req: VercelRequestLike, res: VercelResponseLike)
     return;
   }
 
-  const response = handleRpc(requestBody as JsonRpcRequest);
-  res.status(200).json(response);
+  try {
+    const response = handleRpc(requestBody as JsonRpcRequest);
+    res.status(200).json(response);
+  } catch (error) {
+    console.error("Failed to handle /api/mcp request", error);
+    res.status(500).json(fail(null, -32603, "Internal server error."));
+  }
 }
