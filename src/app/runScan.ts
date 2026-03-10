@@ -41,6 +41,8 @@ type OptionsCandidate = Stage1Candidate & {
 type Stage2SymbolDiagnostic = {
   symbol: string;
   expirationsFound: boolean;
+  rawStrikeCount: number | null;
+  normalizedStrikeCount: number | null;
   selectedExpiration: string | null;
   selectedDte: number | null;
   selectedExpirationApiValue: string | null;
@@ -242,24 +244,44 @@ function readText(source: Record<string, unknown>, keys: string[]): string | nul
   return null;
 }
 
-function readStrikes(payload: unknown): StrikeCandidate[] {
+function readNumericStrikeValues(value: unknown): number[] {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? [value] : [];
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) ? [parsed] : [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => readNumericStrikeValues(entry));
+  }
+
+  return [];
+}
+
+function readStrikes(payload: unknown): { strikes: StrikeCandidate[]; rawStrikeCount: number; normalizedStrikeCount: number } {
   if (!payload || typeof payload !== "object") {
-    return [];
+    return { strikes: [], rawStrikeCount: 0, normalizedStrikeCount: 0 };
   }
 
   const objectPayload = payload as Record<string, unknown>;
   const rawStrikes = objectPayload["Strikes"];
-  if (Array.isArray(rawStrikes) && rawStrikes.every((item) => typeof item === "number" || typeof item === "string")) {
-    return rawStrikes
-      .map((item) => (typeof item === "number" ? item : Number(item)))
-      .filter((item): item is number => Number.isFinite(item))
-      .map((strike) => ({ strike, callSymbol: null, putSymbol: null }))
-      .sort((a, b) => a.strike - b.strike);
+  if (Array.isArray(rawStrikes)) {
+    const numericStrikes = readNumericStrikeValues(rawStrikes);
+    const deduped = [...new Set(numericStrikes)].sort((a, b) => a - b);
+
+    return {
+      strikes: deduped.map((strike) => ({ strike, callSymbol: null, putSymbol: null })),
+      rawStrikeCount: rawStrikes.length,
+      normalizedStrikeCount: deduped.length,
+    };
   }
 
   const contracts = parseContracts(payload);
   if (contracts.length === 0) {
-    return [];
+    return { strikes: [], rawStrikeCount: 0, normalizedStrikeCount: 0 };
   }
 
   const results: StrikeCandidate[] = [];
@@ -293,7 +315,11 @@ function readStrikes(payload: unknown): StrikeCandidate[] {
     });
   }
 
-  return [...deduped.values()].sort((a, b) => a.strike - b.strike);
+  return {
+    strikes: [...deduped.values()].sort((a, b) => a.strike - b.strike),
+    rawStrikeCount: contracts.length,
+    normalizedStrikeCount: deduped.size,
+  };
 }
 
 function buildOptionSymbol(symbol: string, expirationDate: string, type: "C" | "P", strike: number): string {
@@ -318,6 +344,8 @@ async function runStage2OptionsTradability(
     const diagnostic: Stage2SymbolDiagnostic = {
       symbol: candidate.symbol,
       expirationsFound: false,
+      rawStrikeCount: null,
+      normalizedStrikeCount: null,
       selectedExpiration: null,
       selectedDte: null,
       selectedExpirationApiValue: null,
@@ -372,7 +400,9 @@ async function runStage2OptionsTradability(
     }
 
     const strikesPayload = await strikesResponse.json();
-    const strikes = readStrikes(strikesPayload);
+    const { strikes, rawStrikeCount, normalizedStrikeCount } = readStrikes(strikesPayload);
+    diagnostic.rawStrikeCount = rawStrikeCount;
+    diagnostic.normalizedStrikeCount = normalizedStrikeCount;
     if (strikes.length === 0) {
       diagnostic.reason = "No usable strikes returned for target expiration.";
       diagnostics.push(diagnostic);
