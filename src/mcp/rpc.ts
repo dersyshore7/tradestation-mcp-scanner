@@ -25,7 +25,7 @@ export function fail(id: string | number | null, code: number, message: string):
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
-export function handleRpc(request: JsonRpcRequest): JsonRpcResponse {
+export async function handleRpc(request: JsonRpcRequest): Promise<JsonRpcResponse> {
   const id = request.id ?? null;
 
   if (request.jsonrpc !== "2.0" || typeof request.method !== "string") {
@@ -57,7 +57,7 @@ export function handleRpc(request: JsonRpcRequest): JsonRpcResponse {
     }
 
     try {
-      const result = callScanTool(params.arguments ?? {});
+      const result = await callScanTool(params.arguments ?? {});
       return ok(id, {
         content: [
           {

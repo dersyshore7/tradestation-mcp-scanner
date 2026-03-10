@@ -10,7 +10,7 @@ type VercelResponseLike = {
   json: (body: unknown) => void;
 };
 
-export default function handler(req: VercelRequestLike, res: VercelResponseLike): void {
+export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
   if (req.method !== "POST") {
     res.status(404).json({ error: "Use POST /api/mcp" });
     return;
@@ -23,7 +23,7 @@ export default function handler(req: VercelRequestLike, res: VercelResponseLike)
   }
 
   try {
-    const response = handleRpc(requestBody as JsonRpcRequest);
+    const response = await handleRpc(requestBody as JsonRpcRequest);
     res.status(200).json(response);
   } catch (error) {
     console.error("Failed to handle /api/mcp request", error);

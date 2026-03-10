@@ -1,8 +1,9 @@
-import { runFakeScan, type ScanInput, type ScanResult } from "../app/runScan.js";
+import { runScan, type ScanInput, type ScanResult } from "../app/runScan.js";
 
 export const scanToolDefinition = {
   name: "scan_prompt_to_best_ticker",
-  description: "Run a fake local scan and return a single mock ticker decision.",
+  description:
+    "Run a scan. Uses real TradeStation data for prompts like 'analyze AAPL', otherwise falls back to fake starter logic.",
   inputSchema: {
     type: "object",
     properties: {
@@ -31,10 +32,10 @@ export function isScanInput(value: unknown): value is ScanInput {
   return Array.isArray(input.excludedTickers) && input.excludedTickers.every((item) => typeof item === "string");
 }
 
-export function callScanTool(input: unknown): ScanResult {
+export async function callScanTool(input: unknown): Promise<ScanResult> {
   if (!isScanInput(input)) {
     throw new Error("Invalid input. Expected: { prompt: string, excludedTickers?: string[] }");
   }
 
-  return runFakeScan(input);
+  return runScan(input);
 }

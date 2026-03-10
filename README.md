@@ -4,15 +4,27 @@ A very small beginner-friendly MCP scanner starter in TypeScript.
 
 ## What the MCP server does now
 
-This project runs a **minimal fake-data HTTP MCP server**.
+This project runs a **minimal HTTP MCP server** with two scan modes:
+
+- Single-symbol TradeStation read-only analysis for prompts like `analyze AAPL`.
+- Existing fake-data fallback when no single symbol is detected.
 
 It exposes exactly one tool:
 
 - `scan_prompt_to_best_ticker`
 
-That tool uses the existing fake scanner logic in `src/app/runScan.ts`.
+That tool now checks for a single symbol prompt first, then uses TradeStation **read-only** market data (`quotes`, plus recent bars when available) for a simple first-pass direction guess.
 
-No TradeStation execution is added here.
+If no single symbol is detected, it keeps using the existing fake scanner logic in `src/app/runScan.ts`.
+
+
+### Single-symbol prompt examples
+
+- `analyze AAPL`
+- `review AAPL`
+- `scan AAPL`
+
+The first-pass real-data mode only handles one symbol and does **not** scan the full market yet.
 
 ### Tool input
 

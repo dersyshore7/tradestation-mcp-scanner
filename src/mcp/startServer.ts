@@ -15,7 +15,7 @@ const server = createServer((req, res) => {
     body += chunk.toString();
   });
 
-  req.on("end", () => {
+  req.on("end", async () => {
     let request: JsonRpcRequest;
 
     try {
@@ -26,7 +26,7 @@ const server = createServer((req, res) => {
       return;
     }
 
-    const response = handleRpc(request);
+    const response = await handleRpc(request);
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(response));
   });
