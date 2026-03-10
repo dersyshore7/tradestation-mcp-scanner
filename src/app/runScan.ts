@@ -85,6 +85,29 @@ type ChartCandidate = OptionsCandidate & {
   chartDirection: ScanDirection;
   chartMovePct: number;
   volumeRatio: number | null;
+  chartReviewSummary: string;
+  chartReviewScore: number;
+};
+
+type MultiTimeframeView = "1D" | "1W" | "1M" | "3M" | "1Y";
+
+type MultiTimeframeBars = Record<MultiTimeframeView, Record<string, unknown>[]>;
+
+type ChartReviewResult = {
+  pass: boolean;
+  direction: ScanDirection | null;
+  movePct: number;
+  volumeRatio: number | null;
+  score: number;
+  summary: string;
+};
+
+const MULTI_TIMEFRAME_BAR_CONFIG: Record<MultiTimeframeView, { interval: number; unit: "Daily" | "Weekly"; barsBack: number }> = {
+  "1D": { interval: 1, unit: "Daily", barsBack: 20 },
+  "1W": { interval: 1, unit: "Daily", barsBack: 35 },
+  "1M": { interval: 1, unit: "Daily", barsBack: 80 },
+  "3M": { interval: 1, unit: "Daily", barsBack: 160 },
+  "1Y": { interval: 1, unit: "Weekly", barsBack: 60 },
 };
 
 function pickTicker(candidates: string[], excludedTickers: string[]): string | null {
@@ -113,6 +136,212 @@ function logStage2Diagnostics(diagnostics: Stage2SymbolDiagnostic[]): void {
   for (const item of diagnostics) {
     console.log(`[scanner:debug:stage2] ${item.symbol}: ${JSON.stringify(item)}`);
   }
+}
+
+async function loadMultiTimeframeBars(
+  get: (path: string) => Promise<Response>,
+  symbol: string,
+): Promise<MultiTimeframeBars | null> {
+  const result = {} as MultiTimeframeBars;
+
+  for (const [view, config] of Object.entries(MULTI_TIMEFRAME_BAR_CONFIG) as [
+    MultiTimeframeView,
+    { interval: number; unit: "Daily" | "Weekly"; barsBack: number },
+  ][]) {
+    const response = await get(
+      `/marketdata/barcharts/${encodeURIComponent(symbol)}?interval=${config.interval}&unit=${config.unit}&barsback=${config.barsBack}`,
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = await response.json();
+    const bars = parseBars(payload);
+    if (bars.length < 10) {
+      return null;
+    }
+
+    result[view] = bars;
+  }
+
+  return result;
+}
+
+function getMovePctFromBars(bars: Record<string, unknown>[]): number | null {
+  const firstBar = bars[0] ?? null;
+  const lastBar = bars[bars.length - 1] ?? null;
+  const firstClose = readNumber(firstBar, ["Close"]);
+  const lastClose = readNumber(lastBar, ["Close"]);
+
+  if (firstClose === null || lastClose === null || firstClose === 0) {
+    return null;
+  }
+
+  return ((lastClose - firstClose) / firstClose) * 100;
+}
+
+function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult {
+  const bars1D = barsByView["1D"];
+  const bars1W = barsByView["1W"];
+  const bars3M = barsByView["3M"];
+  const bars1Y = barsByView["1Y"];
+
+  const move1D = getMovePctFromBars(bars1D);
+  const move1W = getMovePctFromBars(bars1W);
+  if (move1D === null || move1W === null) {
+    return {
+      pass: false,
+      direction: null,
+      movePct: 0,
+      volumeRatio: null,
+      score: 0,
+      summary: "insufficient close data in 1D/1W views",
+    };
+  }
+
+  const direction: ScanDirection | null = move1D >= 0.5 && move1W >= 0 ? "bullish" : move1D <= -0.5 && move1W <= 0 ? "bearish" : null;
+  if (!direction) {
+    return {
+      pass: false,
+      direction: null,
+      movePct: move1D,
+      volumeRatio: null,
+      score: 0,
+      summary: "1D move and 1W context are not aligned",
+    };
+  }
+
+  const lastBar = bars1D[bars1D.length - 1] ?? null;
+  const priorBars = bars1D.slice(0, -1);
+  const open = readNumber(lastBar, ["Open"]);
+  const high = readNumber(lastBar, ["High"]);
+  const low = readNumber(lastBar, ["Low"]);
+  const close = readNumber(lastBar, ["Close"]);
+  const lastVolume = readNumber(lastBar, ["TotalVolume", "Volume"]);
+
+  if (open === null || high === null || low === null || close === null || high <= low) {
+    return {
+      pass: false,
+      direction,
+      movePct: move1D,
+      volumeRatio: null,
+      score: 0,
+      summary: "latest 1D candle is incomplete",
+    };
+  }
+
+  let priorRangeSum = 0;
+  let priorRangeCount = 0;
+  let priorVolumeSum = 0;
+  let priorVolumeCount = 0;
+  for (const bar of priorBars) {
+    const barHigh = readNumber(bar, ["High"]);
+    const barLow = readNumber(bar, ["Low"]);
+    const barVolume = readNumber(bar, ["TotalVolume", "Volume"]);
+    if (barHigh !== null && barLow !== null && barHigh > barLow) {
+      priorRangeSum += barHigh - barLow;
+      priorRangeCount += 1;
+    }
+    if (barVolume !== null) {
+      priorVolumeSum += barVolume;
+      priorVolumeCount += 1;
+    }
+  }
+
+  const range = high - low;
+  const body = Math.abs(close - open);
+  const upperWick = high - Math.max(open, close);
+  const lowerWick = Math.min(open, close) - low;
+  const closeLocation = (close - low) / range;
+  const averageRange = priorRangeCount > 0 ? priorRangeSum / priorRangeCount : null;
+  const expansionRatio = averageRange !== null && averageRange > 0 ? range / averageRange : null;
+  const bodyToRange = body / range;
+  const averageVolume = priorVolumeCount > 0 ? priorVolumeSum / priorVolumeCount : null;
+  const volumeRatio = averageVolume !== null && lastVolume !== null && averageVolume > 0 ? lastVolume / averageVolume : null;
+
+  const expansionPass = expansionRatio === null || expansionRatio >= 1.15;
+  const bodyQualityPass =
+    direction === "bullish"
+      ? bodyToRange >= 0.45 && closeLocation >= 0.6 && upperWick <= body
+      : bodyToRange >= 0.45 && closeLocation <= 0.4 && lowerWick <= body;
+  const volumePass = volumeRatio === null || volumeRatio >= 0.9;
+
+  const closes = bars1D.slice(-7).map((bar) => readNumber(bar, ["Close"]))
+    .filter((value): value is number => value !== null);
+  let flipCount = 0;
+  for (let index = 2; index < closes.length; index += 1) {
+    const closeMinus2 = closes[index - 2];
+    const closeMinus1 = closes[index - 1];
+    const closeCurrent = closes[index];
+    if (closeMinus2 === undefined || closeMinus1 === undefined || closeCurrent === undefined) {
+      continue;
+    }
+
+    const prevDelta = closeMinus1 - closeMinus2;
+    const currentDelta = closeCurrent - closeMinus1;
+    if (prevDelta === 0 || currentDelta === 0) {
+      continue;
+    }
+    if (Math.sign(prevDelta) !== Math.sign(currentDelta)) {
+      flipCount += 1;
+    }
+  }
+  const choppyPass = flipCount <= 3;
+
+  const prevBar = bars1D[bars1D.length - 2] ?? null;
+  const prevHigh = readNumber(prevBar, ["High"]);
+  const prevLow = readNumber(prevBar, ["Low"]);
+  const continuationPass =
+    direction === "bullish"
+      ? prevHigh !== null && close > prevHigh && close >= open
+      : prevLow !== null && close < prevLow && close <= open;
+
+  const highs3M = bars3M.map((bar) => readNumber(bar, ["High"]))
+    .filter((value): value is number => value !== null);
+  const highs1Y = bars1Y.map((bar) => readNumber(bar, ["High"]))
+    .filter((value): value is number => value !== null);
+  const lows3M = bars3M.map((bar) => readNumber(bar, ["Low"]))
+    .filter((value): value is number => value !== null);
+  const lows1Y = bars1Y.map((bar) => readNumber(bar, ["Low"]))
+    .filter((value): value is number => value !== null);
+
+  const max3M = highs3M.length > 0 ? Math.max(...highs3M) : null;
+  const max1Y = highs1Y.length > 0 ? Math.max(...highs1Y) : null;
+  const min3M = lows3M.length > 0 ? Math.min(...lows3M) : null;
+  const min1Y = lows1Y.length > 0 ? Math.min(...lows1Y) : null;
+
+  const resistanceLevel = direction === "bullish" ? Math.min(max3M ?? Infinity, max1Y ?? Infinity) : null;
+  const supportLevel = direction === "bearish" ? Math.max(min3M ?? -Infinity, min1Y ?? -Infinity) : null;
+  const roomPct =
+    direction === "bullish" && resistanceLevel !== null && Number.isFinite(resistanceLevel)
+      ? ((resistanceLevel - close) / close) * 100
+      : direction === "bearish" && supportLevel !== null && Number.isFinite(supportLevel)
+        ? ((close - supportLevel) / close) * 100
+        : null;
+  const higherTimeframeRoomPass = roomPct === null || roomPct >= 1;
+
+  const checks = [expansionPass, bodyQualityPass, volumePass, choppyPass, continuationPass, higherTimeframeRoomPass];
+  const passedChecks = checks.filter(Boolean).length;
+  const pass = passedChecks >= 4 && continuationPass;
+
+  const detailParts = [
+    `expansion ${expansionPass ? "ok" : "weak"}`,
+    `body/wick ${bodyQualityPass ? "clean" : "messy"}`,
+    `volume ${volumePass ? "supports" : "light"}`,
+    `chop ${choppyPass ? "contained" : "high"}`,
+    `continuation ${continuationPass ? "yes" : "rejection risk"}`,
+    `HTF room ${higherTimeframeRoomPass ? "adequate" : "limited"}`,
+  ];
+
+  return {
+    pass,
+    direction,
+    movePct: move1D,
+    volumeRatio,
+    score: passedChecks,
+    summary: detailParts.join(", "),
+  };
 }
 
 export function runFakeScan(input: ScanInput): ScanResult {
@@ -726,60 +955,27 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
     };
   }
 
-  // Stage 3: simple bar/candlestick + volume review
+  // Stage 3: multi-timeframe bar/candlestick + volume review
   const stage3Passed: ChartCandidate[] = [];
   for (const candidate of stage2Passed) {
-    const barsResponse = await get(
-      `/marketdata/barcharts/${encodeURIComponent(candidate.symbol)}?interval=1&unit=Daily&barsback=20`,
-    );
-    if (!barsResponse.ok) {
+    const multiTimeframeBars = await loadMultiTimeframeBars(get, candidate.symbol);
+    if (!multiTimeframeBars) {
       continue;
     }
 
-    const barsPayload = await barsResponse.json();
-    const bars = parseBars(barsPayload);
-    if (bars.length < 10) {
+    const review = runStage3ChartReview(multiTimeframeBars);
+    if (!review.pass || !review.direction) {
       continue;
     }
 
-    const firstBar = bars[0] ?? null;
-    const lastBar = bars[bars.length - 1] ?? null;
-    const firstClose = readNumber(firstBar, ["Close"]);
-    const lastClose = readNumber(lastBar, ["Close"]);
-    const lastVolume = readNumber(lastBar, ["TotalVolume", "Volume"]);
-
-    let volumeSum = 0;
-    let volumeCount = 0;
-    for (const bar of bars.slice(0, -1)) {
-      const barVolume = readNumber(bar, ["TotalVolume", "Volume"]);
-      if (barVolume !== null) {
-        volumeSum += barVolume;
-        volumeCount += 1;
-      }
-    }
-
-    if (firstClose === null || lastClose === null || firstClose === 0) {
-      continue;
-    }
-
-    const movePct = ((lastClose - firstClose) / firstClose) * 100;
-    const avgVolume = volumeCount > 0 ? volumeSum / volumeCount : null;
-    const volumeRatio = avgVolume !== null && lastVolume !== null && avgVolume > 0 ? lastVolume / avgVolume : null;
-
-    const hasVolumeSupport = volumeRatio === null || volumeRatio >= 0.8;
-    if (!hasVolumeSupport) {
-      continue;
-    }
-
-    if (movePct >= 1) {
-      stage3Passed.push({ ...candidate, chartDirection: "bullish", chartMovePct: movePct, volumeRatio });
-      continue;
-    }
-
-    if (movePct <= -1) {
-      stage3Passed.push({ ...candidate, chartDirection: "bearish", chartMovePct: movePct, volumeRatio });
-      continue;
-    }
+    stage3Passed.push({
+      ...candidate,
+      chartDirection: review.direction,
+      chartMovePct: review.movePct,
+      volumeRatio: review.volumeRatio,
+      chartReviewSummary: review.summary,
+      chartReviewScore: review.score,
+    });
   }
 
   logGeneralScanDebug(
@@ -804,7 +1000,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
       const oiScore = Math.min(candidate.optionOpenInterest / 500, 6);
       const spreadScore = Math.max(0, 3 - (candidate.optionSpread / Math.max(candidate.optionMid, 0.01)) * 10);
       const volumeScore = candidate.volumeRatio === null ? 1 : Math.min(candidate.volumeRatio, 2);
-      const score = moveScore + oiScore + spreadScore + volumeScore;
+      const score = moveScore + oiScore + spreadScore + volumeScore + candidate.chartReviewScore;
       return { ...candidate, score };
     })
     .sort((a, b) => b.score - a.score);
@@ -828,7 +1024,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
     direction: best.chartDirection,
     confidence,
     conclusion: "confirmed",
-    reason: `Passed 4-stage scan: price/volume, options (${best.targetDte} DTE, OI ${Math.round(best.optionOpenInterest)}), chart move ${best.chartMovePct.toFixed(2)}%.`,
+    reason: `Passed 4-stage scan: price/volume, options (${best.targetDte} DTE, OI ${Math.round(best.optionOpenInterest)}), Stage 3 ${best.chartDirection} review (${best.chartReviewSummary}).`,
   };
 }
 
@@ -841,6 +1037,34 @@ export async function runStage2DebugForStarterUniverse(): Promise<Stage2SymbolDi
   }));
   const { diagnostics } = await runStage2OptionsTradability(get, stage1Candidates);
   return diagnostics;
+}
+
+export async function runStage3DebugForStarterUniverse(): Promise<
+  { symbol: string; pass: boolean; direction: ScanDirection | null; movePct: number; volumeRatio: number | null; score: number; summary: string }[]
+> {
+  const get = await createTradeStationGetFetcher();
+  const results: { symbol: string; pass: boolean; direction: ScanDirection | null; movePct: number; volumeRatio: number | null; score: number; summary: string }[] = [];
+
+  for (const symbol of STARTER_UNIVERSE) {
+    const bars = await loadMultiTimeframeBars(get, symbol);
+    if (!bars) {
+      results.push({
+        symbol,
+        pass: false,
+        direction: null,
+        movePct: 0,
+        volumeRatio: null,
+        score: 0,
+        summary: "failed to load required multi-timeframe bars",
+      });
+      continue;
+    }
+
+    const review = runStage3ChartReview(bars);
+    results.push({ symbol, ...review });
+  }
+
+  return results;
 }
 
 function parseSingleSymbolPrompt(prompt: string): SymbolPromptMatch | null {
@@ -951,63 +1175,48 @@ async function fetchRecentCloseChange(get: (path: string) => Promise<Response>, 
 
 async function runSingleSymbolTradeStationAnalysis(symbol: string): Promise<ScanResult> {
   const get = await createTradeStationGetFetcher();
-  const quoteResponse = await get(`/marketdata/quotes/${encodeURIComponent(symbol)}`);
+  const bars = await loadMultiTimeframeBars(get, symbol);
+  if (bars) {
+    const review = runStage3ChartReview(bars);
+    if (review.pass && review.direction) {
+      const confidence: ScanConfidence = review.score >= 5 ? "85-92" : review.score >= 4 ? "75-84" : "65-74";
+      return {
+        ticker: symbol,
+        direction: review.direction,
+        confidence,
+        conclusion: "confirmed",
+        reason: `Stage 3 ${review.direction} chart review passed (${review.summary}).`,
+      };
+    }
 
-  if (!quoteResponse.ok) {
-    const bodyText = await quoteResponse.text();
-    throw new Error(`Quote request failed (${quoteResponse.status}): ${bodyText}`);
+    return {
+      ticker: symbol,
+      direction: null,
+      confidence: null,
+      conclusion: "no_trade_today",
+      reason: `Stage 3 chart review did not pass (${review.summary}).`,
+    };
   }
 
-  const quotePayload = await quoteResponse.json();
-  const quote = pickFirstQuote(quotePayload);
-  const last = readNumber(quote, ["Last", "LastTrade", "Trade", "Close"]);
-  const previousClose = readNumber(quote, ["PreviousClose", "PrevClose", "Close"]);
   const intradayBarChangePct = await fetchRecentCloseChange(get, symbol).catch(() => null);
-
-  if (last !== null && previousClose !== null && previousClose !== 0) {
-    const quoteChangePct = ((last - previousClose) / previousClose) * 100;
-
-    if (quoteChangePct >= 0.4) {
-      return {
-        ticker: symbol,
-        direction: "bullish",
-        confidence: "75-84",
-        conclusion: "confirmed",
-        reason: `Quote is up ${quoteChangePct.toFixed(2)}% vs previous close (${last.toFixed(2)} vs ${previousClose.toFixed(2)}).`,
-      };
-    }
-
-    if (quoteChangePct <= -0.4) {
-      return {
-        ticker: symbol,
-        direction: "bearish",
-        confidence: "75-84",
-        conclusion: "confirmed",
-        reason: `Quote is down ${Math.abs(quoteChangePct).toFixed(2)}% vs previous close (${last.toFixed(2)} vs ${previousClose.toFixed(2)}).`,
-      };
-    }
+  if (intradayBarChangePct !== null && intradayBarChangePct > 0.2) {
+    return {
+      ticker: symbol,
+      direction: "bullish",
+      confidence: "65-74",
+      conclusion: "confirmed",
+      reason: `Recent intraday bars are trending up (${intradayBarChangePct.toFixed(2)}% over recent bars).`,
+    };
   }
 
-  if (intradayBarChangePct !== null) {
-    if (intradayBarChangePct > 0.2) {
-      return {
-        ticker: symbol,
-        direction: "bullish",
-        confidence: "65-74",
-        conclusion: "confirmed",
-        reason: `Recent intraday bars are trending up (${intradayBarChangePct.toFixed(2)}% over recent bars).`,
-      };
-    }
-
-    if (intradayBarChangePct < -0.2) {
-      return {
-        ticker: symbol,
-        direction: "bearish",
-        confidence: "65-74",
-        conclusion: "confirmed",
-        reason: `Recent intraday bars are trending down (${intradayBarChangePct.toFixed(2)}% over recent bars).`,
-      };
-    }
+  if (intradayBarChangePct !== null && intradayBarChangePct < -0.2) {
+    return {
+      ticker: symbol,
+      direction: "bearish",
+      confidence: "65-74",
+      conclusion: "confirmed",
+      reason: `Recent intraday bars are trending down (${intradayBarChangePct.toFixed(2)}% over recent bars).`,
+    };
   }
 
   return {
@@ -1015,7 +1224,7 @@ async function runSingleSymbolTradeStationAnalysis(symbol: string): Promise<Scan
     direction: null,
     confidence: null,
     conclusion: "no_trade_today",
-    reason: "Price change is too small for this simple first-pass check.",
+    reason: "Unable to confirm a clean Stage 3 chart setup.",
   };
 }
 
