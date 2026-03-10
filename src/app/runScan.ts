@@ -44,6 +44,7 @@ type Stage2SymbolDiagnostic = {
   selectedExpiration: string | null;
   selectedDte: number | null;
   selectedExpirationApiValue: string | null;
+  chainRequestExpiration: string | null;
   chainRequestTarget: string | null;
   evaluatedContract: string | null;
   bid: number | null;
@@ -260,6 +261,7 @@ async function runStage2OptionsTradability(
       selectedExpiration: null,
       selectedDte: null,
       selectedExpirationApiValue: null,
+      chainRequestExpiration: null,
       chainRequestTarget: null,
       evaluatedContract: null,
       bid: null,
@@ -302,7 +304,9 @@ async function runStage2OptionsTradability(
     diagnostic.selectedDte = targetExpiration.dte;
     diagnostic.selectedExpirationApiValue = targetExpiration.apiValue;
 
-    const chainRequestTarget = buildOptionChainPath(candidate.symbol, targetExpiration.apiValue);
+    const chainRequestExpiration = targetExpiration.date;
+    const chainRequestTarget = buildOptionChainPath(candidate.symbol, chainRequestExpiration);
+    diagnostic.chainRequestExpiration = chainRequestExpiration;
     diagnostic.chainRequestTarget = chainRequestTarget;
 
     const chainResponse = await get(chainRequestTarget);
