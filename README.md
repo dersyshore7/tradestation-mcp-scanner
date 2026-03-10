@@ -64,6 +64,24 @@ Run the local Responses API test:
 npm run openai:test
 ```
 
+## Scanner + OpenAI local tool flow
+
+`scanner:test` runs a simple local OpenAI Responses API demo that:
+
+- sends one hardcoded test prompt,
+- exposes one function tool named `scan_prompt_to_best_ticker`,
+- routes that tool call to the existing local fake scanner logic,
+- sends the tool result back to Responses,
+- prints the model's final text answer.
+
+Run it locally:
+
+```bash
+cp .env.example .env
+# set OPENAI_API_KEY in .env (or export it in your shell)
+npm run scanner:test
+```
+
 ## Test the fake scan tool locally
 
 Quick bullish demo:
