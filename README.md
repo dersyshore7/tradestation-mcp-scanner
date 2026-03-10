@@ -61,6 +61,21 @@ src/
 vercel.json
 ```
 
+## OpenAI remote MCP scanner test
+
+`npm run scanner:test` now uses the OpenAI Responses API with the deployed remote MCP server:
+
+- `https://tradestation-mcp-scanner.vercel.app/api/mcp`
+
+This endpoint must stay live and publicly reachable so OpenAI can connect to it during tool use.
+
+Run locally:
+
+```bash
+npm install
+OPENAI_API_KEY=your_key_here npm run scanner:test
+```
+
 ## Local MCP server (still works)
 
 ```bash

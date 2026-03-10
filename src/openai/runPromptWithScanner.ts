@@ -1,10 +1,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { ScanInput } from "../app/runScan.js";
-import { callScanTool } from "../mcp/server.js";
 import { createOpenAiClient } from "./client.js";
 
 const TEST_PROMPT = "Find the best bullish ticker setup for today.";
+const REMOTE_SCANNER_MCP_URL = "https://tradestation-mcp-scanner.vercel.app/api/mcp";
 
 function loadDotEnvFileIfPresent(): void {
   const envPath = resolve(process.cwd(), ".env");
@@ -35,86 +34,35 @@ function loadDotEnvFileIfPresent(): void {
   }
 }
 
-function parseScannerInput(input: string): ScanInput {
-  const parsed = JSON.parse(input) as Partial<ScanInput>;
-
-  if (typeof parsed.prompt !== "string") {
-    throw new Error("Tool call input must include a prompt string.");
-  }
-
-  if (parsed.excludedTickers !== undefined) {
-    const isValidExclusions =
-      Array.isArray(parsed.excludedTickers) && parsed.excludedTickers.every((item) => typeof item === "string");
-
-    if (!isValidExclusions) {
-      throw new Error("excludedTickers must be a string array when provided.");
-    }
-  }
-
-  if (parsed.excludedTickers) {
-    return {
-      prompt: parsed.prompt,
-      excludedTickers: parsed.excludedTickers,
-    };
-  }
-
-  return { prompt: parsed.prompt };
-}
-
 async function runPromptWithScanner(): Promise<void> {
   loadDotEnvFileIfPresent();
 
   const client = await createOpenAiClient();
 
-  const firstResponse = await (client as any).responses.create({
+  const response = await (client as any).responses.create({
     model: "gpt-4.1-mini",
     input: TEST_PROMPT,
     tools: [
       {
-        type: "function",
-        name: "scan_prompt_to_best_ticker",
-        description: "Run the local fake scanner and return the best ticker decision.",
-        parameters: {
-          type: "object",
-          properties: {
-            prompt: { type: "string" },
-            excludedTickers: {
-              type: "array",
-              items: { type: "string" },
-            },
-          },
-          required: ["prompt"],
-          additionalProperties: false,
-        },
+        type: "mcp",
+        server_label: "scanner",
+        server_url: REMOTE_SCANNER_MCP_URL,
+        allowed_tools: ["scan_prompt_to_best_ticker"],
       },
     ],
   });
 
-  const toolCall = (firstResponse.output ?? []).find(
-    (item: any) => item.type === "function_call" && item.name === "scan_prompt_to_best_ticker",
-  );
+  const outputItems = response.output ?? [];
+  const usedMcpTool = outputItems.some((item: any) => {
+    const itemType = typeof item?.type === "string" ? item.type : "";
+    return itemType.includes("mcp") || itemType.includes("tool");
+  });
 
-  if (!toolCall) {
-    console.log(firstResponse.output_text ?? "No tool call and no final text response.");
-    return;
+  if (usedMcpTool) {
+    console.log("[debug] MCP/tool activity detected in response output.");
   }
 
-  const scannerInput = parseScannerInput(toolCall.arguments ?? "{}");
-  const scannerResult = callScanTool(scannerInput);
-
-  const finalResponse = await (client as any).responses.create({
-    model: "gpt-4.1-mini",
-    previous_response_id: firstResponse.id,
-    input: [
-      {
-        type: "function_call_output",
-        call_id: toolCall.call_id,
-        output: JSON.stringify(scannerResult),
-      },
-    ],
-  });
-
-  console.log(finalResponse.output_text ?? "No final text returned.");
+  console.log(response.output_text ?? "No final text returned.");
 }
 
 runPromptWithScanner();
