@@ -128,8 +128,11 @@ export async function createTradeStationGetFetcher(): Promise<
 
   return async (path: string, init?: RequestInit) => {
     const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+    const dedupedPath = baseUrl.endsWith("/v3") && normalizedPath.startsWith("/v3/")
+      ? normalizedPath.slice(3)
+      : normalizedPath;
 
-    return fetch(`${baseUrl}${normalizedPath}`, {
+    return fetch(`${baseUrl}${dedupedPath}`, {
       ...init,
       method: "GET",
       headers: {
