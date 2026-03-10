@@ -4,6 +4,8 @@ import { createOpenAiClient } from "./client.js";
 
 const TEST_PROMPT = "Find the best bullish ticker setup for today.";
 const REMOTE_SCANNER_MCP_URL = "https://tradestation-mcp-scanner.vercel.app/api/mcp";
+const FINAL_ANSWER_FORMAT_REQUIREMENT =
+  "Return exactly one sentence in this format: I think [TICKER] shows a (bullish/bearish) setup worth trading today (≈ XX% confidence). If there is no setup, return exactly one sentence in this format: No trade today — [reason].";
 
 function loadDotEnvFileIfPresent(): void {
   const envPath = resolve(process.cwd(), ".env");
@@ -58,11 +60,39 @@ async function runPromptWithScanner(): Promise<void> {
     return itemType.includes("mcp") || itemType.includes("tool");
   });
 
-  if (usedMcpTool) {
-    console.log("[debug] MCP/tool activity detected in response output.");
+  const initialOutputText =
+    typeof response.output_text === "string" ? response.output_text.trim() : "";
+
+  if (initialOutputText) {
+    console.log(initialOutputText);
+    return;
   }
 
-  console.log(response.output_text ?? "No final text returned.");
+  if (!usedMcpTool) {
+    console.log("No final text returned.");
+    return;
+  }
+
+  console.log("[debug] MCP/tool activity detected without final text; requesting summary.");
+
+  const followUp = await (client as any).responses.create({
+    model: "gpt-4.1-mini",
+    previous_response_id: response.id,
+    input: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: `Using the tool results you already retrieved, provide the final user-facing answer only. ${FINAL_ANSWER_FORMAT_REQUIREMENT}`,
+          },
+        ],
+      },
+    ],
+  });
+
+  const followUpText = typeof followUp.output_text === "string" ? followUp.output_text.trim() : "";
+  console.log(followUpText || "No final text returned.");
 }
 
 runPromptWithScanner();
