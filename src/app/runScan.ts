@@ -43,6 +43,8 @@ type Stage2SymbolDiagnostic = {
   expirationsFound: boolean;
   selectedExpiration: string | null;
   selectedDte: number | null;
+  selectedExpirationApiValue: string | null;
+  chainRequestTarget: string | null;
   evaluatedContract: string | null;
   bid: number | null;
   ask: number | null;
@@ -164,7 +166,7 @@ function getDte(expirationDate: Date): number {
   return Math.round((expirationDate.getTime() - now.getTime()) / msPerDay);
 }
 
-function readExpirations(payload: unknown): { date: string; dte: number }[] {
+function readExpirations(payload: unknown): { date: string; dte: number; apiValue: string }[] {
   if (!payload || typeof payload !== "object") {
     return [];
   }
@@ -175,7 +177,7 @@ function readExpirations(payload: unknown): { date: string; dte: number }[] {
     return [];
   }
 
-  const results: { date: string; dte: number }[] = [];
+  const results: { date: string; dte: number; apiValue: string }[] = [];
 
   for (const entry of rawExpirations) {
     let dateText: string | null = null;
@@ -199,11 +201,16 @@ function readExpirations(payload: unknown): { date: string; dte: number }[] {
 
     const dte = getDte(expirationDate);
     if (dte > 0) {
-      results.push({ date: expirationDate.toISOString().slice(0, 10), dte });
+      results.push({ date: expirationDate.toISOString().slice(0, 10), dte, apiValue: dateText });
     }
   }
 
   return results;
+}
+
+function buildOptionChainPath(symbol: string, expirationValue: string): string {
+  const params = new URLSearchParams({ expiration: expirationValue });
+  return `/v3/marketdata/options/chains/${encodeURIComponent(symbol)}?${params.toString()}`;
 }
 
 function parseContracts(payload: unknown): Record<string, unknown>[] {
@@ -252,6 +259,8 @@ async function runStage2OptionsTradability(
       expirationsFound: false,
       selectedExpiration: null,
       selectedDte: null,
+      selectedExpirationApiValue: null,
+      chainRequestTarget: null,
       evaluatedContract: null,
       bid: null,
       ask: null,
@@ -291,10 +300,12 @@ async function runStage2OptionsTradability(
 
     diagnostic.selectedExpiration = targetExpiration.date;
     diagnostic.selectedDte = targetExpiration.dte;
+    diagnostic.selectedExpirationApiValue = targetExpiration.apiValue;
 
-    const chainResponse = await get(
-      `/marketdata/options/chains/${encodeURIComponent(candidate.symbol)}?expiration=${encodeURIComponent(targetExpiration.date)}`,
-    );
+    const chainRequestTarget = buildOptionChainPath(candidate.symbol, targetExpiration.apiValue);
+    diagnostic.chainRequestTarget = chainRequestTarget;
+
+    const chainResponse = await get(chainRequestTarget);
     if (!chainResponse.ok) {
       diagnostic.reason = `Option chain request failed (${chainResponse.status}).`;
       diagnostics.push(diagnostic);
