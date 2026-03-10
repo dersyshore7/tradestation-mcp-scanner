@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createOpenAiClient } from "./client.js";
 
-const TEST_PROMPT = "Find the best bullish ticker setup for today.";
+const MCP_SCAN_PROMPT = "find bullish setups";
+const MCP_EXCLUDED_TICKERS = ["AAPL"];
 const REMOTE_SCANNER_MCP_URL = "https://tradestation-mcp-scanner.vercel.app/api/mcp";
 const FINAL_ANSWER_FORMAT_REQUIREMENT =
   "Return exactly one sentence in this format: I think [TICKER] shows a (bullish/bearish) setup worth trading today (≈ XX% confidence). If there is no setup, return exactly one sentence in this format: No trade today — [reason].";
@@ -43,7 +44,7 @@ async function runPromptWithScanner(): Promise<void> {
 
   const response = await (client as any).responses.create({
     model: "gpt-4.1-mini",
-    input: `${TEST_PROMPT} ${FINAL_ANSWER_FORMAT_REQUIREMENT}`,
+    input: `Use the scanner MCP tool once with prompt \"${MCP_SCAN_PROMPT}\" and excludedTickers ${JSON.stringify(MCP_EXCLUDED_TICKERS)}. Then return the final answer. ${FINAL_ANSWER_FORMAT_REQUIREMENT}`,
     tools: [
       {
         type: "mcp",

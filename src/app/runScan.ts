@@ -2,6 +2,7 @@ import { getFakeConfidence, type ScanConfidence, type ScanDirection } from "../s
 import { createTradeStationGetFetcher } from "../tradestation/client.js";
 
 const STARTER_UNIVERSE = ["AAPL", "MSFT", "NVDA", "AMZN", "META"] as const;
+const STARTER_UNIVERSE_SET = new Set<string>(STARTER_UNIVERSE);
 
 export type ScanInput = {
   prompt: string;
@@ -47,6 +48,18 @@ function pickTicker(candidates: string[], excludedTickers: string[]): string | n
   return picked ?? null;
 }
 
+function isStarterUniverseTicker(symbol: string): boolean {
+  return STARTER_UNIVERSE_SET.has(symbol.toUpperCase());
+}
+
+function logGeneralScanDebug(stage: string, symbols: string[]): void {
+  if (process.env.SCANNER_DEBUG !== "1") {
+    return;
+  }
+
+  console.log(`[scanner:debug] ${stage}: ${symbols.length > 0 ? symbols.join(", ") : "(none)"}`);
+}
+
 export function runFakeScan(input: ScanInput): ScanResult {
   const promptLower = input.prompt.toLowerCase();
   const excluded = input.excludedTickers ?? [];
@@ -74,7 +87,7 @@ export function runFakeScan(input: ScanInput): ScanResult {
   }
 
   if (promptLower.includes("bearish")) {
-    const ticker = pickTicker(["AAPL", "TSLA"], excluded);
+    const ticker = pickTicker(["NVDA", "META"], excluded);
 
     if (!ticker) {
       return {
@@ -186,6 +199,8 @@ function parseContracts(payload: unknown): Record<string, unknown>[] {
 async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<ScanResult> {
   const get = await createTradeStationGetFetcher();
   const excludedSet = new Set((input.excludedTickers ?? []).map((item) => item.toUpperCase()));
+  const stage1Entered = STARTER_UNIVERSE.filter((symbol) => !excludedSet.has(symbol));
+  logGeneralScanDebug("Stage 1 entered", stage1Entered);
 
   // Stage 1: basic stock filters
   const stage1Passed: Stage1Candidate[] = [];
@@ -214,6 +229,11 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
 
     stage1Passed.push({ symbol, lastPrice, averageVolume });
   }
+
+  logGeneralScanDebug(
+    "Stage 1 passed",
+    stage1Passed.map((candidate) => candidate.symbol),
+  );
 
   if (stage1Passed.length === 0) {
     return {
@@ -297,6 +317,11 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
     });
   }
 
+  logGeneralScanDebug(
+    "Stage 2 passed",
+    stage2Passed.map((candidate) => candidate.symbol),
+  );
+
   if (stage2Passed.length === 0) {
     return {
       ticker: null,
@@ -363,6 +388,11 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
     }
   }
 
+  logGeneralScanDebug(
+    "Stage 3 passed",
+    stage3Passed.map((candidate) => candidate.symbol),
+  );
+
   if (stage3Passed.length === 0) {
     return {
       ticker: null,
@@ -397,6 +427,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
   }
 
   const confidence: ScanConfidence = best.score >= 14 ? "85-92" : best.score >= 10 ? "75-84" : "65-74";
+  logGeneralScanDebug("Final selected", [best.symbol]);
 
   return {
     ticker: best.symbol,
@@ -564,10 +595,24 @@ async function runSingleSymbolTradeStationAnalysis(symbol: string): Promise<Scan
 export async function runScan(input: ScanInput): Promise<ScanResult> {
   const symbolMatch = parseSingleSymbolPrompt(input.prompt);
   if (!symbolMatch) {
+    const enforceStarterUniverse = (result: ScanResult): ScanResult => {
+      if (!result.ticker || isStarterUniverseTicker(result.ticker)) {
+        return result;
+      }
+
+      return {
+        ticker: null,
+        direction: null,
+        confidence: null,
+        conclusion: "no_trade_today",
+        reason: `General scan mode is limited to starter universe (${STARTER_UNIVERSE.join(", ")}).`,
+      };
+    };
+
     try {
-      return await runStarterUniverseTradeStationScan(input);
+      return enforceStarterUniverse(await runStarterUniverseTradeStationScan(input));
     } catch {
-      return runFakeScan(input);
+      return enforceStarterUniverse(runFakeScan(input));
     }
   }
 
