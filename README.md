@@ -63,6 +63,8 @@ The first-pass real-data mode only handles one symbol and does **not** scan the 
 
 `excludedTickers` is optional.
 
+`excludedTickers` is optional and defaults to an empty list when omitted. The default V1 general scan runs the full V1 universe. Exclusions are mainly useful for reruns after a ticker was already reviewed/rejected.
+
 ### Tool output
 
 ```json
@@ -150,10 +152,10 @@ npm run tradestation:test
 
 - `https://tradestation-mcp-scanner.vercel.app/api/mcp`
 
-It uses the same scan tool input as the direct MCP curl example for easier result comparison:
+It uses the same default V1 scan prompt and now sends no exclusions unless you explicitly provide them:
 
 - `prompt`: `find bullish setups`
-- `excludedTickers`: `["AAPL"]`
+- `excludedTickers`: optional (not sent by default in this demo flow)
 
 This endpoint must stay live and publicly reachable so OpenAI can connect to it during tool use.
 
@@ -220,7 +222,7 @@ curl -s http://localhost:3001/mcp \
 ```bash
 curl -s http://localhost:3001/mcp \
   -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"scan_prompt_to_best_ticker","arguments":{"prompt":"find bullish setups","excludedTickers":["AAPL"]}}}'
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"scan_prompt_to_best_ticker","arguments":{"prompt":"find bullish setups"}}}'
 ```
 
 ## Build

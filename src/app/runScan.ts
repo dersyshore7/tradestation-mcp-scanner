@@ -1564,7 +1564,12 @@ async function runSingleSymbolTradeStationAnalysis(symbol: string): Promise<Scan
 }
 
 export async function runScan(input: ScanInput): Promise<ScanResult> {
-  const symbolMatch = parseSingleSymbolPrompt(input.prompt);
+  const normalizedInput: ScanInput = {
+    ...input,
+    excludedTickers: input.excludedTickers ?? [],
+  };
+
+  const symbolMatch = parseSingleSymbolPrompt(normalizedInput.prompt);
   if (!symbolMatch) {
     const enforceStarterUniverse = (result: ScanResult): ScanResult => {
       if (!result.ticker || isStarterUniverseTicker(result.ticker)) {
@@ -1581,13 +1586,13 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
     };
 
     try {
-      return enforceStarterUniverse(await runStarterUniverseTradeStationScan(input));
+      return enforceStarterUniverse(await runStarterUniverseTradeStationScan(normalizedInput));
     } catch {
-      return enforceStarterUniverse(runFakeScan(input));
+      return enforceStarterUniverse(runFakeScan(normalizedInput));
     }
   }
 
-  const excluded = new Set((input.excludedTickers ?? []).map((item) => item.toUpperCase()));
+  const excluded = new Set((normalizedInput.excludedTickers ?? []).map((item) => item.toUpperCase()));
   if (excluded.has(symbolMatch.symbol)) {
     return {
       ticker: null,
