@@ -43,13 +43,14 @@ async function runPromptWithScanner(): Promise<void> {
 
   const response = await (client as any).responses.create({
     model: "gpt-4.1-mini",
-    input: TEST_PROMPT,
+    input: `${TEST_PROMPT} ${FINAL_ANSWER_FORMAT_REQUIREMENT}`,
     tools: [
       {
         type: "mcp",
         server_label: "scanner",
         server_url: REMOTE_SCANNER_MCP_URL,
         allowed_tools: ["scan_prompt_to_best_ticker"],
+        require_approval: "never",
       },
     ],
   });
