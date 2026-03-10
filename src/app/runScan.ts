@@ -110,6 +110,7 @@ type Stage3CheckDiagnostic = {
 };
 
 type Stage3Diagnostics = {
+  timeframeDiagnostics: Record<MultiTimeframeView, Stage3TimeframeDiagnostic>;
   move1D: number | null;
   move1W: number | null;
   bias1D: ScanDirection | "neutral";
@@ -131,6 +132,23 @@ type Stage3Diagnostics = {
   supportLevel: number | null;
   roomPct: number | null;
   checks: Stage3CheckDiagnostic[];
+};
+
+type Stage3TimeframeDiagnostic = {
+  requestTarget: string;
+  status: number | null;
+  barCount: number;
+  latestParsedBarSample: Record<string, unknown> | null;
+  parsedOpen: boolean;
+  parsedHigh: boolean;
+  parsedLow: boolean;
+  parsedClose: boolean;
+  parsedVolume: boolean;
+};
+
+type MultiTimeframeBarsLoadResult = {
+  barsByView: MultiTimeframeBars | null;
+  timeframeDiagnostics: Record<MultiTimeframeView, Stage3TimeframeDiagnostic>;
 };
 
 const MULTI_TIMEFRAME_BAR_CONFIG: Record<MultiTimeframeView, { interval: number; unit: "Daily" | "Weekly"; barsBack: number }> = {
@@ -172,31 +190,67 @@ function logStage2Diagnostics(diagnostics: Stage2SymbolDiagnostic[]): void {
 async function loadMultiTimeframeBars(
   get: (path: string) => Promise<Response>,
   symbol: string,
-): Promise<MultiTimeframeBars | null> {
+): Promise<MultiTimeframeBarsLoadResult> {
   const result = {} as MultiTimeframeBars;
+  const timeframeDiagnostics = {} as Record<MultiTimeframeView, Stage3TimeframeDiagnostic>;
+  let allViewsLoaded = true;
 
   for (const [view, config] of Object.entries(MULTI_TIMEFRAME_BAR_CONFIG) as [
     MultiTimeframeView,
     { interval: number; unit: "Daily" | "Weekly"; barsBack: number },
   ][]) {
-    const response = await get(
-      `/marketdata/barcharts/${encodeURIComponent(symbol)}?interval=${config.interval}&unit=${config.unit}&barsback=${config.barsBack}`,
-    );
+    const requestTarget = `/marketdata/barcharts/${encodeURIComponent(symbol)}?interval=${config.interval}&unit=${config.unit}&barsback=${config.barsBack}`;
+    const response = await get(requestTarget);
 
     if (!response.ok) {
-      return null;
+      allViewsLoaded = false;
+      timeframeDiagnostics[view] = {
+        requestTarget,
+        status: response.status,
+        barCount: 0,
+        latestParsedBarSample: null,
+        parsedOpen: false,
+        parsedHigh: false,
+        parsedLow: false,
+        parsedClose: false,
+        parsedVolume: false,
+      };
+      continue;
     }
 
     const payload = await response.json();
-    const bars = parseBars(payload);
+    const bars = parseBars(payload).map((bar) => normalizeBar(bar));
+    const latestBar = bars[bars.length - 1] ?? null;
+    const parsedOpen = readNumber(latestBar, ["Open"]) !== null;
+    const parsedHigh = readNumber(latestBar, ["High"]) !== null;
+    const parsedLow = readNumber(latestBar, ["Low"]) !== null;
+    const parsedClose = readNumber(latestBar, ["Close"]) !== null;
+    const parsedVolume = readNumber(latestBar, ["TotalVolume", "Volume", "Vol", "TotalVolumeTraded"]) !== null;
+
+    timeframeDiagnostics[view] = {
+      requestTarget,
+      status: response.status,
+      barCount: bars.length,
+      latestParsedBarSample: latestBar,
+      parsedOpen,
+      parsedHigh,
+      parsedLow,
+      parsedClose,
+      parsedVolume,
+    };
+
     if (bars.length < 10) {
-      return null;
+      allViewsLoaded = false;
+      continue;
     }
 
     result[view] = bars;
   }
 
-  return result;
+  return {
+    barsByView: allViewsLoaded ? result : null,
+    timeframeDiagnostics,
+  };
 }
 
 function getMovePctFromBars(bars: Record<string, unknown>[]): number | null {
@@ -212,7 +266,10 @@ function getMovePctFromBars(bars: Record<string, unknown>[]): number | null {
   return ((lastClose - firstClose) / firstClose) * 100;
 }
 
-function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult {
+function runStage3ChartReview(
+  barsByView: MultiTimeframeBars,
+  timeframeDiagnostics: Record<MultiTimeframeView, Stage3TimeframeDiagnostic>,
+): ChartReviewResult {
   const bars1D = barsByView["1D"];
   const bars1W = barsByView["1W"];
   const bars3M = barsByView["3M"];
@@ -233,6 +290,7 @@ function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult
       score: 0,
       summary: "insufficient close data in 1D/1W views",
       diagnostics: {
+        timeframeDiagnostics,
         move1D,
         move1W,
         bias1D: dayBias,
@@ -253,7 +311,7 @@ function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult
         resistanceLevel: null,
         supportLevel: null,
         roomPct: null,
-        checks: [{ check: "alignment", pass: false, reason: "missing 1D or 1W move" }],
+        checks: [{ check: "data-integrity", pass: false, reason: "missing/incomplete bar data (1D or 1W close unavailable)" }],
       },
     };
   }
@@ -275,6 +333,7 @@ function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult
       score: 0,
       summary: "1D move and 1W context are not aligned",
       diagnostics: {
+        timeframeDiagnostics,
         move1D,
         move1W,
         bias1D: dayBias,
@@ -317,6 +376,7 @@ function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult
       score: 0,
       summary: "latest 1D candle is incomplete",
       diagnostics: {
+        timeframeDiagnostics,
         move1D,
         move1W,
         bias1D: dayBias,
@@ -337,7 +397,7 @@ function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult
         resistanceLevel: null,
         supportLevel: null,
         roomPct: null,
-        checks: [{ check: "latest-candle", pass: false, reason: "missing open/high/low/close or invalid range" }],
+        checks: [{ check: "data-integrity", pass: false, reason: "missing/incomplete bar data (latest 1D candle OHLC unavailable)" }],
       },
     };
   }
@@ -433,6 +493,7 @@ function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult
         ? ((close - supportLevel) / close) * 100
         : null;
   const higherTimeframeRoomPass = roomPct === null || roomPct >= 1;
+  const higherTimeframeContextPresent = direction === "bullish" ? max3M !== null && max1Y !== null : min3M !== null && min1Y !== null;
 
   const checkDiagnostics: Stage3CheckDiagnostic[] = [
     { check: "alignment", pass: alignmentPass, reason: alignmentReason },
@@ -446,8 +507,18 @@ function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult
           ? `volume ratio unavailable (lastVolume=${lastVolume ?? "n/a"}, priorVolumeBarsWithData=${priorVolumeCount})`
           : `volumeRatio=${volumeRatio.toFixed(2)} using lastVolume=${lastVolume} / avgVolume=${averageVolume?.toFixed(2)}`,
     },
+    {
+      check: "volume-data",
+      pass: volumeDataPresent,
+      reason: volumeDataPresent ? "volume values parsed from at least one 1D bar" : "missing volume data in 1D bars",
+    },
     { check: "choppy", pass: choppyPass, reason: `flipCount=${flipCount}` },
     { check: "continuation", pass: continuationPass, reason: direction === "bullish" ? `close=${close.toFixed(2)} vs prevHigh=${prevHigh?.toFixed(2) ?? "n/a"}` : `close=${close.toFixed(2)} vs prevLow=${prevLow?.toFixed(2) ?? "n/a"}` },
+    {
+      check: "higher-timeframe-context",
+      pass: higherTimeframeContextPresent,
+      reason: higherTimeframeContextPresent ? "3M/1Y highs/lows available" : "missing higher-timeframe context (3M/1Y high/low data)",
+    },
     { check: "higher-timeframe-room", pass: higherTimeframeRoomPass, reason: `roomPct=${roomPct === null ? "n/a" : roomPct.toFixed(2)}%` },
   ];
 
@@ -472,6 +543,7 @@ function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult
     score: passedChecks,
     summary: detailParts.join(", "),
     diagnostics: {
+      timeframeDiagnostics,
       move1D,
       move1W,
       bias1D: dayBias,
@@ -563,12 +635,52 @@ function parseBars(payload: unknown): Record<string, unknown>[] {
   }
 
   const objectPayload = payload as Record<string, unknown>;
-  const bars = objectPayload["Bars"];
-  if (Array.isArray(bars)) {
-    return bars.filter((bar): bar is Record<string, unknown> => !!bar && typeof bar === "object");
+  const directBars = objectPayload["Bars"];
+  if (Array.isArray(directBars)) {
+    return directBars.filter((bar): bar is Record<string, unknown> => !!bar && typeof bar === "object");
+  }
+
+  const barsEntry = Object.entries(objectPayload).find(([key]) => normalizeFieldName(key) === "bars");
+  if (barsEntry && Array.isArray(barsEntry[1])) {
+    return barsEntry[1].filter((bar): bar is Record<string, unknown> => !!bar && typeof bar === "object");
+  }
+
+  const nestedData = objectPayload["Data"];
+  if (nestedData && typeof nestedData === "object") {
+    return parseBars(nestedData);
   }
 
   return [];
+}
+
+function normalizeFieldName(field: string): string {
+  return field.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+}
+
+function normalizeBar(bar: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...bar };
+  const fieldAliasMap: Record<string, string[]> = {
+    Open: ["open"],
+    High: ["high"],
+    Low: ["low"],
+    Close: ["close", "last"],
+    Volume: ["volume", "vol", "totalvolume", "totalvolumetraded", "tradevolume"],
+  };
+
+  for (const [targetField, aliases] of Object.entries(fieldAliasMap)) {
+    if (readNumber(normalized, [targetField]) !== null) {
+      continue;
+    }
+
+    const matchedEntry = Object.entries(bar).find(([key]) => aliases.includes(normalizeFieldName(key)));
+    if (!matchedEntry) {
+      continue;
+    }
+
+    normalized[targetField] = matchedEntry[1];
+  }
+
+  return normalized;
 }
 
 function getDte(expirationDate: Date): number {
@@ -1114,12 +1226,12 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
   // Stage 3: multi-timeframe bar/candlestick + volume review
   const stage3Passed: ChartCandidate[] = [];
   for (const candidate of stage2Passed) {
-    const multiTimeframeBars = await loadMultiTimeframeBars(get, candidate.symbol);
+    const { barsByView: multiTimeframeBars, timeframeDiagnostics } = await loadMultiTimeframeBars(get, candidate.symbol);
     if (!multiTimeframeBars) {
       continue;
     }
 
-    const review = runStage3ChartReview(multiTimeframeBars);
+    const review = runStage3ChartReview(multiTimeframeBars, timeframeDiagnostics);
     if (!review.pass || !review.direction) {
       continue;
     }
@@ -1202,7 +1314,7 @@ export async function runStage3DebugForStarterUniverse(): Promise<
   const results: { symbol: string; pass: boolean; direction: ScanDirection | null; movePct: number; volumeRatio: number | null; score: number; summary: string; diagnostics: Stage3Diagnostics }[] = [];
 
   for (const symbol of STARTER_UNIVERSE) {
-    const bars = await loadMultiTimeframeBars(get, symbol);
+    const { barsByView: bars, timeframeDiagnostics } = await loadMultiTimeframeBars(get, symbol);
     if (!bars) {
       results.push({
         symbol,
@@ -1213,6 +1325,7 @@ export async function runStage3DebugForStarterUniverse(): Promise<
         score: 0,
         summary: "failed to load required multi-timeframe bars",
         diagnostics: {
+          timeframeDiagnostics,
           move1D: null,
           move1W: null,
           bias1D: "neutral",
@@ -1239,7 +1352,7 @@ export async function runStage3DebugForStarterUniverse(): Promise<
       continue;
     }
 
-    const review = runStage3ChartReview(bars);
+    const review = runStage3ChartReview(bars, timeframeDiagnostics);
     results.push({ symbol, ...review });
   }
 
@@ -1323,8 +1436,8 @@ function readNumber(source: Record<string, unknown> | null, keys: string[]): num
       }
     }
 
-    const lowercaseKey = key.toLowerCase();
-    const caseInsensitiveMatch = Object.entries(source).find(([sourceKey]) => sourceKey.toLowerCase() === lowercaseKey);
+    const normalizedKey = normalizeFieldName(key);
+    const caseInsensitiveMatch = Object.entries(source).find(([sourceKey]) => normalizeFieldName(sourceKey) === normalizedKey);
     if (!caseInsensitiveMatch) {
       continue;
     }
@@ -1372,9 +1485,9 @@ async function fetchRecentCloseChange(get: (path: string) => Promise<Response>, 
 
 async function runSingleSymbolTradeStationAnalysis(symbol: string): Promise<ScanResult> {
   const get = await createTradeStationGetFetcher();
-  const bars = await loadMultiTimeframeBars(get, symbol);
+  const { barsByView: bars, timeframeDiagnostics } = await loadMultiTimeframeBars(get, symbol);
   if (bars) {
-    const review = runStage3ChartReview(bars);
+    const review = runStage3ChartReview(bars, timeframeDiagnostics);
     if (review.pass && review.direction) {
       const confidence: ScanConfidence = review.score >= 5 ? "85-92" : review.score >= 4 ? "75-84" : "65-74";
       return {
