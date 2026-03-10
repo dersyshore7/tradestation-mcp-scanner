@@ -33,6 +33,7 @@ src/
     server.ts
   openai/
     client.ts
+    testResponse.ts
   scanner/
     scoring.ts
   tradestation/
@@ -45,6 +46,22 @@ src/
 ```bash
 npm install
 npm run dev
+```
+
+## Local OpenAI test setup
+
+1. Copy `.env.example` to `.env`.
+2. Add your API key to `.env`.
+
+```bash
+cp .env.example .env
+# then edit .env and set OPENAI_API_KEY=...
+```
+
+Run the local Responses API test:
+
+```bash
+npm run openai:test
 ```
 
 ## Test the fake scan tool locally
