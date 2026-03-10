@@ -44,6 +44,14 @@ async function runDebug(): Promise<void> {
     );
     console.log(`alignment rule: ${item.diagnostics.alignmentRule}`);
     console.log(`alignment reason: ${item.diagnostics.alignmentReason}`);
+    console.log("timeframes:");
+    for (const [view, tf] of Object.entries(item.diagnostics.timeframeDiagnostics)) {
+      const latestSample = tf.latestParsedBarSample ? JSON.stringify(tf.latestParsedBarSample).slice(0, 180) : "n/a";
+      console.log(
+        `  - ${view}: target=${tf.requestTarget} status=${tf.status ?? "n/a"} bars=${tf.barCount} parsed(ohlcv)=${tf.parsedOpen ? "Y" : "N"}/${tf.parsedHigh ? "Y" : "N"}/${tf.parsedLow ? "Y" : "N"}/${tf.parsedClose ? "Y" : "N"}/${tf.parsedVolume ? "Y" : "N"}`,
+      );
+      console.log(`    latest parsed sample: ${latestSample}`);
+    }
     console.log(
       `candle: body=${item.diagnostics.candleBodySize === null ? "n/a" : item.diagnostics.candleBodySize.toFixed(2)} range=${item.diagnostics.candleRange === null ? "n/a" : item.diagnostics.candleRange.toFixed(2)} bodyToRange=${item.diagnostics.bodyToRange === null ? "n/a" : item.diagnostics.bodyToRange.toFixed(2)} wickiness=${item.diagnostics.wickiness === null ? "n/a" : item.diagnostics.wickiness.toFixed(2)}`,
     );
