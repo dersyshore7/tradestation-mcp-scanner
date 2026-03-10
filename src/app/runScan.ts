@@ -22,6 +22,8 @@ type SymbolPromptMatch = {
   symbol: string;
 };
 
+const NON_TICKER_TOKENS = new Set(["FOR", "THIS", "WEEK", "FIND", "BULLISH", "SETUPS", "NEW", "RUN"]);
+
 type Stage1Candidate = {
   symbol: string;
   lastPrice: number;
@@ -439,7 +441,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
 }
 
 function parseSingleSymbolPrompt(prompt: string): SymbolPromptMatch | null {
-  const matched = prompt.match(/\b(analyze|review|scan)\s+\$?([A-Za-z]{1,5})\b/i);
+  const matched = prompt.match(/(?:^|\s)(analyze|review|scan)\s+\$?([A-Za-z]{1,5})(?=\s|$|[,.!?;:])/i);
 
   if (!matched) {
     return null;
@@ -451,9 +453,16 @@ function parseSingleSymbolPrompt(prompt: string): SymbolPromptMatch | null {
     return null;
   }
 
+  const symbol = symbolRaw.toUpperCase();
+  const isUppercaseTickerStyle = symbolRaw === symbol;
+  const looksLikeTicker = /^[A-Z]{1,5}$/.test(symbol);
+  if (!isUppercaseTickerStyle || !looksLikeTicker || NON_TICKER_TOKENS.has(symbol)) {
+    return null;
+  }
+
   return {
     action: actionRaw.toLowerCase() as SymbolPromptMatch["action"],
-    symbol: symbolRaw.toUpperCase(),
+    symbol,
   };
 }
 
