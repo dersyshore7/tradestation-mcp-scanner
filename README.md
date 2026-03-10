@@ -15,7 +15,7 @@ It exposes exactly one tool:
 
 That tool checks for a single symbol prompt first. If present, it runs the same single-symbol read-only analysis.
 
-If no single symbol is detected, it now runs a tiny real-data scan-and-review pipeline on a hardcoded starter universe: `AAPL`, `MSFT`, `NVDA`, `AMZN`, `META`.
+If no single symbol is detected, it now runs a tiny real-data scan-and-review pipeline on a hardcoded V1 scan universe of 20 liquid names: `AAPL`, `MSFT`, `NVDA`, `AMZN`, `META`, `GOOGL`, `TSLA`, `AMD`, `NFLX`, `JPM`, `BAC`, `XOM`, `CVX`, `UNH`, `JNJ`, `WMT`, `COST`, `DIS`, `ADBE`, `QQQ`.
 
 The fake scanner fallback is still present only as a safety fallback if real-data requests fail.
 

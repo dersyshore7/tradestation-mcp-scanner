@@ -1,8 +1,33 @@
 import { getFakeConfidence, type ScanConfidence, type ScanDirection } from "../scanner/scoring.js";
 import { createTradeStationGetFetcher } from "../tradestation/client.js";
 
-const STARTER_UNIVERSE = ["AAPL", "MSFT", "NVDA", "AMZN", "META"] as const;
-const STARTER_UNIVERSE_SET = new Set<string>(STARTER_UNIVERSE);
+const V1_SCAN_UNIVERSE_CONFIG = {
+  symbols: [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "AMZN",
+    "META",
+    "GOOGL",
+    "TSLA",
+    "AMD",
+    "NFLX",
+    "JPM",
+    "BAC",
+    "XOM",
+    "CVX",
+    "UNH",
+    "JNJ",
+    "WMT",
+    "COST",
+    "DIS",
+    "ADBE",
+    "QQQ",
+  ],
+} as const;
+
+const V1_SCAN_UNIVERSE = V1_SCAN_UNIVERSE_CONFIG.symbols;
+const V1_SCAN_UNIVERSE_SET = new Set<string>(V1_SCAN_UNIVERSE);
 
 export type ScanInput = {
   prompt: string;
@@ -166,7 +191,7 @@ function pickTicker(candidates: string[], excludedTickers: string[]): string | n
 }
 
 function isStarterUniverseTicker(symbol: string): boolean {
-  return STARTER_UNIVERSE_SET.has(symbol.toUpperCase());
+  return V1_SCAN_UNIVERSE_SET.has(symbol.toUpperCase());
 }
 
 function logGeneralScanDebug(stage: string, symbols: string[]): void {
@@ -1158,12 +1183,12 @@ async function runStage2OptionsTradability(
 async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<ScanResult> {
   const get = await createTradeStationGetFetcher();
   const excludedSet = new Set((input.excludedTickers ?? []).map((item) => item.toUpperCase()));
-  const stage1Entered = STARTER_UNIVERSE.filter((symbol) => !excludedSet.has(symbol));
+  const stage1Entered = V1_SCAN_UNIVERSE.filter((symbol) => !excludedSet.has(symbol));
   logGeneralScanDebug("Stage 1 entered", stage1Entered);
 
   // Stage 1: basic stock filters
   const stage1Passed: Stage1Candidate[] = [];
-  for (const symbol of STARTER_UNIVERSE) {
+  for (const symbol of V1_SCAN_UNIVERSE) {
     if (excludedSet.has(symbol)) {
       continue;
     }
@@ -1200,7 +1225,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
       direction: null,
       confidence: null,
       conclusion: "no_trade_today",
-      reason: "No symbols passed Stage 1 stock filters in the starter universe.",
+      reason: "No symbols passed Stage 1 stock filters in the V1 scan universe.",
     };
   }
 
@@ -1298,7 +1323,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
 
 export async function runStage2DebugForStarterUniverse(): Promise<Stage2SymbolDiagnostic[]> {
   const get = await createTradeStationGetFetcher();
-  const stage1Candidates: Stage1Candidate[] = STARTER_UNIVERSE.map((symbol) => ({
+  const stage1Candidates: Stage1Candidate[] = V1_SCAN_UNIVERSE.map((symbol) => ({
     symbol,
     lastPrice: 1,
     averageVolume: null,
@@ -1313,7 +1338,7 @@ export async function runStage3DebugForStarterUniverse(): Promise<
   const get = await createTradeStationGetFetcher();
   const results: { symbol: string; pass: boolean; direction: ScanDirection | null; movePct: number; volumeRatio: number | null; score: number; summary: string; diagnostics: Stage3Diagnostics }[] = [];
 
-  for (const symbol of STARTER_UNIVERSE) {
+  for (const symbol of V1_SCAN_UNIVERSE) {
     const { barsByView: bars, timeframeDiagnostics } = await loadMultiTimeframeBars(get, symbol);
     if (!bars) {
       results.push({
@@ -1551,7 +1576,7 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
         direction: null,
         confidence: null,
         conclusion: "no_trade_today",
-        reason: `General scan mode is limited to starter universe (${STARTER_UNIVERSE.join(", ")}).`,
+        reason: `General scan mode is limited to the V1 scan universe (${V1_SCAN_UNIVERSE.join(", ")}).`,
       };
     };
 
