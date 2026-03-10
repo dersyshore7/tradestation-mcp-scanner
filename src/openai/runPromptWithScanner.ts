@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ScanInput } from "../app/runScan.js";
-import { LocalMcpServer } from "../mcp/server.js";
+import { callScanTool } from "../mcp/server.js";
 import { createOpenAiClient } from "./client.js";
 
 const TEST_PROMPT = "Find the best bullish ticker setup for today.";
@@ -100,8 +100,7 @@ async function runPromptWithScanner(): Promise<void> {
   }
 
   const scannerInput = parseScannerInput(toolCall.arguments ?? "{}");
-  const server = new LocalMcpServer();
-  const scannerResult = server.callTool("scan_prompt_to_best_ticker", scannerInput);
+  const scannerResult = callScanTool(scannerInput);
 
   const finalResponse = await (client as any).responses.create({
     model: "gpt-4.1-mini",

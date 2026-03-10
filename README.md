@@ -1,27 +1,39 @@
 # tradestation-mcp-scanner
 
-A very small local MCP scanner starter in TypeScript.
+A very small beginner-friendly MCP scanner starter in TypeScript.
 
-## What this MCP skeleton does now
+## What the MCP server does now
 
-- Exposes one local MCP-style tool: `scan_prompt_to_best_ticker`.
-- Accepts input:
-  - `prompt: string`
-  - `excludedTickers?: string[]`
-- Returns a fake structured result:
-  - `ticker`
-  - `direction`
-  - `confidence`
-  - `conclusion`
-  - `reason`
-- Uses only mock logic (no OpenAI and no TradeStation integration yet).
+This project now runs a **minimal remote HTTP MCP server**.
 
-### Fake behavior rules
+It exposes exactly one tool:
 
-- If `prompt` includes `bullish`, returns a fake bullish result.
-- If `prompt` includes `bearish`, returns a fake bearish result.
-- Otherwise returns `no_trade_today`.
-- Respects `excludedTickers` so a hardcoded ticker like `AAPL` is skipped if excluded.
+- `scan_prompt_to_best_ticker`
+
+That tool uses the existing fake scanner logic in `src/app/runScan.ts` (no TradeStation logic yet, no deployment setup yet).
+
+### Tool input
+
+```json
+{
+  "prompt": "string",
+  "excludedTickers": ["string"]
+}
+```
+
+`excludedTickers` is optional.
+
+### Tool output
+
+```json
+{
+  "ticker": "string | null",
+  "direction": "bullish | bearish | null",
+  "confidence": "65-74 | 75-84 | 85-92 | 93-97 | null",
+  "conclusion": "confirmed | rejected | no_trade_today",
+  "reason": "string"
+}
+```
 
 ## Project structure
 
@@ -31,8 +43,10 @@ src/
     runScan.ts
   mcp/
     server.ts
+    startServer.ts
   openai/
     client.ts
+    runPromptWithScanner.ts
     testResponse.ts
   scanner/
     scoring.ts
@@ -41,64 +55,53 @@ src/
   index.ts
 ```
 
-## Run locally
+## Start locally
 
 ```bash
 npm install
-npm run dev
+npm run mcp:start
 ```
 
-## Local OpenAI test setup
+Default URL:
 
-1. Copy `.env.example` to `.env`.
-2. Add your API key to `.env`.
+- `http://localhost:3001/mcp`
+
+Optional port override:
 
 ```bash
-cp .env.example .env
-# then edit .env and set OPENAI_API_KEY=...
+MCP_PORT=4000 npm run mcp:start
 ```
 
-Run the local Responses API test:
+## Test locally
+
+In another terminal, call JSON-RPC methods against `POST /mcp`.
+
+### 1) Initialize
 
 ```bash
-npm run openai:test
+curl -s http://localhost:3001/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
 ```
 
-## Scanner + OpenAI local tool flow
-
-`scanner:test` runs a simple local OpenAI Responses API demo that:
-
-- sends one hardcoded test prompt,
-- exposes one function tool named `scan_prompt_to_best_ticker`,
-- routes that tool call to the existing local fake scanner logic,
-- sends the tool result back to Responses,
-- prints the model's final text answer.
-
-Run it locally:
+### 2) List tools
 
 ```bash
-cp .env.example .env
-# set OPENAI_API_KEY in .env (or export it in your shell)
-npm run scanner:test
+curl -s http://localhost:3001/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 ```
 
-## Test the fake scan tool locally
-
-Quick bullish demo:
+### 3) Call tool
 
 ```bash
-npx tsx -e "import { LocalMcpServer } from './src/mcp/server.ts'; const server = new LocalMcpServer(); console.log(server.callTool('scan_prompt_to_best_ticker', { prompt: 'show me bullish setups', excludedTickers: ['AAPL'] }));"
+curl -s http://localhost:3001/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"scan_prompt_to_best_ticker","arguments":{"prompt":"find bullish setups","excludedTickers":["AAPL"]}}}'
 ```
 
-Quick bearish demo:
-
-```bash
-npx tsx -e "import { LocalMcpServer } from './src/mcp/server.ts'; const server = new LocalMcpServer(); console.log(server.callTool('scan_prompt_to_best_ticker', { prompt: 'looking bearish today' }));"
-```
-
-## Build and run compiled output
+## Build
 
 ```bash
 npm run build
-npm run start
 ```

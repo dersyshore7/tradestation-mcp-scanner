@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "openai:test": "tsx src/openai/testResponse.ts",
-    "scanner:test": "tsx src/openai/runPromptWithScanner.ts"
+    "scanner:test": "tsx src/openai/runPromptWithScanner.ts",
+    "mcp:start": "tsx src/mcp/startServer.ts"
   },
   "keywords": [],
   "author": "",
