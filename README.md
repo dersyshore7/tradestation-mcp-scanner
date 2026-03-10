@@ -4,13 +4,15 @@ A very small beginner-friendly MCP scanner starter in TypeScript.
 
 ## What the MCP server does now
 
-This project now runs a **minimal remote HTTP MCP server**.
+This project runs a **minimal fake-data HTTP MCP server**.
 
 It exposes exactly one tool:
 
 - `scan_prompt_to_best_ticker`
 
-That tool uses the existing fake scanner logic in `src/app/runScan.ts` (no TradeStation logic yet, no deployment setup yet).
+That tool uses the existing fake scanner logic in `src/app/runScan.ts`.
+
+No TradeStation execution is added here.
 
 ### Tool input
 
@@ -38,10 +40,13 @@ That tool uses the existing fake scanner logic in `src/app/runScan.ts` (no Trade
 ## Project structure
 
 ```text
+api/
+  mcp.ts
 src/
   app/
     runScan.ts
   mcp/
+    rpc.ts
     server.ts
     startServer.ts
   openai/
@@ -53,16 +58,17 @@ src/
   tradestation/
     client.ts
   index.ts
+vercel.json
 ```
 
-## Start locally
+## Local MCP server (still works)
 
 ```bash
 npm install
 npm run mcp:start
 ```
 
-Default URL:
+Default local URL:
 
 - `http://localhost:3001/mcp`
 
@@ -72,9 +78,23 @@ Optional port override:
 MCP_PORT=4000 npm run mcp:start
 ```
 
-## Test locally
+## Vercel MCP endpoint
 
-In another terminal, call JSON-RPC methods against `POST /mcp`.
+This repo now also includes a Vercel API route at:
+
+- `api/mcp.ts`
+
+After deployment, expect this MCP endpoint path:
+
+- `https://<your-vercel-project>.vercel.app/api/mcp`
+
+JSON-RPC methods are the same in both local and Vercel modes:
+
+- `initialize`
+- `tools/list`
+- `tools/call`
+
+## Test locally with curl
 
 ### 1) Initialize
 
