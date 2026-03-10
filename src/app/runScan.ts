@@ -44,8 +44,7 @@ type Stage2SymbolDiagnostic = {
   selectedExpiration: string | null;
   selectedDte: number | null;
   selectedExpirationApiValue: string | null;
-  chainRequestExpiration: string | null;
-  chainRequestTarget: string | null;
+  selectedStrike: number | null;
   evaluatedContract: string | null;
   bid: number | null;
   ask: number | null;
@@ -54,6 +53,12 @@ type Stage2SymbolDiagnostic = {
   openInterest: number | null;
   pass: boolean;
   reason: string;
+};
+
+type StrikeCandidate = {
+  strike: number;
+  callSymbol: string | null;
+  putSymbol: string | null;
 };
 
 type ChartCandidate = OptionsCandidate & {
@@ -209,18 +214,13 @@ function readExpirations(payload: unknown): { date: string; dte: number; apiValu
   return results;
 }
 
-function buildOptionChainPath(symbol: string, expirationValue: string): string {
-  const params = new URLSearchParams({ expiration: expirationValue });
-  return `/v3/marketdata/options/chains/${encodeURIComponent(symbol)}?${params.toString()}`;
-}
-
 function parseContracts(payload: unknown): Record<string, unknown>[] {
   if (!payload || typeof payload !== "object") {
     return [];
   }
 
   const objectPayload = payload as Record<string, unknown>;
-  const keys = ["Options", "OptionChain", "Contracts", "Calls", "Puts"];
+  const keys = ["Options", "OptionChain", "Contracts", "Calls", "Puts", "Strikes"];
   for (const key of keys) {
     const value = objectPayload[key];
     if (Array.isArray(value)) {
@@ -231,20 +231,80 @@ function parseContracts(payload: unknown): Record<string, unknown>[] {
   return [];
 }
 
-function readContractLabel(contract: Record<string, unknown>): string | null {
-  const keys = ["Symbol", "OptionSymbol", "Description", "Name", "StrikePrice"];
+function readText(source: Record<string, unknown>, keys: string[]): string | null {
   for (const key of keys) {
-    const value = contract[key];
-    if (typeof value === "string" && value.trim()) {
-      return value;
-    }
-
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return `${key}:${value}`;
+    const value = source[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
     }
   }
 
   return null;
+}
+
+function readStrikes(payload: unknown): StrikeCandidate[] {
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+
+  const objectPayload = payload as Record<string, unknown>;
+  const rawStrikes = objectPayload["Strikes"];
+  if (Array.isArray(rawStrikes) && rawStrikes.every((item) => typeof item === "number" || typeof item === "string")) {
+    return rawStrikes
+      .map((item) => (typeof item === "number" ? item : Number(item)))
+      .filter((item): item is number => Number.isFinite(item))
+      .map((strike) => ({ strike, callSymbol: null, putSymbol: null }))
+      .sort((a, b) => a.strike - b.strike);
+  }
+
+  const contracts = parseContracts(payload);
+  if (contracts.length === 0) {
+    return [];
+  }
+
+  const results: StrikeCandidate[] = [];
+  for (const contract of contracts) {
+    const strike = readNumber(contract, ["Strike", "StrikePrice", "Price"]);
+    if (strike === null) {
+      continue;
+    }
+
+    const callSymbol = readText(contract, ["CallSymbol", "Call", "OptionSymbol", "Symbol"]);
+    const putSymbol = readText(contract, ["PutSymbol", "Put"]);
+    results.push({ strike, callSymbol, putSymbol });
+  }
+
+  const deduped = new Map<number, StrikeCandidate>();
+  for (const strikeEntry of results) {
+    if (!deduped.has(strikeEntry.strike)) {
+      deduped.set(strikeEntry.strike, strikeEntry);
+      continue;
+    }
+
+    const existing = deduped.get(strikeEntry.strike);
+    if (!existing) {
+      continue;
+    }
+
+    deduped.set(strikeEntry.strike, {
+      strike: strikeEntry.strike,
+      callSymbol: existing.callSymbol ?? strikeEntry.callSymbol,
+      putSymbol: existing.putSymbol ?? strikeEntry.putSymbol,
+    });
+  }
+
+  return [...deduped.values()].sort((a, b) => a.strike - b.strike);
+}
+
+function buildOptionSymbol(symbol: string, expirationDate: string, type: "C" | "P", strike: number): string {
+  const [yearText, monthText, dayText] = expirationDate.split("-");
+  const yearShort = yearText?.slice(-2) ?? "00";
+  const month = monthText ?? "01";
+  const day = dayText ?? "01";
+  const strikeCode = Math.round(strike * 1000)
+    .toString()
+    .padStart(8, "0");
+  return `${symbol.padEnd(6, " ")}${yearShort}${month}${day}${type}${strikeCode}`;
 }
 
 async function runStage2OptionsTradability(
@@ -261,8 +321,7 @@ async function runStage2OptionsTradability(
       selectedExpiration: null,
       selectedDte: null,
       selectedExpirationApiValue: null,
-      chainRequestExpiration: null,
-      chainRequestTarget: null,
+      selectedStrike: null,
       evaluatedContract: null,
       bid: null,
       ask: null,
@@ -304,67 +363,109 @@ async function runStage2OptionsTradability(
     diagnostic.selectedDte = targetExpiration.dte;
     diagnostic.selectedExpirationApiValue = targetExpiration.apiValue;
 
-    const chainRequestExpiration = targetExpiration.date;
-    const chainRequestTarget = buildOptionChainPath(candidate.symbol, chainRequestExpiration);
-    diagnostic.chainRequestExpiration = chainRequestExpiration;
-    diagnostic.chainRequestTarget = chainRequestTarget;
-
-    const chainResponse = await get(chainRequestTarget);
-    if (!chainResponse.ok) {
-      diagnostic.reason = `Option chain request failed (${chainResponse.status}).`;
+    const strikesPath = `/marketdata/options/strikes/${encodeURIComponent(candidate.symbol)}?expiration=${encodeURIComponent(targetExpiration.apiValue)}`;
+    const strikesResponse = await get(strikesPath);
+    if (!strikesResponse.ok) {
+      diagnostic.reason = `Strikes request failed (${strikesResponse.status}).`;
       diagnostics.push(diagnostic);
       continue;
     }
 
-    const chainPayload = await chainResponse.json();
-    const contracts = parseContracts(chainPayload);
-    if (contracts.length === 0) {
-      diagnostic.reason = "No option contracts returned for target expiration.";
+    const strikesPayload = await strikesResponse.json();
+    const strikes = readStrikes(strikesPayload);
+    if (strikes.length === 0) {
+      diagnostic.reason = "No usable strikes returned for target expiration.";
       diagnostics.push(diagnostic);
       continue;
     }
 
-    let bestContract: { openInterest: number; spread: number; mid: number; bid: number; ask: number; label: string | null } | null = null;
-    let anyQuoteFound = false;
-    for (const contract of contracts) {
-      const openInterest = readNumber(contract, ["OpenInterest", "OpenInt", "OI"]);
-      const bid = readNumber(contract, ["Bid"]);
-      const ask = readNumber(contract, ["Ask"]);
-      if (bid !== null && ask !== null) {
-        anyQuoteFound = true;
+    const selectedStrike = [...strikes].sort(
+      (a, b) => Math.abs(a.strike - candidate.lastPrice) - Math.abs(b.strike - candidate.lastPrice),
+    )[0];
+
+    if (!selectedStrike) {
+      diagnostic.reason = "Unable to select strike near underlying price.";
+      diagnostics.push(diagnostic);
+      continue;
+    }
+
+    diagnostic.selectedStrike = selectedStrike.strike;
+
+    const symbolsToTry = [
+      selectedStrike.callSymbol,
+      selectedStrike.putSymbol,
+      buildOptionSymbol(candidate.symbol, targetExpiration.date, "C", selectedStrike.strike),
+      buildOptionSymbol(candidate.symbol, targetExpiration.date, "P", selectedStrike.strike),
+      buildOptionSymbol(candidate.symbol, targetExpiration.date, "C", selectedStrike.strike).replace(/\s+/g, ""),
+      buildOptionSymbol(candidate.symbol, targetExpiration.date, "P", selectedStrike.strike).replace(/\s+/g, ""),
+    ].filter((item, index, list): item is string => {
+      if (typeof item !== "string" || item.trim().length === 0) {
+        return false;
       }
 
+      return list.indexOf(item) === index;
+    });
+
+    let quoteData: { optionSymbol: string; openInterest: number; spread: number; mid: number; bid: number; ask: number } | null = null;
+    for (const optionSymbol of symbolsToTry) {
+      const optionQuoteResponse = await get(`/marketdata/quotes/${encodeURIComponent(optionSymbol)}`);
+      if (!optionQuoteResponse.ok) {
+        continue;
+      }
+
+      const optionQuotePayload = await optionQuoteResponse.json();
+      const optionQuote = pickFirstQuote(optionQuotePayload);
+      const openInterest = readNumber(optionQuote, ["OpenInterest", "OpenInt", "OI"]);
+      const bid = readNumber(optionQuote, ["Bid"]);
+      const ask = readNumber(optionQuote, ["Ask"]);
       if (openInterest === null || bid === null || ask === null || ask <= bid || bid <= 0) {
         continue;
       }
 
       const spread = ask - bid;
       const mid = (ask + bid) / 2;
-      const spreadPct = mid > 0 ? spread / mid : Number.POSITIVE_INFINITY;
-      const hasTightSpread = spread <= 1.5 && spreadPct <= 0.12;
-      if (!hasTightSpread || openInterest <= 500) {
-        continue;
-      }
-
-      if (!bestContract || openInterest > bestContract.openInterest) {
-        bestContract = { openInterest, spread, mid, bid, ask, label: readContractLabel(contract) };
-      }
+      quoteData = { optionSymbol, openInterest, spread, mid, bid, ask };
+      break;
     }
 
-    if (!bestContract) {
-      diagnostic.reason = anyQuoteFound
-        ? "No contract met thresholds (spread <= 1.5, spread% <= 12%, OI > 500)."
-        : "No contracts had usable bid/ask quotes.";
+    if (!quoteData) {
+      diagnostic.reason = "No usable direct option quote found for selected strike.";
       diagnostics.push(diagnostic);
       continue;
     }
 
-    diagnostic.evaluatedContract = bestContract.label;
-    diagnostic.bid = bestContract.bid;
-    diagnostic.ask = bestContract.ask;
-    diagnostic.spreadWidth = bestContract.spread;
-    diagnostic.spreadPercent = bestContract.mid > 0 ? bestContract.spread / bestContract.mid : null;
-    diagnostic.openInterest = bestContract.openInterest;
+    const spreadPct = quoteData.mid > 0 ? quoteData.spread / quoteData.mid : Number.POSITIVE_INFINITY;
+    const hasTightSpread = quoteData.spread <= 1.5 && spreadPct <= 0.12;
+    if (quoteData.openInterest <= 500) {
+      diagnostic.evaluatedContract = quoteData.optionSymbol;
+      diagnostic.bid = quoteData.bid;
+      diagnostic.ask = quoteData.ask;
+      diagnostic.spreadWidth = quoteData.spread;
+      diagnostic.spreadPercent = spreadPct;
+      diagnostic.openInterest = quoteData.openInterest;
+      diagnostic.reason = "Candidate contract failed OI threshold (requires > 500).";
+      diagnostics.push(diagnostic);
+      continue;
+    }
+
+    if (!hasTightSpread) {
+      diagnostic.evaluatedContract = quoteData.optionSymbol;
+      diagnostic.bid = quoteData.bid;
+      diagnostic.ask = quoteData.ask;
+      diagnostic.spreadWidth = quoteData.spread;
+      diagnostic.spreadPercent = spreadPct;
+      diagnostic.openInterest = quoteData.openInterest;
+      diagnostic.reason = "Candidate contract failed spread threshold (requires <= 1.5 and <= 12% of mid).";
+      diagnostics.push(diagnostic);
+      continue;
+    }
+
+    diagnostic.evaluatedContract = quoteData.optionSymbol;
+    diagnostic.bid = quoteData.bid;
+    diagnostic.ask = quoteData.ask;
+    diagnostic.spreadWidth = quoteData.spread;
+    diagnostic.spreadPercent = spreadPct;
+    diagnostic.openInterest = quoteData.openInterest;
     diagnostic.pass = true;
     diagnostic.reason = "Passed Stage 2 filters.";
 
@@ -372,9 +473,9 @@ async function runStage2OptionsTradability(
       ...candidate,
       targetExpiration: targetExpiration.date,
       targetDte: targetExpiration.dte,
-      optionOpenInterest: bestContract.openInterest,
-      optionSpread: bestContract.spread,
-      optionMid: bestContract.mid,
+      optionOpenInterest: quoteData.openInterest,
+      optionSpread: quoteData.spread,
+      optionMid: quoteData.mid,
     });
     diagnostics.push(diagnostic);
   }
