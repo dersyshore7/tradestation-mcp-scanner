@@ -34,7 +34,31 @@ function loadDotEnvFileIfPresent(): void {
 async function runDebug(): Promise<void> {
   loadDotEnvFileIfPresent();
   const diagnostics = await runStage3DebugForStarterUniverse();
-  console.log(JSON.stringify(diagnostics, null, 2));
+
+  for (const item of diagnostics) {
+    console.log(`\n=== ${item.symbol} ===`);
+    console.log(`pass=${item.pass} direction=${item.direction ?? "none"} score=${item.score}`);
+    console.log(`summary=${item.summary}`);
+    console.log(
+      `alignment: ${item.diagnostics.alignmentPass ? "PASS" : "FAIL"} | 1D=${item.diagnostics.move1D === null ? "n/a" : `${item.diagnostics.move1D.toFixed(2)}%`} (${item.diagnostics.bias1D}), 1W=${item.diagnostics.move1W === null ? "n/a" : `${item.diagnostics.move1W.toFixed(2)}%`} (${item.diagnostics.bias1W})`,
+    );
+    console.log(`alignment rule: ${item.diagnostics.alignmentRule}`);
+    console.log(`alignment reason: ${item.diagnostics.alignmentReason}`);
+    console.log(
+      `candle: body=${item.diagnostics.candleBodySize === null ? "n/a" : item.diagnostics.candleBodySize.toFixed(2)} range=${item.diagnostics.candleRange === null ? "n/a" : item.diagnostics.candleRange.toFixed(2)} bodyToRange=${item.diagnostics.bodyToRange === null ? "n/a" : item.diagnostics.bodyToRange.toFixed(2)} wickiness=${item.diagnostics.wickiness === null ? "n/a" : item.diagnostics.wickiness.toFixed(2)}`,
+    );
+    console.log(
+      `volume: present=${item.diagnostics.volumeDataPresent} last=${item.diagnostics.lastVolume ?? "n/a"} avg=${item.diagnostics.averageVolume === null ? "n/a" : item.diagnostics.averageVolume.toFixed(2)} ratio=${item.volumeRatio === null ? "n/a" : item.volumeRatio.toFixed(2)}`,
+    );
+    console.log(`volume computation: ${item.diagnostics.volumeRatioComputation}`);
+    console.log(
+      `higher timeframe: resistance=${item.diagnostics.resistanceLevel ?? "n/a"} support=${item.diagnostics.supportLevel ?? "n/a"} roomPct=${item.diagnostics.roomPct === null ? "n/a" : `${item.diagnostics.roomPct.toFixed(2)}%`}`,
+    );
+    console.log("checks:");
+    for (const check of item.diagnostics.checks) {
+      console.log(`  - ${check.pass ? "PASS" : "FAIL"} ${check.check}: ${check.reason}`);
+    }
+  }
 }
 
 runDebug().catch((error) => {

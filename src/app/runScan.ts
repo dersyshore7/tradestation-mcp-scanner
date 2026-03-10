@@ -100,6 +100,37 @@ type ChartReviewResult = {
   volumeRatio: number | null;
   score: number;
   summary: string;
+  diagnostics: Stage3Diagnostics;
+};
+
+type Stage3CheckDiagnostic = {
+  check: string;
+  pass: boolean;
+  reason: string;
+};
+
+type Stage3Diagnostics = {
+  move1D: number | null;
+  move1W: number | null;
+  bias1D: ScanDirection | "neutral";
+  bias1W: ScanDirection | "neutral";
+  alignmentRule: string;
+  alignmentPass: boolean;
+  alignmentReason: string;
+  candleBodySize: number | null;
+  candleRange: number | null;
+  bodyToRange: number | null;
+  wickiness: number | null;
+  closeLocation: number | null;
+  volumeDataPresent: boolean;
+  lastVolume: number | null;
+  priorVolumeBarsWithData: number;
+  averageVolume: number | null;
+  volumeRatioComputation: string;
+  resistanceLevel: number | null;
+  supportLevel: number | null;
+  roomPct: number | null;
+  checks: Stage3CheckDiagnostic[];
 };
 
 const MULTI_TIMEFRAME_BAR_CONFIG: Record<MultiTimeframeView, { interval: number; unit: "Daily" | "Weekly"; barsBack: number }> = {
@@ -189,6 +220,10 @@ function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult
 
   const move1D = getMovePctFromBars(bars1D);
   const move1W = getMovePctFromBars(bars1W);
+  const dayBias: ScanDirection | "neutral" = move1D === null ? "neutral" : move1D >= 0.5 ? "bullish" : move1D <= -0.5 ? "bearish" : "neutral";
+  const weekBias: ScanDirection | "neutral" = move1W === null ? "neutral" : move1W >= 0 ? "bullish" : "bearish";
+  const alignmentRule = "bullish requires 1D move >= +0.5% and 1W move >= 0%; bearish requires 1D move <= -0.5% and 1W move <= 0%";
+
   if (move1D === null || move1W === null) {
     return {
       pass: false,
@@ -197,10 +232,40 @@ function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult
       volumeRatio: null,
       score: 0,
       summary: "insufficient close data in 1D/1W views",
+      diagnostics: {
+        move1D,
+        move1W,
+        bias1D: dayBias,
+        bias1W: weekBias,
+        alignmentRule,
+        alignmentPass: false,
+        alignmentReason: "missing 1D or 1W close data",
+        candleBodySize: null,
+        candleRange: null,
+        bodyToRange: null,
+        wickiness: null,
+        closeLocation: null,
+        volumeDataPresent: false,
+        lastVolume: null,
+        priorVolumeBarsWithData: 0,
+        averageVolume: null,
+        volumeRatioComputation: "volumeRatio requires both lastVolume and averageVolume > 0",
+        resistanceLevel: null,
+        supportLevel: null,
+        roomPct: null,
+        checks: [{ check: "alignment", pass: false, reason: "missing 1D or 1W move" }],
+      },
     };
   }
 
-  const direction: ScanDirection | null = move1D >= 0.5 && move1W >= 0 ? "bullish" : move1D <= -0.5 && move1W <= 0 ? "bearish" : null;
+  const bullishAlignment = move1D >= 0.5 && move1W >= 0;
+  const bearishAlignment = move1D <= -0.5 && move1W <= 0;
+  const alignmentPass = bullishAlignment || bearishAlignment;
+  const direction: ScanDirection | null = bullishAlignment ? "bullish" : bearishAlignment ? "bearish" : null;
+  const alignmentReason = alignmentPass
+    ? `aligned (${dayBias} day bias with ${weekBias} week bias)`
+    : `not aligned (1D=${move1D.toFixed(2)}%, 1W=${move1W.toFixed(2)}%)`;
+
   if (!direction) {
     return {
       pass: false,
@@ -209,6 +274,29 @@ function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult
       volumeRatio: null,
       score: 0,
       summary: "1D move and 1W context are not aligned",
+      diagnostics: {
+        move1D,
+        move1W,
+        bias1D: dayBias,
+        bias1W: weekBias,
+        alignmentRule,
+        alignmentPass,
+        alignmentReason,
+        candleBodySize: null,
+        candleRange: null,
+        bodyToRange: null,
+        wickiness: null,
+        closeLocation: null,
+        volumeDataPresent: false,
+        lastVolume: null,
+        priorVolumeBarsWithData: 0,
+        averageVolume: null,
+        volumeRatioComputation: "volumeRatio requires both lastVolume and averageVolume > 0",
+        resistanceLevel: null,
+        supportLevel: null,
+        roomPct: null,
+        checks: [{ check: "alignment", pass: false, reason: alignmentReason }],
+      },
     };
   }
 
@@ -218,7 +306,7 @@ function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult
   const high = readNumber(lastBar, ["High"]);
   const low = readNumber(lastBar, ["Low"]);
   const close = readNumber(lastBar, ["Close"]);
-  const lastVolume = readNumber(lastBar, ["TotalVolume", "Volume"]);
+  const lastVolume = readNumber(lastBar, ["TotalVolume", "Volume", "Vol", "TotalVolumeTraded"]);
 
   if (open === null || high === null || low === null || close === null || high <= low) {
     return {
@@ -228,6 +316,29 @@ function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult
       volumeRatio: null,
       score: 0,
       summary: "latest 1D candle is incomplete",
+      diagnostics: {
+        move1D,
+        move1W,
+        bias1D: dayBias,
+        bias1W: weekBias,
+        alignmentRule,
+        alignmentPass,
+        alignmentReason,
+        candleBodySize: null,
+        candleRange: null,
+        bodyToRange: null,
+        wickiness: null,
+        closeLocation: null,
+        volumeDataPresent: false,
+        lastVolume,
+        priorVolumeBarsWithData: 0,
+        averageVolume: null,
+        volumeRatioComputation: "volumeRatio requires both lastVolume and averageVolume > 0",
+        resistanceLevel: null,
+        supportLevel: null,
+        roomPct: null,
+        checks: [{ check: "latest-candle", pass: false, reason: "missing open/high/low/close or invalid range" }],
+      },
     };
   }
 
@@ -238,7 +349,7 @@ function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult
   for (const bar of priorBars) {
     const barHigh = readNumber(bar, ["High"]);
     const barLow = readNumber(bar, ["Low"]);
-    const barVolume = readNumber(bar, ["TotalVolume", "Volume"]);
+    const barVolume = readNumber(bar, ["TotalVolume", "Volume", "Vol", "TotalVolumeTraded"]);
     if (barHigh !== null && barLow !== null && barHigh > barLow) {
       priorRangeSum += barHigh - barLow;
       priorRangeCount += 1;
@@ -257,8 +368,10 @@ function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult
   const averageRange = priorRangeCount > 0 ? priorRangeSum / priorRangeCount : null;
   const expansionRatio = averageRange !== null && averageRange > 0 ? range / averageRange : null;
   const bodyToRange = body / range;
+  const wickiness = range > 0 ? (upperWick + lowerWick) / range : null;
   const averageVolume = priorVolumeCount > 0 ? priorVolumeSum / priorVolumeCount : null;
   const volumeRatio = averageVolume !== null && lastVolume !== null && averageVolume > 0 ? lastVolume / averageVolume : null;
+  const volumeDataPresent = lastVolume !== null || priorVolumeCount > 0;
 
   const expansionPass = expansionRatio === null || expansionRatio >= 1.15;
   const bodyQualityPass =
@@ -321,6 +434,23 @@ function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult
         : null;
   const higherTimeframeRoomPass = roomPct === null || roomPct >= 1;
 
+  const checkDiagnostics: Stage3CheckDiagnostic[] = [
+    { check: "alignment", pass: alignmentPass, reason: alignmentReason },
+    { check: "expansion", pass: expansionPass, reason: `expansionRatio=${expansionRatio === null ? "n/a" : expansionRatio.toFixed(2)}` },
+    { check: "body-wick", pass: bodyQualityPass, reason: `bodyToRange=${bodyToRange.toFixed(2)}, closeLocation=${closeLocation.toFixed(2)}, wickiness=${wickiness === null ? "n/a" : wickiness.toFixed(2)}` },
+    {
+      check: "volume",
+      pass: volumePass,
+      reason:
+        volumeRatio === null
+          ? `volume ratio unavailable (lastVolume=${lastVolume ?? "n/a"}, priorVolumeBarsWithData=${priorVolumeCount})`
+          : `volumeRatio=${volumeRatio.toFixed(2)} using lastVolume=${lastVolume} / avgVolume=${averageVolume?.toFixed(2)}`,
+    },
+    { check: "choppy", pass: choppyPass, reason: `flipCount=${flipCount}` },
+    { check: "continuation", pass: continuationPass, reason: direction === "bullish" ? `close=${close.toFixed(2)} vs prevHigh=${prevHigh?.toFixed(2) ?? "n/a"}` : `close=${close.toFixed(2)} vs prevLow=${prevLow?.toFixed(2) ?? "n/a"}` },
+    { check: "higher-timeframe-room", pass: higherTimeframeRoomPass, reason: `roomPct=${roomPct === null ? "n/a" : roomPct.toFixed(2)}%` },
+  ];
+
   const checks = [expansionPass, bodyQualityPass, volumePass, choppyPass, continuationPass, higherTimeframeRoomPass];
   const passedChecks = checks.filter(Boolean).length;
   const pass = passedChecks >= 4 && continuationPass;
@@ -341,6 +471,32 @@ function runStage3ChartReview(barsByView: MultiTimeframeBars): ChartReviewResult
     volumeRatio,
     score: passedChecks,
     summary: detailParts.join(", "),
+    diagnostics: {
+      move1D,
+      move1W,
+      bias1D: dayBias,
+      bias1W: weekBias,
+      alignmentRule,
+      alignmentPass,
+      alignmentReason,
+      candleBodySize: body,
+      candleRange: range,
+      bodyToRange,
+      wickiness,
+      closeLocation,
+      volumeDataPresent,
+      lastVolume,
+      priorVolumeBarsWithData: priorVolumeCount,
+      averageVolume,
+      volumeRatioComputation:
+        volumeRatio === null
+          ? `unable to compute (lastVolume=${lastVolume ?? "n/a"}, averageVolume=${averageVolume === null ? "n/a" : averageVolume.toFixed(2)})`
+          : `${lastVolume} / ${averageVolume?.toFixed(2)} = ${volumeRatio.toFixed(2)}`,
+      resistanceLevel: resistanceLevel !== null && Number.isFinite(resistanceLevel) ? resistanceLevel : null,
+      supportLevel: supportLevel !== null && Number.isFinite(supportLevel) ? supportLevel : null,
+      roomPct,
+      checks: checkDiagnostics,
+    },
   };
 }
 
@@ -1040,10 +1196,10 @@ export async function runStage2DebugForStarterUniverse(): Promise<Stage2SymbolDi
 }
 
 export async function runStage3DebugForStarterUniverse(): Promise<
-  { symbol: string; pass: boolean; direction: ScanDirection | null; movePct: number; volumeRatio: number | null; score: number; summary: string }[]
+  { symbol: string; pass: boolean; direction: ScanDirection | null; movePct: number; volumeRatio: number | null; score: number; summary: string; diagnostics: Stage3Diagnostics }[]
 > {
   const get = await createTradeStationGetFetcher();
-  const results: { symbol: string; pass: boolean; direction: ScanDirection | null; movePct: number; volumeRatio: number | null; score: number; summary: string }[] = [];
+  const results: { symbol: string; pass: boolean; direction: ScanDirection | null; movePct: number; volumeRatio: number | null; score: number; summary: string; diagnostics: Stage3Diagnostics }[] = [];
 
   for (const symbol of STARTER_UNIVERSE) {
     const bars = await loadMultiTimeframeBars(get, symbol);
@@ -1056,6 +1212,29 @@ export async function runStage3DebugForStarterUniverse(): Promise<
         volumeRatio: null,
         score: 0,
         summary: "failed to load required multi-timeframe bars",
+        diagnostics: {
+          move1D: null,
+          move1W: null,
+          bias1D: "neutral",
+          bias1W: "neutral",
+          alignmentRule: "bullish requires 1D move >= +0.5% and 1W move >= 0%; bearish requires 1D move <= -0.5% and 1W move <= 0%",
+          alignmentPass: false,
+          alignmentReason: "failed to load required multi-timeframe bars",
+          candleBodySize: null,
+          candleRange: null,
+          bodyToRange: null,
+          wickiness: null,
+          closeLocation: null,
+          volumeDataPresent: false,
+          lastVolume: null,
+          priorVolumeBarsWithData: 0,
+          averageVolume: null,
+          volumeRatioComputation: "volumeRatio requires both lastVolume and averageVolume > 0",
+          resistanceLevel: null,
+          supportLevel: null,
+          roomPct: null,
+          checks: [{ check: "bars-load", pass: false, reason: "failed to load required multi-timeframe bars" }],
+        },
       });
       continue;
     }
@@ -1141,6 +1320,24 @@ function readNumber(source: Record<string, unknown> | null, keys: string[]): num
       const parsed = Number(normalized);
       if (Number.isFinite(parsed)) {
         return parsed;
+      }
+    }
+
+    const lowercaseKey = key.toLowerCase();
+    const caseInsensitiveMatch = Object.entries(source).find(([sourceKey]) => sourceKey.toLowerCase() === lowercaseKey);
+    if (!caseInsensitiveMatch) {
+      continue;
+    }
+
+    const [, fallbackValue] = caseInsensitiveMatch;
+    if (typeof fallbackValue === "number" && Number.isFinite(fallbackValue)) {
+      return fallbackValue;
+    }
+    if (typeof fallbackValue === "string") {
+      const normalizedFallback = fallbackValue.trim().replace(/,/g, "");
+      const parsedFallback = Number(normalizedFallback);
+      if (Number.isFinite(parsedFallback)) {
+        return parsedFallback;
       }
     }
   }
