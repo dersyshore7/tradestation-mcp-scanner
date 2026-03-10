@@ -527,7 +527,14 @@ async function runStage2OptionsTradability(
 
       const optionQuotePayload = await optionQuoteResponse.json();
       const optionQuote = pickFirstQuote(optionQuotePayload);
-      const openInterest = readNumber(optionQuote, ["OpenInterest", "OpenInt", "OI", "Open_Int", "OpenInterestToday"]);
+      const openInterest = readNumber(optionQuote, [
+        "OpenInterest",
+        "DailyOpenInterest",
+        "OpenInt",
+        "OI",
+        "Open_Int",
+        "OpenInterestToday",
+      ]);
       const bid = readNumber(optionQuote, ["Bid", "BidPrice", "BestBid", "BidPx"]);
       const ask = readNumber(optionQuote, ["Ask", "AskPrice", "BestAsk", "AskPx"]);
       const mid = bid !== null && ask !== null ? (ask + bid) / 2 : null;
