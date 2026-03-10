@@ -1,11 +1,15 @@
 const TRADESTATION_API_KEY_ENV_NAME = "TRADESTATION_API_KEY";
 const TRADESTATION_API_SECRET_ENV_NAME = "TRADESTATION_API_SECRET";
+const TRADESTATION_REDIRECT_URI_ENV_NAME = "TRADESTATION_REDIRECT_URI";
 const TRADESTATION_REFRESH_TOKEN_ENV_NAME = "TRADESTATION_REFRESH_TOKEN";
 const TRADESTATION_BASE_URL_ENV_NAME = "TRADESTATION_BASE_URL";
 const DEFAULT_TRADESTATION_BASE_URL = "https://api.tradestation.com/v3";
 
 type TradeStationTokenResponse = {
   access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  token_type?: string;
   error?: string;
   error_description?: string;
 };
@@ -26,11 +30,24 @@ function getTradeStationBaseUrl(): string {
   ).replace(/\/$/, "");
 }
 
-export async function requestTradeStationAccessToken(): Promise<string> {
+export function buildTradeStationAuthorizationUrl(): string {
   const baseUrl = getTradeStationBaseUrl();
   const apiKey = getRequiredEnvVar(TRADESTATION_API_KEY_ENV_NAME);
-  const apiSecret = getRequiredEnvVar(TRADESTATION_API_SECRET_ENV_NAME);
-  const refreshToken = getRequiredEnvVar(TRADESTATION_REFRESH_TOKEN_ENV_NAME);
+  const redirectUri = getRequiredEnvVar(TRADESTATION_REDIRECT_URI_ENV_NAME);
+
+  const query = new URLSearchParams({
+    response_type: "code",
+    client_id: apiKey,
+    redirect_uri: redirectUri,
+  });
+
+  return `${baseUrl}/authorize?${query.toString()}`;
+}
+
+async function requestToken(
+  body: URLSearchParams,
+): Promise<TradeStationTokenResponse> {
+  const baseUrl = getTradeStationBaseUrl();
 
   const response = await fetch(`${baseUrl}/security/authorize`, {
     method: "POST",
@@ -38,12 +55,7 @@ export async function requestTradeStationAccessToken(): Promise<string> {
       "content-type": "application/x-www-form-urlencoded",
       accept: "application/json",
     },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      client_id: apiKey,
-      client_secret: apiSecret,
-      refresh_token: refreshToken,
-    }),
+    body,
   });
 
   const payload = (await response.json()) as TradeStationTokenResponse;
@@ -54,10 +66,51 @@ export async function requestTradeStationAccessToken(): Promise<string> {
       payload.error ??
       `Token request failed with HTTP ${response.status}`;
 
-    throw new Error(`TradeStation token refresh failed: ${reason}`);
+    throw new Error(`TradeStation token request failed: ${reason}`);
   }
 
-  return payload.access_token;
+  return payload;
+}
+
+export async function exchangeTradeStationAuthorizationCode(
+  authorizationCode: string,
+): Promise<TradeStationTokenResponse> {
+  const apiKey = getRequiredEnvVar(TRADESTATION_API_KEY_ENV_NAME);
+  const apiSecret = getRequiredEnvVar(TRADESTATION_API_SECRET_ENV_NAME);
+  const redirectUri = getRequiredEnvVar(TRADESTATION_REDIRECT_URI_ENV_NAME);
+
+  return requestToken(
+    new URLSearchParams({
+      grant_type: "authorization_code",
+      code: authorizationCode,
+      client_id: apiKey,
+      client_secret: apiSecret,
+      redirect_uri: redirectUri,
+    }),
+  );
+}
+
+export async function refreshTradeStationAccessToken(
+  refreshToken: string,
+): Promise<TradeStationTokenResponse> {
+  const apiKey = getRequiredEnvVar(TRADESTATION_API_KEY_ENV_NAME);
+  const apiSecret = getRequiredEnvVar(TRADESTATION_API_SECRET_ENV_NAME);
+
+  return requestToken(
+    new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: apiKey,
+      client_secret: apiSecret,
+      refresh_token: refreshToken,
+    }),
+  );
+}
+
+export async function requestTradeStationAccessToken(): Promise<string> {
+  const refreshToken = getRequiredEnvVar(TRADESTATION_REFRESH_TOKEN_ENV_NAME);
+  const tokenPayload = await refreshTradeStationAccessToken(refreshToken);
+
+  return tokenPayload.access_token as string;
 }
 
 export async function createTradeStationGetFetcher(): Promise<
