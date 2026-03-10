@@ -3,7 +3,9 @@ const TRADESTATION_API_SECRET_ENV_NAME = "TRADESTATION_API_SECRET";
 const TRADESTATION_REDIRECT_URI_ENV_NAME = "TRADESTATION_REDIRECT_URI";
 const TRADESTATION_REFRESH_TOKEN_ENV_NAME = "TRADESTATION_REFRESH_TOKEN";
 const TRADESTATION_BASE_URL_ENV_NAME = "TRADESTATION_BASE_URL";
+const TRADESTATION_AUTH_STATE_ENV_NAME = "TRADESTATION_AUTH_STATE";
 const DEFAULT_TRADESTATION_BASE_URL = "https://api.tradestation.com/v3";
+const TRADESTATION_SIGNIN_BASE_URL = "https://signin.tradestation.com";
 
 type TradeStationTokenResponse = {
   access_token?: string;
@@ -31,25 +33,30 @@ function getTradeStationBaseUrl(): string {
 }
 
 export function buildTradeStationAuthorizationUrl(): string {
-  const baseUrl = getTradeStationBaseUrl();
   const apiKey = getRequiredEnvVar(TRADESTATION_API_KEY_ENV_NAME);
   const redirectUri = getRequiredEnvVar(TRADESTATION_REDIRECT_URI_ENV_NAME);
+  const state = process.env[TRADESTATION_AUTH_STATE_ENV_NAME];
 
   const query = new URLSearchParams({
     response_type: "code",
     client_id: apiKey,
+    audience: "https://api.tradestation.com",
     redirect_uri: redirectUri,
+    scope:
+      "openid offline_access profile MarketData ReadAccount Trade Matrix OptionSpreads",
   });
 
-  return `${baseUrl}/authorize?${query.toString()}`;
+  if (state) {
+    query.set("state", state);
+  }
+
+  return `${TRADESTATION_SIGNIN_BASE_URL}/authorize?${query.toString()}`;
 }
 
 async function requestToken(
   body: URLSearchParams,
 ): Promise<TradeStationTokenResponse> {
-  const baseUrl = getTradeStationBaseUrl();
-
-  const response = await fetch(`${baseUrl}/security/authorize`, {
+  const response = await fetch(`${TRADESTATION_SIGNIN_BASE_URL}/oauth/token`, {
     method: "POST",
     headers: {
       "content-type": "application/x-www-form-urlencoded",
