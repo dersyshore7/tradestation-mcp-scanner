@@ -61,31 +61,49 @@ src/
 vercel.json
 ```
 
-## TradeStation read-only auth smoke test (starter)
+## TradeStation read-only auth setup (starter)
 
-This phase adds only a **read-only** TradeStation auth helper + one smoke test script.
+This phase adds only a **read-only** local auth helper for getting tokens.
 
-It does **not** place orders, does **not** add options-chain scanning, and does **not** wire TradeStation into the MCP flow yet.
+It does **not** place orders, does **not** add market scanning, and does **not** wire TradeStation into MCP yet.
 
-Set these environment variables:
+Set these environment variables in `.env`:
 
 ```bash
 TRADESTATION_API_KEY=your_api_key
 TRADESTATION_API_SECRET=your_api_secret
-TRADESTATION_REFRESH_TOKEN=your_refresh_token
+TRADESTATION_REDIRECT_URI=http://localhost:3001
 TRADESTATION_BASE_URL=https://api.tradestation.com/v3
 ```
 
-Run the smoke test (defaults to `AAPL`):
+Then follow these steps:
+
+1. Generate the login URL:
+
+```bash
+npm run tradestation:auth-url
+```
+
+2. Open the printed URL in your browser and log in.
+3. After login, TradeStation redirects to your localhost URL.
+4. Copy the `code` value from that redirect URL.
+   - Example redirect: `http://localhost:3001/?code=YOUR_CODE_HERE`
+5. Exchange the code for tokens:
+
+```bash
+npm run tradestation:exchange-code -- YOUR_CODE_HERE
+```
+
+6. Copy the printed refresh token and save it in `.env`:
+
+```bash
+TRADESTATION_REFRESH_TOKEN=your_refresh_token
+```
+
+Optional read-only smoke test after saving your refresh token:
 
 ```bash
 npm run tradestation:test
-```
-
-Optional symbol override:
-
-```bash
-npm run tradestation:test -- MSFT
 ```
 
 ## OpenAI remote MCP scanner test
