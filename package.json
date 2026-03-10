@@ -12,7 +12,8 @@
     "mcp:start": "tsx src/mcp/startServer.ts",
     "tradestation:test": "tsx src/tradestation/testConnection.ts",
     "tradestation:auth-url": "tsx src/tradestation/startAuth.ts",
-    "tradestation:exchange-code": "tsx src/tradestation/exchangeCode.ts"
+    "tradestation:exchange-code": "tsx src/tradestation/exchangeCode.ts",
+    "scanner:stage2-debug": "tsx src/app/debugStage2StarterUniverse.ts"
   },
   "keywords": [],
   "author": "",
