@@ -345,10 +345,10 @@ function buildOptionSymbol(symbol: string, expirationDate: string, type: "C" | "
   const yearShort = yearText?.slice(-2) ?? "00";
   const month = monthText ?? "01";
   const day = dayText ?? "01";
-  const strikeCode = Math.round(strike * 1000)
-    .toString()
-    .padStart(8, "0");
-  return `${symbol.padEnd(6, " ")}${yearShort}${month}${day}${type}${strikeCode}`;
+  const strikeText = Number.isInteger(strike)
+    ? strike.toString()
+    : strike.toFixed(3).replace(/\.?0+$/, "");
+  return `${symbol} ${yearShort}${month}${day}${type}${strikeText}`;
 }
 
 async function runStage2OptionsTradability(
@@ -496,8 +496,6 @@ async function runStage2OptionsTradability(
       selectedStrike.putSymbol,
       buildOptionSymbol(candidate.symbol, targetExpiration.date, "C", selectedStrike.strike),
       buildOptionSymbol(candidate.symbol, targetExpiration.date, "P", selectedStrike.strike),
-      buildOptionSymbol(candidate.symbol, targetExpiration.date, "C", selectedStrike.strike).replace(/\s+/g, ""),
-      buildOptionSymbol(candidate.symbol, targetExpiration.date, "P", selectedStrike.strike).replace(/\s+/g, ""),
     ].filter((item, index, list): item is string => {
       if (typeof item !== "string" || item.trim().length === 0) {
         return false;
