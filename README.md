@@ -7,16 +7,42 @@ A very small beginner-friendly MCP scanner starter in TypeScript.
 This project runs a **minimal HTTP MCP server** with two scan modes:
 
 - Single-symbol TradeStation read-only analysis for prompts like `analyze AAPL`.
-- Existing fake-data fallback when no single symbol is detected.
+- Small-universe TradeStation read-only scan-and-review for general prompts.
 
 It exposes exactly one tool:
 
 - `scan_prompt_to_best_ticker`
 
-That tool now checks for a single symbol prompt first, then uses TradeStation **read-only** market data (`quotes`, plus recent bars when available) for a simple first-pass direction guess.
+That tool checks for a single symbol prompt first. If present, it runs the same single-symbol read-only analysis.
 
-If no single symbol is detected, it keeps using the existing fake scanner logic in `src/app/runScan.ts`.
+If no single symbol is detected, it now runs a tiny real-data scan-and-review pipeline on a hardcoded starter universe: `AAPL`, `MSFT`, `NVDA`, `AMZN`, `META`.
 
+The fake scanner fallback is still present only as a safety fallback if real-data requests fail.
+
+
+
+### Small-universe scan-and-review mode
+
+General prompts (for example, `find bullish setups`) now run a simple 4-stage read-only pipeline:
+
+1. **Stage 1: Basic stock filters**
+   - Price between 10 and 500
+   - Average volume above 1M when available
+   - Respect `excludedTickers`
+2. **Stage 2: Options tradability filters**
+   - Check available expirations
+   - Prefer 14–21 DTE when available
+   - Require open interest above 500 on a candidate contract
+   - Require reasonably tight bid/ask spread
+3. **Stage 3: Basic chart/bar review**
+   - Pull recent daily bars
+   - Simple first-pass trend + volume support check
+   - Classify candidate as bullish, bearish, or fail stage
+4. **Stage 4: Final pick**
+   - Score remaining candidates with a simple score
+   - Return best candidate, otherwise `no_trade_today`
+
+This is intentionally a tiny starter pipeline and does **not** scan the full market.
 
 ### Single-symbol prompt examples
 
