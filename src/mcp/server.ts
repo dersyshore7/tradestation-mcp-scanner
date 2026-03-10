@@ -3,7 +3,7 @@ import { runScan, type ScanInput, type ScanResult } from "../app/runScan.js";
 export const scanToolDefinition = {
   name: "scan_prompt_to_best_ticker",
   description:
-    "Run a scan. Uses real TradeStation data for prompts like 'analyze AAPL', otherwise falls back to fake starter logic.",
+    "Run a read-only scan. Uses real TradeStation data for single-symbol prompts and a tiny starter-universe scan for general prompts.",
   inputSchema: {
     type: "object",
     properties: {
