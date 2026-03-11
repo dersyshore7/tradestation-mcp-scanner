@@ -2497,7 +2497,7 @@ function readNumber(source: Record<string, unknown> | null, keys: string[]): num
   return null;
 }
 
-async function runSingleSymbolTradeStationAnalysis(symbol: string): Promise<ScanResult> {
+export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promise<ScanResult> {
   const get = await createTradeStationGetFetcher();
   const targetDte = await resolveTargetDteForSymbol(get, symbol);
   if (targetDte !== null) {

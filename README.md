@@ -9,9 +9,10 @@ This project runs a **minimal HTTP MCP server** with two scan modes:
 - Single-symbol TradeStation read-only analysis for prompts like `analyze AAPL`.
 - Small-universe TradeStation read-only scan-and-review for general prompts.
 
-It exposes exactly one tool:
+It exposes two tools:
 
 - `scan_prompt_to_best_ticker`
+- `construct_trade_card`
 
 That tool checks for a single symbol prompt first. If present, it runs the same single-symbol read-only analysis.
 
@@ -73,7 +74,13 @@ This telemetry is debug-only. The MCP tool response shape stays unchanged:
 - `review AAPL`
 - `scan AAPL`
 
-The first-pass real-data mode only handles one symbol and does **not** scan the full market yet.
+### Trade construction prompt examples
+
+- `build trade OXY`
+- `trade setup OXY`
+- `construct trade OXY`
+
+Trade construction is read-only and returns a first-pass 2:1 trade card with 33% account-equity sizing (or env fallback if account balances are unavailable).
 
 ### Tool input
 
