@@ -100,6 +100,8 @@ async function runDebug(): Promise<void> {
 
   const passed = diagnostics.filter((item) => item.pass);
   const failed = diagnostics.filter((item) => !item.pass);
+  const stage2PassedSymbols = new Set(telemetry.stageSymbols.stage2Passed);
+  const stage3PassedSymbols = new Set(telemetry.stageSymbols.stage3Passed);
   const failSummary = new Map<string, number>();
   for (const item of failed) {
     const key = item.summary;
@@ -140,13 +142,27 @@ async function runDebug(): Promise<void> {
   const displayedDiagnostics = hasStage3MaxLines
     ? diagnostics.slice(0, Math.max(0, Math.floor(stage3MaxLines ?? 0)))
     : diagnostics;
+  const summaryPassSymbols = new Set<string>();
+
   for (const item of displayedDiagnostics) {
+    const passInSourceOfTruth = stage3PassedSymbols.has(item.symbol);
+    const passLabel = passInSourceOfTruth ? "PASS" : "FAIL";
     const direction = item.direction ?? "none";
     const move = `${item.movePct.toFixed(2)}%`;
     const volume = item.volumeRatio === null ? "n/a" : item.volumeRatio.toFixed(2);
+    const stage2Note = stage2PassedSymbols.has(item.symbol) ? "" : " | note=not in Stage 2 passed set";
+    if (passInSourceOfTruth) {
+      summaryPassSymbols.add(item.symbol);
+    }
+
     console.log(
-      `${item.symbol}: ${item.pass ? "PASS" : "FAIL"} | dir=${direction} | score=${item.score} | move=${move} | vol=${volume} | ${item.summary}`,
+      `${item.symbol}: ${passLabel} | dir=${direction} | score=${item.score} | move=${move} | vol=${volume} | ${item.summary}${stage2Note}`,
     );
+  }
+
+  const passSummaryMismatches = [...summaryPassSymbols].filter((symbol) => !stage3PassedSymbols.has(symbol));
+  if (passSummaryMismatches.length > 0) {
+    console.log(`DEBUG ASSERTION FAILED: per-symbol PASS missing from Stage 3 passed symbols list: ${passSummaryMismatches.join(", ")}`);
   }
 
   if (hasStage3MaxLines && diagnostics.length > displayedDiagnostics.length) {
