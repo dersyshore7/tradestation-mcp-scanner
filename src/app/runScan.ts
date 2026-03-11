@@ -70,6 +70,7 @@ const V1_SCAN_UNIVERSE = V1_SCAN_UNIVERSE_CONFIG.symbols;
 const V1_SCAN_UNIVERSE_SET = new Set<string>(V1_SCAN_UNIVERSE);
 const FINALIST_REVIEW_LIMIT = 3;
 const FINAL_SCORE_TIE_TOLERANCE = 0.05;
+const YAHOO_FINANCE_BASE_URL = "https://query1.finance.yahoo.com";
 
 export type ScanInput = {
   prompt: string;
@@ -272,6 +273,15 @@ type FinalistReviewResult = {
     chartReviewSummary: string;
   } | null;
   conclusion: ScanResult["conclusion"];
+  reason: string;
+};
+
+type EarningsCheckResult = {
+  symbol: string;
+  earningsDate: string | null;
+  windowMinDte: number;
+  windowMaxDte: number;
+  pass: boolean;
   reason: string;
 };
 
@@ -1154,6 +1164,158 @@ function getDte(expirationDate: Date): number {
   return Math.round((expirationDate.getTime() - now.getTime()) / msPerDay);
 }
 
+function parseYahooEarningsDate(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const quoteSummary = (payload as Record<string, unknown>)["quoteSummary"];
+  if (!quoteSummary || typeof quoteSummary !== "object") {
+    return null;
+  }
+
+  const result = (quoteSummary as Record<string, unknown>)["result"];
+  if (!Array.isArray(result) || result.length === 0) {
+    return null;
+  }
+
+  const firstResult = result[0];
+  if (!firstResult || typeof firstResult !== "object") {
+    return null;
+  }
+
+  const calendarEvents = (firstResult as Record<string, unknown>)["calendarEvents"];
+  if (!calendarEvents || typeof calendarEvents !== "object") {
+    return null;
+  }
+
+  const earnings = (calendarEvents as Record<string, unknown>)["earnings"];
+  if (!earnings || typeof earnings !== "object") {
+    return null;
+  }
+
+  const earningsDate = (earnings as Record<string, unknown>)["earningsDate"];
+  if (!Array.isArray(earningsDate) || earningsDate.length === 0) {
+    return null;
+  }
+
+  const firstDate = earningsDate[0];
+  if (!firstDate || typeof firstDate !== "object") {
+    return null;
+  }
+
+  const raw = (firstDate as Record<string, unknown>)["raw"];
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return new Date(raw * 1000).toISOString().slice(0, 10);
+  }
+
+  const formatted = (firstDate as Record<string, unknown>)["fmt"];
+  if (typeof formatted === "string" && formatted.trim().length > 0) {
+    const parsed = new Date(formatted);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString().slice(0, 10);
+    }
+  }
+
+  return null;
+}
+
+async function fetchEarningsDate(symbol: string): Promise<string | null> {
+  const requestUrl = `${YAHOO_FINANCE_BASE_URL}/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=calendarEvents`;
+  const response = await fetch(requestUrl, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const payload = await response.json();
+  return parseYahooEarningsDate(payload);
+}
+
+async function runEarningsCheck(symbol: string, windowMinDte: number, windowMaxDte: number): Promise<EarningsCheckResult> {
+  const normalizedWindowMin = Math.max(0, Math.min(windowMinDte, windowMaxDte));
+  const normalizedWindowMax = Math.max(normalizedWindowMin, windowMaxDte);
+
+  let earningsDate: string | null = null;
+  try {
+    earningsDate = await fetchEarningsDate(symbol);
+  } catch {
+    earningsDate = null;
+  }
+
+  if (!earningsDate) {
+    return {
+      symbol,
+      earningsDate: null,
+      windowMinDte: normalizedWindowMin,
+      windowMaxDte: normalizedWindowMax,
+      pass: true,
+      reason: "No earnings date was found from the scoped lookup.",
+    };
+  }
+
+  const earningsDte = getDte(new Date(earningsDate));
+  const insideWindow = earningsDte >= normalizedWindowMin && earningsDte <= normalizedWindowMax;
+
+  if (insideWindow) {
+    return {
+      symbol,
+      earningsDate,
+      windowMinDte: normalizedWindowMin,
+      windowMaxDte: normalizedWindowMax,
+      pass: false,
+      reason: `Earnings is inside the DTE window (earnings DTE ${earningsDte}, window ${normalizedWindowMin}-${normalizedWindowMax}).`,
+    };
+  }
+
+  return {
+    symbol,
+    earningsDate,
+    windowMinDte: normalizedWindowMin,
+    windowMaxDte: normalizedWindowMax,
+    pass: true,
+    reason: `Earnings is outside the DTE window (earnings DTE ${earningsDte}, window ${normalizedWindowMin}-${normalizedWindowMax}).`,
+  };
+}
+
+function logEarningsCheckDebug(result: EarningsCheckResult): void {
+  if (process.env.SCANNER_DEBUG !== "1") {
+    return;
+  }
+
+  console.log(
+    `[scanner:debug] earnings-check ${result.symbol}: earningsDate=${result.earningsDate ?? "n/a"} | dteWindow=${result.windowMinDte}-${result.windowMaxDte} | pass=${result.pass ? "yes" : "no"}`,
+  );
+}
+
+async function resolveTargetDteForSymbol(
+  get: (path: string) => Promise<Response>,
+  symbol: string,
+): Promise<number | null> {
+  const expirationsResponse = await get(`/marketdata/options/expirations/${encodeURIComponent(symbol)}`);
+  if (!expirationsResponse.ok) {
+    return null;
+  }
+
+  const expirationsPayload = await expirationsResponse.json();
+  const expirations = readExpirations(expirationsPayload);
+  if (expirations.length === 0) {
+    return null;
+  }
+
+  const inRange = expirations.filter((item) => item.dte >= 14 && item.dte <= 21);
+  const targetExpiration = (inRange.length > 0 ? inRange : expirations).sort(
+    (a, b) => Math.abs(a.dte - 17) - Math.abs(b.dte - 17),
+  )[0];
+
+  return targetExpiration?.dte ?? null;
+}
+
 function readExpirations(payload: unknown): { date: string; dte: number; apiValue: string }[] {
   if (!payload || typeof payload !== "object") {
     return [];
@@ -1728,6 +1890,47 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
 
   const finalistReviewResults: FinalistReviewResult[] = [];
   for (const finalist of finalists) {
+    const finalistStage2Inputs = stage2BySymbol.get(finalist.symbol);
+    const finalistDte = finalistStage2Inputs?.targetDte;
+    if (finalistDte !== undefined) {
+      const earningsCheck = await runEarningsCheck(finalist.symbol, 0, finalistDte);
+      logEarningsCheckDebug(earningsCheck);
+      if (!earningsCheck.pass) {
+        finalistReviewResults.push({
+          symbol: finalist.symbol,
+          rankingScore: finalist.score,
+          stage1Inputs: (() => {
+            const item = stage1BySymbol.get(finalist.symbol);
+            return item ? { lastPrice: item.lastPrice, averageVolume: item.averageVolume } : null;
+          })(),
+          stage2Inputs: finalistStage2Inputs
+            ? {
+              targetExpiration: finalistStage2Inputs.targetExpiration,
+              targetDte: finalistStage2Inputs.targetDte,
+              optionOpenInterest: finalistStage2Inputs.optionOpenInterest,
+              optionSpread: finalistStage2Inputs.optionSpread,
+              optionMid: finalistStage2Inputs.optionMid,
+            }
+            : null,
+          stage3Inputs: (() => {
+            const item = stage3BySymbol.get(finalist.symbol);
+            return item
+              ? {
+                direction: item.chartDirection,
+                movePct: item.chartMovePct,
+                volumeRatio: item.volumeRatio,
+                chartReviewScore: item.chartReviewScore,
+                chartReviewSummary: item.chartReviewSummary,
+              }
+              : null;
+          })(),
+          conclusion: "rejected",
+          reason: `Rejected by earnings-inside-DTE exclusion. ${earningsCheck.reason}`,
+        });
+        continue;
+      }
+    }
+
     const reviewResult = await runSingleSymbolTradeStationAnalysis(finalist.symbol);
     finalistReviewResults.push({
       symbol: finalist.symbol,
@@ -2057,6 +2260,21 @@ function readNumber(source: Record<string, unknown> | null, keys: string[]): num
 
 async function runSingleSymbolTradeStationAnalysis(symbol: string): Promise<ScanResult> {
   const get = await createTradeStationGetFetcher();
+  const targetDte = await resolveTargetDteForSymbol(get, symbol);
+  if (targetDte !== null) {
+    const earningsCheck = await runEarningsCheck(symbol, 0, targetDte);
+    logEarningsCheckDebug(earningsCheck);
+    if (!earningsCheck.pass) {
+      return {
+        ticker: symbol,
+        direction: null,
+        confidence: null,
+        conclusion: "rejected",
+        reason: `Single-symbol review rejected due to earnings risk inside the target DTE window. ${earningsCheck.reason}`,
+      };
+    }
+  }
+
   const { barsByView: bars, timeframeDiagnostics } = await loadMultiTimeframeBars(get, symbol);
   if (bars) {
     const review = runStage3ChartReview(bars, timeframeDiagnostics);
