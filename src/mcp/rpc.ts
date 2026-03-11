@@ -1,4 +1,4 @@
-import { callScanTool, scanToolDefinition } from "./server.js";
+import { callScanTool, callTradeConstructionTool, scanToolDefinition, tradeConstructionToolDefinition } from "./server.js";
 
 export type JsonRpcRequest = {
   jsonrpc?: string;
@@ -46,27 +46,56 @@ export async function handleRpc(request: JsonRpcRequest): Promise<JsonRpcRespons
   }
 
   if (request.method === "tools/list") {
-    return ok(id, { tools: [scanToolDefinition] });
+    return ok(id, { tools: [scanToolDefinition, tradeConstructionToolDefinition] });
   }
 
   if (request.method === "tools/call") {
     const params = request.params as { name?: string; arguments?: unknown } | undefined;
 
-    if (!params || params.name !== "scan_prompt_to_best_ticker") {
-      return fail(id, -32602, "Unknown tool. Expected scan_prompt_to_best_ticker.");
+    if (!params || typeof params.name !== "string") {
+      return fail(id, -32602, "Unknown tool.");
     }
 
     try {
-      const result = await callScanTool(params.arguments ?? {});
-      return ok(id, {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result),
-          },
-        ],
-        structuredContent: result,
-      });
+      if (params.name === "scan_prompt_to_best_ticker") {
+        const result = await callScanTool(params.arguments ?? {});
+        return ok(id, {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result),
+            },
+          ],
+          structuredContent: result,
+        });
+      }
+
+      if (params.name === "construct_trade_card") {
+        const result = await callTradeConstructionTool(params.arguments ?? {});
+        const userCard = {
+          Ticker: result.ticker,
+          Direction: result.direction,
+          Confidence: result.confidence,
+          Buy: result.buy,
+          "Invalidation Exit": result.invalidationExit,
+          "Take-Profit Exit": result.takeProfitExit,
+          "Time Exit": result.timeExit,
+          "R:R Math": result.rrMath,
+          Rationale: result.rationale,
+        };
+
+        return ok(id, {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(userCard),
+            },
+          ],
+          structuredContent: userCard,
+        });
+      }
+
+      return fail(id, -32602, "Unknown tool. Expected scan_prompt_to_best_ticker or construct_trade_card.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Tool call failed.";
       return fail(id, -32602, message);
