@@ -1,6 +1,8 @@
 import { createTradeStationGetFetcher } from "../tradestation/client.js";
 import { type ScanConfidence, type ScanDirection } from "../scanner/scoring.js";
 import {
+  buildDirectOptionSymbols,
+  fetchFirstUsableDirectOptionQuote,
   pickTargetExpiration,
   readExpirations,
   readStrikes,
@@ -63,6 +65,9 @@ type TradeConstructionDiagnostics = {
   strikesRequestTarget: string | null;
   strikesCountReturned: number | null;
   chosenStrike: number | null;
+  attemptedOptionSymbols: string[];
+  optionQuoteRequestTargets: string[];
+  optionQuoteStatuses: number[];
   chosenOptionSymbol: string | null;
   failureReason: string | null;
 };
@@ -266,6 +271,9 @@ async function buildTradeInputs(
     strikesRequestTarget: null,
     strikesCountReturned: null,
     chosenStrike: null,
+    attemptedOptionSymbols: [],
+    optionQuoteRequestTargets: [],
+    optionQuoteStatuses: [],
     chosenOptionSymbol: null,
     failureReason: null,
   };
@@ -325,27 +333,27 @@ async function buildTradeInputs(
 
     diagnostics.chosenStrike = selectedStrike.strike;
 
-    const optionSymbol = direction === "bullish" ? selectedStrike.callSymbol : selectedStrike.putSymbol;
-    if (!optionSymbol) {
-      diagnostics.failureReason = `No ${direction === "bullish" ? "call" : "put"} symbol found for ${symbol} ${targetExpiration.date}.`;
+    const symbolsToTry = buildDirectOptionSymbols(symbol, targetExpiration.date, selectedStrike);
+    diagnostics.attemptedOptionSymbols = symbolsToTry;
+
+    const preferredTypePattern = direction === "bullish" ? /\s\d{6}C/i : /\s\d{6}P/i;
+    const preferredSymbols = symbolsToTry.filter((candidateSymbol) => preferredTypePattern.test(candidateSymbol));
+    const fallbackSymbols = symbolsToTry.filter((candidateSymbol) => !preferredSymbols.includes(candidateSymbol));
+    const orderedSymbolsToTry = [...preferredSymbols, ...fallbackSymbols];
+    diagnostics.attemptedOptionSymbols = orderedSymbolsToTry;
+
+    const { quote: optionQuote, attempts } = await fetchFirstUsableDirectOptionQuote(get, orderedSymbolsToTry);
+    diagnostics.optionQuoteRequestTargets = attempts.map((attempt) => attempt.requestTarget);
+    diagnostics.optionQuoteStatuses = attempts.map((attempt) => attempt.status);
+
+    if (!optionQuote) {
+      diagnostics.failureReason = `No usable ${direction === "bullish" ? "call" : "put"} option quote found for ${symbol} ${targetExpiration.date}.`;
       throw new Error(diagnostics.failureReason);
     }
 
-    diagnostics.chosenOptionSymbol = optionSymbol;
-
-    const optionQuoteResponse = await get(`/marketdata/quotes/${encodeURIComponent(optionSymbol)}`);
-    if (!optionQuoteResponse.ok) {
-      throw new Error(`Failed to load option quote for ${optionSymbol} (${optionQuoteResponse.status}).`);
-    }
-
-    const optionQuote = pickFirstObject(await optionQuoteResponse.json(), ["Quotes", "Quote", "Data"]);
-    const bid = readNumber(optionQuote, ["Bid", "BestBid"]);
-    const ask = readNumber(optionQuote, ["Ask", "BestAsk"]);
-    const last = readNumber(optionQuote, ["Last", "Trade", "Mark"]);
-    const optionMid = bid !== null && ask !== null && ask >= bid ? (bid + ask) / 2 : last;
-    if (optionMid === null || optionMid <= 0) {
-      throw new Error(`Could not derive option entry premium for ${optionSymbol}.`);
-    }
+    diagnostics.chosenOptionSymbol = optionQuote.optionSymbol;
+    const optionSymbol = optionQuote.optionSymbol;
+    const optionMid = optionQuote.mid;
 
     const { equity, source } = await resolveAccountEquity(get);
     const allocation = equity * TARGET_ALLOCATION_PCT;
@@ -397,7 +405,7 @@ async function buildTradeInputs(
 
     if (process.env.SCANNER_DEBUG === "1") {
       console.log(
-        `[trade:debug] ${symbol} ${direction} | selectedExpiration=${diagnostics.selectedExpiration ?? "n/a"} | strikesExpirationParam=${diagnostics.strikesExpirationParam ?? "n/a"} | strikesRequestTarget=${diagnostics.strikesRequestTarget ?? "n/a"} | strikesCountReturned=${diagnostics.strikesCountReturned ?? -1} | chosenStrike=${diagnostics.chosenStrike ?? "n/a"} | chosenOptionSymbol=${diagnostics.chosenOptionSymbol ?? "n/a"} | failureReason=${diagnostics.failureReason ?? "none"}`,
+        `[trade:debug] ${symbol} ${direction} | selectedExpiration=${diagnostics.selectedExpiration ?? "n/a"} | strikesExpirationParam=${diagnostics.strikesExpirationParam ?? "n/a"} | strikesRequestTarget=${diagnostics.strikesRequestTarget ?? "n/a"} | strikesCountReturned=${diagnostics.strikesCountReturned ?? -1} | chosenStrike=${diagnostics.chosenStrike ?? "n/a"} | attemptedOptionSymbols=${diagnostics.attemptedOptionSymbols.join(",") || "n/a"} | optionQuoteTargets=${diagnostics.optionQuoteRequestTargets.join(",") || "n/a"} | optionQuoteStatuses=${diagnostics.optionQuoteStatuses.join(",") || "n/a"} | chosenOptionSymbol=${diagnostics.chosenOptionSymbol ?? "n/a"} | failureReason=${diagnostics.failureReason ?? "none"}`,
       );
     }
 
@@ -420,7 +428,7 @@ export async function constructTradeCard(input: TradeConstructionInput): Promise
 
   if (process.env.SCANNER_DEBUG === "1") {
     console.log(
-      `[trade:debug] ${symbol} ${direction} | selectedExpiration=${diagnostics.selectedExpiration ?? "n/a"} | strikesExpirationParam=${diagnostics.strikesExpirationParam ?? "n/a"} | strikesRequestTarget=${diagnostics.strikesRequestTarget ?? "n/a"} | strikesCountReturned=${diagnostics.strikesCountReturned ?? -1} | chosenStrike=${diagnostics.chosenStrike ?? "n/a"} | chosenOptionSymbol=${diagnostics.chosenOptionSymbol ?? "n/a"} | failureReason=${diagnostics.failureReason ?? "none"} | equity=${trade.equity.toFixed(2)} (${trade.equitySource}) | allocation=${trade.allocation.toFixed(2)} | contracts=${trade.contracts} | option=${trade.optionSymbol} @ ${trade.optionMid.toFixed(2)}`,
+      `[trade:debug] ${symbol} ${direction} | selectedExpiration=${diagnostics.selectedExpiration ?? "n/a"} | strikesExpirationParam=${diagnostics.strikesExpirationParam ?? "n/a"} | strikesRequestTarget=${diagnostics.strikesRequestTarget ?? "n/a"} | strikesCountReturned=${diagnostics.strikesCountReturned ?? -1} | chosenStrike=${diagnostics.chosenStrike ?? "n/a"} | attemptedOptionSymbols=${diagnostics.attemptedOptionSymbols.join(",") || "n/a"} | optionQuoteTargets=${diagnostics.optionQuoteRequestTargets.join(",") || "n/a"} | optionQuoteStatuses=${diagnostics.optionQuoteStatuses.join(",") || "n/a"} | chosenOptionSymbol=${diagnostics.chosenOptionSymbol ?? "n/a"} | failureReason=${diagnostics.failureReason ?? "none"} | equity=${trade.equity.toFixed(2)} (${trade.equitySource}) | allocation=${trade.allocation.toFixed(2)} | contracts=${trade.contracts} | option=${trade.optionSymbol} @ ${trade.optionMid.toFixed(2)}`,
     );
   }
 
