@@ -182,9 +182,9 @@ npm run tradestation:test
 
 - `https://tradestation-mcp-scanner.vercel.app/api/mcp`
 
-It uses the same default V1 scan prompt and now sends no exclusions unless you explicitly provide them:
+It uses the shared default scan prompt and now sends no exclusions unless you explicitly provide them:
 
-- `prompt`: `find bullish setups`
+- `prompt`: `Run a new Scan for this week`
 - `excludedTickers`: optional (not sent by default in this demo flow)
 
 This endpoint must stay live and publicly reachable so OpenAI can connect to it during tool use.
@@ -263,7 +263,7 @@ curl -s http://localhost:3001/mcp \
 ```bash
 curl -s http://localhost:3001/mcp \
   -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"scan_prompt_to_best_ticker","arguments":{"prompt":"find bullish setups"}}}'
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"scan_prompt_to_best_ticker","arguments":{"prompt":"Run a new Scan for this week"}}}'
 ```
 
 ## Build
