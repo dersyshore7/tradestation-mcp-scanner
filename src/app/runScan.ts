@@ -63,6 +63,47 @@ const V1_SCAN_UNIVERSE_CONFIG = {
     "IWM",
     "XLF",
     "SMH",
+    "IYR",
+    "XLE",
+    "XLI",
+    "XLK",
+    "XLV",
+    "XLP",
+    "XLY",
+    "XLC",
+    "XBI",
+    "XLU",
+    "GDX",
+    "TLT",
+    "ARKK",
+    "DIA",
+    "VXX",
+    "SPOT",
+    "UBER",
+    "ABNB",
+    "SHOP",
+    "SNOW",
+    "PLTR",
+    "PYPL",
+    "SQ",
+    "COIN",
+    "ROKU",
+    "PANW",
+    "CRWD",
+    "ZS",
+    "FTNT",
+    "MU",
+    "TXN",
+    "AMAT",
+    "LRCX",
+    "KLAC",
+    "MRVL",
+    "ANET",
+    "ADSK",
+    "INTU",
+    "AXP",
+    "V",
+    "MA",
   ],
 } as const;
 
@@ -634,7 +675,21 @@ function logGeneralScanDebug(stage: string, symbols: string[]): void {
     return;
   }
 
-  console.log(`[scanner:debug] ${stage}: ${symbols.length > 0 ? symbols.join(", ") : "(none)"}`);
+  if (symbols.length === 0) {
+    console.log(`[scanner:debug] ${stage}: (none)`);
+    return;
+  }
+
+  const isVerbose = process.env.SCANNER_DEBUG_VERBOSE === "1";
+  if (isVerbose) {
+    console.log(`[scanner:debug] ${stage}: ${symbols.join(", ")}`);
+    return;
+  }
+
+  const preview = symbols.slice(0, 20).join(", ");
+  const remaining = symbols.length - 20;
+  const suffix = remaining > 0 ? ` ... (+${remaining} more, set SCANNER_DEBUG_VERBOSE=1 for full list)` : "";
+  console.log(`[scanner:debug] ${stage} (${symbols.length}): ${preview}${suffix}`);
 }
 
 function logStage2Diagnostics(diagnostics: Stage2SymbolDiagnostic[]): void {
