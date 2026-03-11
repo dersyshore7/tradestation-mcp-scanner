@@ -69,7 +69,8 @@ async function runDebug(): Promise<void> {
     countMismatches.push(`finalRanking count=${telemetry.stageCounts.finalRanking} symbols=${expectedFinalRanking}`);
   }
 
-  const diagnosticsStage3Passed = diagnostics.filter((item) => item.pass).length;
+  const stage2Universe = new Set(telemetry.stageSymbols.stage2Passed);
+  const diagnosticsStage3Passed = diagnostics.filter((item) => stage2Universe.has(item.symbol) && item.pass).length;
   if (telemetry.stageCounts.stage3Passed !== diagnosticsStage3Passed) {
     countMismatches.push(`stage3Passed telemetry=${telemetry.stageCounts.stage3Passed} diagnostics=${diagnosticsStage3Passed}`);
   }
@@ -114,25 +115,25 @@ async function runDebug(): Promise<void> {
   }
 
   console.log("Stage 3 passed symbols:");
-  if (telemetry.stage3PassedDetails.length === 0) {
+  if (telemetry.finalRankingDebug.length === 0) {
     console.log("(none)");
   } else {
-    for (const item of telemetry.stage3PassedDetails) {
+    for (const item of telemetry.finalRankingDebug) {
+      const score = item.score === null ? "n/a" : item.score.toFixed(2);
       console.log(
-        `${item.symbol}: dir=${item.direction} | score=${item.score.toFixed(2)} | summary=${item.summary} | why=${item.whyPassed}`,
+        `${item.symbol}: dir=${item.direction} | score=${score} | enteredFinalRanking=${item.enteredFinalRanking} | selected=${item.selected} | reason=${item.reason} | inputs=${JSON.stringify(item.scoreInputs)}`,
       );
     }
   }
 
   console.log("Stage 3 passed but not final selected:");
-  const notSelected = telemetry.stage3PassedDetails.filter((item) => item.symbol !== telemetry.finalSelectedSymbol);
+  const notSelected = telemetry.finalRankingDebug.filter((item) => !item.selected);
   if (notSelected.length === 0) {
     console.log("(none)");
   } else {
     for (const item of notSelected) {
-      console.log(
-        `${item.symbol}: not selected because score ${item.score.toFixed(2)} is below top score ${(telemetry.stage3PassedDetails[0]?.score ?? 0).toFixed(2)} (${telemetry.finalSelectedSymbol ?? "none"}).`,
-      );
+      const score = item.score === null ? "n/a" : item.score.toFixed(2);
+      console.log(`${item.symbol}: score=${score} | reason=${item.reason}`);
     }
   }
 
