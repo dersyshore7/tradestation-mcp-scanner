@@ -221,6 +221,23 @@ type Stage3NearMiss = {
   failReasons: string[];
 };
 
+type FinalRankingEntry = {
+  symbol: string;
+  direction: ScanDirection;
+  score: number | null;
+  enteredFinalRanking: boolean;
+  selected: boolean;
+  reason: string;
+  scoreInputs: {
+    movePct: number;
+    optionOpenInterest: number;
+    optionSpread: number;
+    optionMid: number;
+    volumeRatio: number | null;
+    chartReviewScore: number;
+  };
+};
+
 export type StarterUniverseTelemetry = {
   stageCounts: {
     stage1Entered: number;
@@ -243,6 +260,7 @@ export type StarterUniverseTelemetry = {
     summary: string;
     whyPassed: string;
   }[];
+  finalRankingDebug: FinalRankingEntry[];
   rejectionSummaries: {
     stage1: StageFailureSummary;
     stage2: StageFailureSummary;
@@ -251,6 +269,88 @@ export type StarterUniverseTelemetry = {
   nearMisses: Stage3NearMiss[];
   finalSelectedSymbol: string | null;
 };
+
+function buildFinalRanking(stage3Passed: ChartCandidate[]): { ranked: (ChartCandidate & { score: number })[]; debug: FinalRankingEntry[] } {
+  const debug = stage3Passed.map((candidate) => {
+    const computedScore = scoreStage3Candidate(candidate);
+    const score = Number.isFinite(computedScore) ? computedScore : null;
+    const scoreInputs = {
+      movePct: candidate.chartMovePct,
+      optionOpenInterest: candidate.optionOpenInterest,
+      optionSpread: candidate.optionSpread,
+      optionMid: candidate.optionMid,
+      volumeRatio: candidate.volumeRatio,
+      chartReviewScore: candidate.chartReviewScore,
+    };
+
+    if (score === null) {
+      return {
+        symbol: candidate.symbol,
+        direction: candidate.chartDirection,
+        score,
+        enteredFinalRanking: false,
+        selected: false,
+        reason: "missing final score",
+        scoreInputs,
+      };
+    }
+
+    return {
+      symbol: candidate.symbol,
+      direction: candidate.chartDirection,
+      score,
+      enteredFinalRanking: true,
+      selected: false,
+      reason: "entered final ranking",
+      scoreInputs,
+    };
+  });
+
+  const ranked = stage3Passed
+    .map((candidate) => ({ ...candidate, score: scoreStage3Candidate(candidate) }))
+    .filter((candidate) => Number.isFinite(candidate.score))
+    .sort((a, b) => b.score - a.score);
+
+  const topScore = ranked[0]?.score ?? null;
+  for (const item of debug) {
+    if (!item.enteredFinalRanking) {
+      continue;
+    }
+
+    if (item.symbol === ranked[0]?.symbol) {
+      item.selected = true;
+      item.reason = "selected as top final score";
+      continue;
+    }
+
+    if (topScore !== null && item.score !== null) {
+      item.reason = `ranking threshold: score ${item.score.toFixed(2)} below top ${topScore.toFixed(2)}`;
+    } else {
+      item.reason = "filtered out unexpectedly";
+    }
+  }
+
+  return { ranked, debug };
+}
+
+function logFinalRankingDebugSection(entries: FinalRankingEntry[]): void {
+  if (process.env.SCANNER_DEBUG !== "1") {
+    return;
+  }
+
+  console.log("[scanner:debug] Stage 3 -> final ranking details:");
+  if (entries.length === 0) {
+    console.log("[scanner:debug] (no Stage 3 passed symbols)");
+    return;
+  }
+
+  for (const item of entries) {
+    const score = item.score === null ? "n/a" : item.score.toFixed(2);
+    console.log(
+      `[scanner:debug] ${item.symbol}: dir=${item.direction} | score=${score} | enteredFinalRanking=${item.enteredFinalRanking ? "yes" : "no"} | selected=${item.selected ? "yes" : "no"} | reason=${item.reason} | inputs=${JSON.stringify(item.scoreInputs)}`,
+    );
+  }
+}
 
 type MultiTimeframeBarsLoadResult = {
   barsByView: MultiTimeframeBars | null;
@@ -1422,12 +1522,8 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
   }
 
   // Stage 4: simple final score and pick
-  const ranked = stage3Passed
-    .map((candidate) => {
-      const score = scoreStage3Candidate(candidate);
-      return { ...candidate, score };
-    })
-    .sort((a, b) => b.score - a.score);
+  const { ranked, debug: finalRankingDebug } = buildFinalRanking(stage3Passed);
+  logFinalRankingDebugSection(finalRankingDebug);
 
   const best = ranked[0];
   if (!best) {
@@ -1544,12 +1640,7 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
     });
   }
 
-  const ranked = stage3Passed
-    .map((candidate) => {
-      const score = scoreStage3Candidate(candidate);
-      return { ...candidate, score };
-    })
-    .sort((a, b) => b.score - a.score);
+  const { ranked, debug: finalRankingDebug } = buildFinalRanking(stage3Passed);
 
   const nearMisses = stage3NearMissCandidates.sort((a, b) => b.score - a.score).slice(0, 3);
 
@@ -1575,6 +1666,7 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
       summary: candidate.chartReviewSummary,
       whyPassed: summarizePassingChecks(candidate.chartDiagnostics.checks),
     })),
+    finalRankingDebug,
     rejectionSummaries: {
       stage1: stage1RejectionSummary,
       stage2: stage2RejectionSummary,
