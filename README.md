@@ -15,7 +15,7 @@ It exposes exactly one tool:
 
 That tool checks for a single symbol prompt first. If present, it runs the same single-symbol read-only analysis.
 
-If no single symbol is detected, it now runs a tiny real-data scan-and-review pipeline on a hardcoded V1 scan universe of 20 liquid names: `AAPL`, `MSFT`, `NVDA`, `AMZN`, `META`, `GOOGL`, `TSLA`, `AMD`, `NFLX`, `JPM`, `BAC`, `XOM`, `CVX`, `UNH`, `JNJ`, `WMT`, `COST`, `DIS`, `ADBE`, `QQQ`.
+If no single symbol is detected, it now runs a tiny real-data scan-and-review pipeline on a hardcoded V1 scan universe of about 60 liquid, options-heavy U.S. names defined in `src/app/runScan.ts` (`V1_SCAN_UNIVERSE_CONFIG`).
 
 The fake scanner fallback is still present only as a safety fallback if real-data requests fail.
 
@@ -57,7 +57,7 @@ The script now prints, in this order:
 1. Stage pass counts (`stage1Entered`, `stage1Passed`, `stage2Passed`, `stage3Passed`, `finalRanking`)
 2. Concise rejection summaries for Stages 1/2/3
 3. Top 3 Stage 3 near misses (`symbol`, `direction`, `score`, `failReasons`)
-4. Existing per-symbol Stage 3 review summary
+4. Concise per-symbol Stage 3 review summary (defaults to first 20 rows; set `STAGE3_DEBUG_MAX_LINES` to adjust)
 
 This telemetry is debug-only. The MCP tool response shape stays unchanged:
 

@@ -31,6 +31,8 @@ function loadDotEnvFileIfPresent(): void {
   }
 }
 
+const MAX_STAGE3_LINES = Number(process.env.STAGE3_DEBUG_MAX_LINES ?? "20");
+
 async function runDebug(): Promise<void> {
   loadDotEnvFileIfPresent();
   const telemetry = await runStarterUniverseTelemetryDebug();
@@ -54,15 +56,33 @@ async function runDebug(): Promise<void> {
   }
 
   const passed = diagnostics.filter((item) => item.pass);
-  console.log(`Stage 3 review summary (${diagnostics.length} symbols, ${passed.length} passed)`);
+  const failed = diagnostics.filter((item) => !item.pass);
+  const failSummary = new Map<string, number>();
+  for (const item of failed) {
+    const key = item.summary;
+    failSummary.set(key, (failSummary.get(key) ?? 0) + 1);
+  }
 
-  for (const item of diagnostics) {
+  console.log(`Stage 3 review summary (${diagnostics.length} symbols, ${passed.length} passed, ${failed.length} failed)`);
+  if (failSummary.size > 0) {
+    console.log("Top Stage 3 fail summaries:");
+    for (const [summary, count] of [...failSummary.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)) {
+      console.log(`${count}x ${summary}`);
+    }
+  }
+
+  const displayedDiagnostics = diagnostics.slice(0, Math.max(0, MAX_STAGE3_LINES));
+  for (const item of displayedDiagnostics) {
     const direction = item.direction ?? "none";
     const move = `${item.movePct.toFixed(2)}%`;
     const volume = item.volumeRatio === null ? "n/a" : item.volumeRatio.toFixed(2);
     console.log(
       `${item.symbol}: ${item.pass ? "PASS" : "FAIL"} | dir=${direction} | score=${item.score} | move=${move} | vol=${volume} | ${item.summary}`,
     );
+  }
+
+  if (diagnostics.length > displayedDiagnostics.length) {
+    console.log(`... truncated ${diagnostics.length - displayedDiagnostics.length} symbol rows (set STAGE3_DEBUG_MAX_LINES to adjust).`);
   }
 }
 
