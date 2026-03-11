@@ -238,6 +238,16 @@ type FinalRankingEntry = {
   };
 };
 
+type Stage3Evaluation = {
+  symbol: string;
+  pass: boolean;
+  candidate: ChartCandidate | null;
+  direction: ScanDirection | "none";
+  reviewScore: number;
+  summary: string;
+  rejectionReason: string | null;
+};
+
 export type StarterUniverseTelemetry = {
   stageCounts: {
     stage1Entered: number;
@@ -350,6 +360,95 @@ function logFinalRankingDebugSection(entries: FinalRankingEntry[]): void {
       `[scanner:debug] ${item.symbol}: dir=${item.direction} | score=${score} | enteredFinalRanking=${item.enteredFinalRanking ? "yes" : "no"} | selected=${item.selected ? "yes" : "no"} | reason=${item.reason} | inputs=${JSON.stringify(item.scoreInputs)}`,
     );
   }
+}
+
+function logStage3PassThroughDebugSection(
+  stage3Evaluations: Stage3Evaluation[],
+  finalRankingDebug: FinalRankingEntry[],
+  rankingThreshold: number | null,
+): void {
+  if (process.env.SCANNER_DEBUG !== "1") {
+    return;
+  }
+
+  console.log("[scanner:debug] Stage 3 pass-through and final selection:");
+  const passCandidates = stage3Evaluations.filter((item) => item.pass);
+  if (passCandidates.length === 0) {
+    console.log("[scanner:debug] (no Stage 3 pass candidates)");
+    return;
+  }
+
+  const finalRankingBySymbol = new Map(finalRankingDebug.map((item) => [item.symbol, item]));
+  const thresholdLabel = rankingThreshold === null ? "n/a" : rankingThreshold.toFixed(2);
+  for (const candidate of passCandidates) {
+    const rankingEntry = finalRankingBySymbol.get(candidate.symbol);
+    const enteredFinalRanking = rankingEntry?.enteredFinalRanking ?? false;
+    const selected = rankingEntry?.selected ?? false;
+    const rankingScore = rankingEntry?.score === null || rankingEntry?.score === undefined ? "n/a" : rankingEntry.score.toFixed(2);
+    const reason = rankingEntry?.reason ?? "not evaluated in final ranking";
+
+    console.log(
+      `[scanner:debug] ${candidate.symbol}: stage3Pass=yes | enteredFinalRanking=${enteredFinalRanking ? "yes" : "no"} | rankingScore=${rankingScore} | rankingThreshold=${thresholdLabel} | selected=${selected ? "yes" : "no"} | reason=${reason}`,
+    );
+  }
+}
+
+async function evaluateStage3Candidates(
+  get: (path: string) => Promise<Response>,
+  stage2Passed: OptionsCandidate[],
+): Promise<Stage3Evaluation[]> {
+  const evaluations: Stage3Evaluation[] = [];
+
+  for (const candidate of stage2Passed) {
+    const { barsByView: multiTimeframeBars, timeframeDiagnostics } = await loadMultiTimeframeBars(get, candidate.symbol);
+    if (!multiTimeframeBars) {
+      evaluations.push({
+        symbol: candidate.symbol,
+        pass: false,
+        candidate: null,
+        direction: "none",
+        reviewScore: 0,
+        summary: "failed to load required multi-timeframe bars",
+        rejectionReason: "other",
+      });
+      continue;
+    }
+
+    const review = runStage3ChartReview(multiTimeframeBars, timeframeDiagnostics);
+    if (!review.pass || !review.direction) {
+      const failReason = getStage3FailReasons(review)[0] ?? "other";
+      evaluations.push({
+        symbol: candidate.symbol,
+        pass: false,
+        candidate: null,
+        direction: review.direction ?? "none",
+        reviewScore: review.score,
+        summary: review.summary,
+        rejectionReason: failReason,
+      });
+      continue;
+    }
+
+    evaluations.push({
+      symbol: candidate.symbol,
+      pass: true,
+      candidate: {
+        ...candidate,
+        chartDirection: review.direction,
+        chartMovePct: review.movePct,
+        volumeRatio: review.volumeRatio,
+        chartReviewSummary: review.summary,
+        chartReviewScore: review.score,
+        chartDiagnostics: review.diagnostics,
+      },
+      direction: review.direction,
+      reviewScore: review.score,
+      summary: review.summary,
+      rejectionReason: null,
+    });
+  }
+
+  return evaluations;
 }
 
 type MultiTimeframeBarsLoadResult = {
@@ -1483,28 +1582,8 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
   }
 
   // Stage 3: multi-timeframe bar/candlestick + volume review
-  const stage3Passed: ChartCandidate[] = [];
-  for (const candidate of stage2Passed) {
-    const { barsByView: multiTimeframeBars, timeframeDiagnostics } = await loadMultiTimeframeBars(get, candidate.symbol);
-    if (!multiTimeframeBars) {
-      continue;
-    }
-
-    const review = runStage3ChartReview(multiTimeframeBars, timeframeDiagnostics);
-    if (!review.pass || !review.direction) {
-      continue;
-    }
-
-    stage3Passed.push({
-      ...candidate,
-      chartDirection: review.direction,
-      chartMovePct: review.movePct,
-      volumeRatio: review.volumeRatio,
-      chartReviewSummary: review.summary,
-      chartReviewScore: review.score,
-      chartDiagnostics: review.diagnostics,
-    });
-  }
+  const stage3Evaluations = await evaluateStage3Candidates(get, stage2Passed);
+  const stage3Passed = stage3Evaluations.flatMap((item) => (item.candidate ? [item.candidate] : []));
 
   logGeneralScanDebug(
     "Stage 3 passed",
@@ -1523,6 +1602,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
 
   // Stage 4: simple final score and pick
   const { ranked, debug: finalRankingDebug } = buildFinalRanking(stage3Passed);
+  logStage3PassThroughDebugSection(stage3Evaluations, finalRankingDebug, ranked[0]?.score ?? null);
   logFinalRankingDebugSection(finalRankingDebug);
 
   const best = ranked[0];
@@ -1599,44 +1679,23 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
     }
   }
 
-  const stage3Passed: ChartCandidate[] = [];
+  const stage3Evaluations = await evaluateStage3Candidates(get, stage2Passed);
+  const stage3Passed = stage3Evaluations.flatMap((item) => (item.candidate ? [item.candidate] : []));
   const stage3NearMissCandidates: Stage3NearMiss[] = [];
-  for (const candidate of stage2Passed) {
-    const { barsByView: multiTimeframeBars, timeframeDiagnostics } = await loadMultiTimeframeBars(get, candidate.symbol);
-    if (!multiTimeframeBars) {
-      incrementSummary(stage3RejectionSummary, "other");
-      stage3NearMissCandidates.push({
-        symbol: candidate.symbol,
-        direction: "none",
-        score: 0,
-        failReasons: ["other"],
-      });
+  for (const evaluation of stage3Evaluations) {
+    if (evaluation.pass) {
       continue;
     }
 
-    const review = runStage3ChartReview(multiTimeframeBars, timeframeDiagnostics);
-    if (!review.pass || !review.direction) {
-      const failReasons = getStage3FailReasons(review);
-      for (const failReason of failReasons) {
-        incrementSummary(stage3RejectionSummary, failReason);
-      }
-      stage3NearMissCandidates.push({
-        symbol: candidate.symbol,
-        direction: review.direction ?? "none",
-        score: review.score,
-        failReasons,
-      });
-      continue;
+    if (evaluation.rejectionReason) {
+      incrementSummary(stage3RejectionSummary, evaluation.rejectionReason);
     }
 
-    stage3Passed.push({
-      ...candidate,
-      chartDirection: review.direction,
-      chartMovePct: review.movePct,
-      volumeRatio: review.volumeRatio,
-      chartReviewSummary: review.summary,
-      chartReviewScore: review.score,
-      chartDiagnostics: review.diagnostics,
+    stage3NearMissCandidates.push({
+      symbol: evaluation.symbol,
+      direction: evaluation.direction,
+      score: evaluation.reviewScore,
+      failReasons: [evaluation.rejectionReason ?? "other"],
     });
   }
 
@@ -1659,10 +1718,10 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
       stage3Passed: stage3Passed.map((candidate) => candidate.symbol),
       finalRanking: ranked.map((candidate) => candidate.symbol),
     },
-    stage3PassedDetails: ranked.map((candidate) => ({
+    stage3PassedDetails: stage3Passed.map((candidate) => ({
       symbol: candidate.symbol,
       direction: candidate.chartDirection,
-      score: candidate.score,
+      score: scoreStage3Candidate(candidate),
       summary: candidate.chartReviewSummary,
       whyPassed: summarizePassingChecks(candidate.chartDiagnostics.checks),
     })),
