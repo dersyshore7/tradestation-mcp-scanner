@@ -44,6 +44,29 @@ General prompts (for example, `find bullish setups`) now run a simple 4-stage re
 
 This is intentionally a tiny starter pipeline and does **not** scan the full market.
 
+### Stage 3 starter-universe telemetry debug
+
+Use the Stage 3 debug script when you want quick calibration telemetry without changing tool output:
+
+```bash
+npm run scanner:stage3-debug
+```
+
+The script now prints, in this order:
+
+1. Stage pass counts (`stage1Entered`, `stage1Passed`, `stage2Passed`, `stage3Passed`, `finalRanking`)
+2. Concise rejection summaries for Stages 1/2/3
+3. Top 3 Stage 3 near misses (`symbol`, `direction`, `score`, `failReasons`)
+4. Existing per-symbol Stage 3 review summary
+
+This telemetry is debug-only. The MCP tool response shape stays unchanged:
+
+- `ticker`
+- `direction`
+- `confidence`
+- `conclusion`
+- `reason`
+
 ### Single-symbol prompt examples
 
 - `analyze AAPL`
