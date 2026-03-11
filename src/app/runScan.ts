@@ -143,11 +143,13 @@ type Stage2SymbolDiagnostic = {
   reason: string;
 };
 
-type StrikeCandidate = {
+export type OptionStrikeCandidate = {
   strike: number;
   callSymbol: string | null;
   putSymbol: string | null;
 };
+
+export type OptionExpirationCandidate = { date: string; dte: number; apiValue: string };
 
 type ChartCandidate = OptionsCandidate & {
   chartDirection: ScanDirection;
@@ -1553,7 +1555,7 @@ async function resolveTargetDteForSymbol(
   return targetExpiration?.dte ?? null;
 }
 
-function readExpirations(payload: unknown): { date: string; dte: number; apiValue: string }[] {
+export function readExpirations(payload: unknown): OptionExpirationCandidate[] {
   if (!payload || typeof payload !== "object") {
     return [];
   }
@@ -1564,7 +1566,7 @@ function readExpirations(payload: unknown): { date: string; dte: number; apiValu
     return [];
   }
 
-  const results: { date: string; dte: number; apiValue: string }[] = [];
+  const results: OptionExpirationCandidate[] = [];
 
   for (const entry of rawExpirations) {
     let dateText: string | null = null;
@@ -1593,6 +1595,20 @@ function readExpirations(payload: unknown): { date: string; dte: number; apiValu
   }
 
   return results;
+}
+
+export function pickTargetExpiration(
+  expirations: OptionExpirationCandidate[],
+  dteMin: number,
+  dteMax: number,
+  dteCenter: number,
+): OptionExpirationCandidate | null {
+  if (expirations.length === 0) {
+    return null;
+  }
+
+  const inRange = expirations.filter((item) => item.dte >= dteMin && item.dte <= dteMax);
+  return (inRange.length > 0 ? inRange : expirations).sort((a, b) => Math.abs(a.dte - dteCenter) - Math.abs(b.dte - dteCenter))[0] ?? null;
 }
 
 function parseContracts(payload: unknown): Record<string, unknown>[] {
@@ -1640,7 +1656,11 @@ function readNumericStrikeValues(value: unknown): number[] {
   return [];
 }
 
-function readStrikes(payload: unknown): { strikes: StrikeCandidate[]; rawStrikeCount: number; normalizedStrikeCount: number } {
+export function readStrikes(payload: unknown): {
+  strikes: OptionStrikeCandidate[];
+  rawStrikeCount: number;
+  normalizedStrikeCount: number;
+} {
   if (!payload || typeof payload !== "object") {
     return { strikes: [], rawStrikeCount: 0, normalizedStrikeCount: 0 };
   }
@@ -1663,7 +1683,7 @@ function readStrikes(payload: unknown): { strikes: StrikeCandidate[]; rawStrikeC
     return { strikes: [], rawStrikeCount: 0, normalizedStrikeCount: 0 };
   }
 
-  const results: StrikeCandidate[] = [];
+  const results: OptionStrikeCandidate[] = [];
   for (const contract of contracts) {
     const strike = readNumber(contract, ["Strike", "StrikePrice", "Price"]);
     if (strike === null) {
@@ -1675,7 +1695,7 @@ function readStrikes(payload: unknown): { strikes: StrikeCandidate[]; rawStrikeC
     results.push({ strike, callSymbol, putSymbol });
   }
 
-  const deduped = new Map<number, StrikeCandidate>();
+  const deduped = new Map<number, OptionStrikeCandidate>();
   for (const strikeEntry of results) {
     if (!deduped.has(strikeEntry.strike)) {
       deduped.set(strikeEntry.strike, strikeEntry);

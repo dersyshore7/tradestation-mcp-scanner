@@ -1,6 +1,11 @@
 import { createTradeStationGetFetcher } from "../tradestation/client.js";
 import { type ScanConfidence, type ScanDirection } from "../scanner/scoring.js";
-import { runSingleSymbolTradeStationAnalysis } from "./runScan.js";
+import {
+  pickTargetExpiration,
+  readExpirations,
+  readStrikes,
+  runSingleSymbolTradeStationAnalysis,
+} from "./runScan.js";
 
 const TARGET_ALLOCATION_PCT = 0.33;
 const TARGET_DTE_MIN = 14;
@@ -30,8 +35,6 @@ export type TradeConstructionResult = {
   rationale: string;
 };
 
-type ExpirationEntry = { date: string; apiValue: string; dte: number };
-
 type TradeInputs = {
   underlyingPrice: number;
   strike: number;
@@ -52,6 +55,16 @@ type TradeInputs = {
   totalRisk: number;
   totalReward: number;
   equitySource: string;
+};
+
+type TradeConstructionDiagnostics = {
+  selectedExpiration: string | null;
+  strikesExpirationParam: string | null;
+  strikesRequestTarget: string | null;
+  strikesCountReturned: number | null;
+  chosenStrike: number | null;
+  chosenOptionSymbol: string | null;
+  failureReason: string | null;
 };
 
 function parseTradeConstructionPrompt(prompt: string): TradeConstructionPromptMatch | null {
@@ -115,72 +128,6 @@ function pickFirstObject(payload: unknown, keys: string[]): Record<string, unkno
   }
 
   return objectPayload;
-}
-
-function getDte(date: Date): number {
-  return Math.round((date.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-}
-
-function parseExpirations(payload: unknown): ExpirationEntry[] {
-  const entries = ((payload as Record<string, unknown> | null)?.Expirations ?? []) as unknown[];
-  if (!Array.isArray(entries)) {
-    return [];
-  }
-
-  const parsed: ExpirationEntry[] = [];
-  for (const item of entries) {
-    const apiValue =
-      typeof item === "string"
-        ? item
-        : item && typeof item === "object"
-          ? ((item as Record<string, unknown>).Date as string | undefined)
-          : undefined;
-    if (!apiValue) {
-      continue;
-    }
-
-    const date = new Date(apiValue);
-    if (Number.isNaN(date.getTime())) {
-      continue;
-    }
-
-    const dte = getDte(date);
-    if (dte <= 0) {
-      continue;
-    }
-
-    parsed.push({ date: date.toISOString().slice(0, 10), apiValue, dte });
-  }
-
-  return parsed;
-}
-
-function parseStrikeContracts(payload: unknown): { strike: number; callSymbol: string | null; putSymbol: string | null }[] {
-  const entries = ((payload as Record<string, unknown> | null)?.Strikes ?? []) as unknown[];
-  const results: { strike: number; callSymbol: string | null; putSymbol: string | null }[] = [];
-
-  if (!Array.isArray(entries)) {
-    return results;
-  }
-
-  for (const entry of entries) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-
-    const strike = readNumber(entry as Record<string, unknown>, ["Strike", "StrikePrice", "Price"]);
-    if (strike === null) {
-      continue;
-    }
-
-    const record = entry as Record<string, unknown>;
-    const callSymbol = typeof record.Call === "string" ? record.Call : typeof record.CallSymbol === "string" ? record.CallSymbol : null;
-    const putSymbol = typeof record.Put === "string" ? record.Put : typeof record.PutSymbol === "string" ? record.PutSymbol : null;
-
-    results.push({ strike, callSymbol, putSymbol });
-  }
-
-  return results;
 }
 
 function renderMoney(value: number): string {
@@ -307,113 +254,155 @@ async function resolveAccountEquity(get: (path: string) => Promise<Response>): P
   );
 }
 
-async function buildTradeInputs(symbol: string, direction: ScanDirection): Promise<TradeInputs> {
+async function buildTradeInputs(
+  symbol: string,
+  direction: ScanDirection,
+): Promise<{ tradeInputs: TradeInputs; diagnostics: TradeConstructionDiagnostics }> {
   const get = await createTradeStationGetFetcher();
 
-  const quoteResponse = await get(`/marketdata/quotes/${encodeURIComponent(symbol)}`);
-  if (!quoteResponse.ok) {
-    throw new Error(`Failed to load quote for ${symbol} (${quoteResponse.status}).`);
-  }
-
-  const quotePayload = await quoteResponse.json();
-  const quote = pickFirstObject(quotePayload, ["Quotes", "Quote", "Data"]);
-  const underlyingPrice = readNumber(quote, ["Last", "LastTrade", "Trade", "Mark", "Close"]);
-  if (underlyingPrice === null || underlyingPrice <= 0) {
-    throw new Error(`Could not read underlying price for ${symbol}.`);
-  }
-
-  const expirationsResponse = await get(`/marketdata/options/expirations/${encodeURIComponent(symbol)}`);
-  if (!expirationsResponse.ok) {
-    throw new Error(`Failed to load options expirations for ${symbol} (${expirationsResponse.status}).`);
-  }
-
-  const expirations = parseExpirations(await expirationsResponse.json());
-  if (expirations.length === 0) {
-    throw new Error(`No valid options expirations found for ${symbol}.`);
-  }
-
-  const targetExpiration = (expirations.filter((item) => item.dte >= TARGET_DTE_MIN && item.dte <= TARGET_DTE_MAX).sort(
-    (a, b) => Math.abs(a.dte - TARGET_DTE_CENTER) - Math.abs(b.dte - TARGET_DTE_CENTER),
-  )[0] ??
-    expirations.sort((a, b) => Math.abs(a.dte - TARGET_DTE_CENTER) - Math.abs(b.dte - TARGET_DTE_CENTER))[0]) as ExpirationEntry;
-
-  const strikesResponse = await get(
-    `/marketdata/options/strikes/${encodeURIComponent(symbol)}?expiration=${encodeURIComponent(targetExpiration.apiValue)}`,
-  );
-  if (!strikesResponse.ok) {
-    throw new Error(`Failed to load options strikes for ${symbol} (${strikesResponse.status}).`);
-  }
-
-  const strikeContracts = parseStrikeContracts(await strikesResponse.json());
-  if (strikeContracts.length === 0) {
-    throw new Error(`No options strikes found for ${symbol} on ${targetExpiration.date}.`);
-  }
-
-  const selectedStrike = strikeContracts.sort((a, b) => Math.abs(a.strike - underlyingPrice) - Math.abs(b.strike - underlyingPrice))[0];
-  if (!selectedStrike) {
-    throw new Error(`No ATM-adjacent strike found for ${symbol} on ${targetExpiration.date}.`);
-  }
-
-  const optionSymbol = direction === "bullish" ? selectedStrike.callSymbol : selectedStrike.putSymbol;
-  if (!optionSymbol) {
-    throw new Error(`No ${direction === "bullish" ? "call" : "put"} symbol found for ${symbol} ${targetExpiration.date}.`);
-  }
-
-  const optionQuoteResponse = await get(`/marketdata/quotes/${encodeURIComponent(optionSymbol)}`);
-  if (!optionQuoteResponse.ok) {
-    throw new Error(`Failed to load option quote for ${optionSymbol} (${optionQuoteResponse.status}).`);
-  }
-
-  const optionQuote = pickFirstObject(await optionQuoteResponse.json(), ["Quotes", "Quote", "Data"]);
-  const bid = readNumber(optionQuote, ["Bid", "BestBid"]);
-  const ask = readNumber(optionQuote, ["Ask", "BestAsk"]);
-  const last = readNumber(optionQuote, ["Last", "Trade", "Mark"]);
-  const optionMid = bid !== null && ask !== null && ask >= bid ? (bid + ask) / 2 : last;
-  if (optionMid === null || optionMid <= 0) {
-    throw new Error(`Could not derive option entry premium for ${optionSymbol}.`);
-  }
-
-  const { equity, source } = await resolveAccountEquity(get);
-  const allocation = equity * TARGET_ALLOCATION_PCT;
-
-  const underlyingMovePct = 0.02;
-  const invalidationUnderlying = direction === "bullish" ? underlyingPrice * (1 - underlyingMovePct) : underlyingPrice * (1 + underlyingMovePct);
-  const targetUnderlying = direction === "bullish" ? underlyingPrice * (1 + underlyingMovePct * 2) : underlyingPrice * (1 - underlyingMovePct * 2);
-
-  const deltaAssumption = 0.5;
-  const invalidationMove = invalidationUnderlying - underlyingPrice;
-  const targetMove = targetUnderlying - underlyingPrice;
-  const optionAtInvalidation = Math.max(0.05, optionMid + (direction === "bullish" ? invalidationMove : -invalidationMove) * deltaAssumption);
-  const optionAtTarget = Math.max(0.05, optionMid + (direction === "bullish" ? targetMove : -targetMove) * deltaAssumption);
-
-  const riskPerContract = Math.max(0.01, (optionMid - optionAtInvalidation) * 100);
-  const rewardPerContract = Math.max(0.01, (optionAtTarget - optionMid) * 100);
-  const contracts = Math.max(1, Math.floor(allocation / riskPerContract));
-  const notional = contracts * optionMid * 100;
-  const totalRisk = contracts * riskPerContract;
-  const totalReward = contracts * rewardPerContract;
-
-  return {
-    underlyingPrice,
-    strike: selectedStrike.strike,
-    expirationDate: targetExpiration.date,
-    dte: targetExpiration.dte,
-    optionSymbol,
-    optionMid,
-    equity,
-    allocation,
-    contracts,
-    notional,
-    invalidationUnderlying,
-    targetUnderlying,
-    optionAtInvalidation,
-    optionAtTarget,
-    riskPerContract,
-    rewardPerContract,
-    totalRisk,
-    totalReward,
-    equitySource: source,
+  const diagnostics: TradeConstructionDiagnostics = {
+    selectedExpiration: null,
+    strikesExpirationParam: null,
+    strikesRequestTarget: null,
+    strikesCountReturned: null,
+    chosenStrike: null,
+    chosenOptionSymbol: null,
+    failureReason: null,
   };
+
+  try {
+    const quoteResponse = await get(`/marketdata/quotes/${encodeURIComponent(symbol)}`);
+    if (!quoteResponse.ok) {
+      throw new Error(`Failed to load quote for ${symbol} (${quoteResponse.status}).`);
+    }
+
+    const quotePayload = await quoteResponse.json();
+    const quote = pickFirstObject(quotePayload, ["Quotes", "Quote", "Data"]);
+    const underlyingPrice = readNumber(quote, ["Last", "LastTrade", "Trade", "Mark", "Close"]);
+    if (underlyingPrice === null || underlyingPrice <= 0) {
+      throw new Error(`Could not read underlying price for ${symbol}.`);
+    }
+
+    const expirationsResponse = await get(`/marketdata/options/expirations/${encodeURIComponent(symbol)}`);
+    if (!expirationsResponse.ok) {
+      throw new Error(`Failed to load options expirations for ${symbol} (${expirationsResponse.status}).`);
+    }
+
+    const expirations = readExpirations(await expirationsResponse.json());
+    if (expirations.length === 0) {
+      diagnostics.failureReason = `No valid options expirations found for ${symbol}.`;
+      throw new Error(diagnostics.failureReason);
+    }
+
+    const targetExpiration = pickTargetExpiration(expirations, TARGET_DTE_MIN, TARGET_DTE_MAX, TARGET_DTE_CENTER);
+    if (!targetExpiration) {
+      diagnostics.failureReason = `Unable to pick target expiration for ${symbol}.`;
+      throw new Error(diagnostics.failureReason);
+    }
+
+    diagnostics.selectedExpiration = targetExpiration.date;
+    diagnostics.strikesExpirationParam = targetExpiration.apiValue;
+    const strikesRequestTarget = `/marketdata/options/strikes/${encodeURIComponent(symbol)}?expiration=${encodeURIComponent(targetExpiration.apiValue)}`;
+    diagnostics.strikesRequestTarget = strikesRequestTarget;
+
+    const strikesResponse = await get(strikesRequestTarget);
+    if (!strikesResponse.ok) {
+      diagnostics.failureReason = `Failed to load options strikes for ${symbol} (${strikesResponse.status}).`;
+      throw new Error(diagnostics.failureReason);
+    }
+
+    const { strikes: strikeContracts, normalizedStrikeCount } = readStrikes(await strikesResponse.json());
+    diagnostics.strikesCountReturned = normalizedStrikeCount;
+    if (strikeContracts.length === 0) {
+      diagnostics.failureReason = `No options strikes found for ${symbol} on ${targetExpiration.date} (request ${strikesRequestTarget}).`;
+      throw new Error(diagnostics.failureReason);
+    }
+
+    const selectedStrike = strikeContracts.sort((a, b) => Math.abs(a.strike - underlyingPrice) - Math.abs(b.strike - underlyingPrice))[0];
+    if (!selectedStrike) {
+      throw new Error(`No ATM-adjacent strike found for ${symbol} on ${targetExpiration.date}.`);
+    }
+
+    diagnostics.chosenStrike = selectedStrike.strike;
+
+    const optionSymbol = direction === "bullish" ? selectedStrike.callSymbol : selectedStrike.putSymbol;
+    if (!optionSymbol) {
+      diagnostics.failureReason = `No ${direction === "bullish" ? "call" : "put"} symbol found for ${symbol} ${targetExpiration.date}.`;
+      throw new Error(diagnostics.failureReason);
+    }
+
+    diagnostics.chosenOptionSymbol = optionSymbol;
+
+    const optionQuoteResponse = await get(`/marketdata/quotes/${encodeURIComponent(optionSymbol)}`);
+    if (!optionQuoteResponse.ok) {
+      throw new Error(`Failed to load option quote for ${optionSymbol} (${optionQuoteResponse.status}).`);
+    }
+
+    const optionQuote = pickFirstObject(await optionQuoteResponse.json(), ["Quotes", "Quote", "Data"]);
+    const bid = readNumber(optionQuote, ["Bid", "BestBid"]);
+    const ask = readNumber(optionQuote, ["Ask", "BestAsk"]);
+    const last = readNumber(optionQuote, ["Last", "Trade", "Mark"]);
+    const optionMid = bid !== null && ask !== null && ask >= bid ? (bid + ask) / 2 : last;
+    if (optionMid === null || optionMid <= 0) {
+      throw new Error(`Could not derive option entry premium for ${optionSymbol}.`);
+    }
+
+    const { equity, source } = await resolveAccountEquity(get);
+    const allocation = equity * TARGET_ALLOCATION_PCT;
+
+    const underlyingMovePct = 0.02;
+    const invalidationUnderlying = direction === "bullish" ? underlyingPrice * (1 - underlyingMovePct) : underlyingPrice * (1 + underlyingMovePct);
+    const targetUnderlying = direction === "bullish" ? underlyingPrice * (1 + underlyingMovePct * 2) : underlyingPrice * (1 - underlyingMovePct * 2);
+
+    const deltaAssumption = 0.5;
+    const invalidationMove = invalidationUnderlying - underlyingPrice;
+    const targetMove = targetUnderlying - underlyingPrice;
+    const optionAtInvalidation = Math.max(0.05, optionMid + (direction === "bullish" ? invalidationMove : -invalidationMove) * deltaAssumption);
+    const optionAtTarget = Math.max(0.05, optionMid + (direction === "bullish" ? targetMove : -targetMove) * deltaAssumption);
+
+    const riskPerContract = Math.max(0.01, (optionMid - optionAtInvalidation) * 100);
+    const rewardPerContract = Math.max(0.01, (optionAtTarget - optionMid) * 100);
+    const contracts = Math.max(1, Math.floor(allocation / riskPerContract));
+    const notional = contracts * optionMid * 100;
+    const totalRisk = contracts * riskPerContract;
+    const totalReward = contracts * rewardPerContract;
+
+    const tradeInputs: TradeInputs = {
+      underlyingPrice,
+      strike: selectedStrike.strike,
+      expirationDate: targetExpiration.date,
+      dte: targetExpiration.dte,
+      optionSymbol,
+      optionMid,
+      equity,
+      allocation,
+      contracts,
+      notional,
+      invalidationUnderlying,
+      targetUnderlying,
+      optionAtInvalidation,
+      optionAtTarget,
+      riskPerContract,
+      rewardPerContract,
+      totalRisk,
+      totalReward,
+      equitySource: source,
+    };
+
+    return { tradeInputs, diagnostics };
+  } catch (error) {
+    if (error instanceof Error && diagnostics.failureReason === null) {
+      diagnostics.failureReason = error.message;
+    }
+
+    if (process.env.SCANNER_DEBUG === "1") {
+      console.log(
+        `[trade:debug] ${symbol} ${direction} | selectedExpiration=${diagnostics.selectedExpiration ?? "n/a"} | strikesExpirationParam=${diagnostics.strikesExpirationParam ?? "n/a"} | strikesRequestTarget=${diagnostics.strikesRequestTarget ?? "n/a"} | strikesCountReturned=${diagnostics.strikesCountReturned ?? -1} | chosenStrike=${diagnostics.chosenStrike ?? "n/a"} | chosenOptionSymbol=${diagnostics.chosenOptionSymbol ?? "n/a"} | failureReason=${diagnostics.failureReason ?? "none"}`,
+      );
+    }
+
+    throw error;
+  }
 }
 
 export async function constructTradeCard(input: TradeConstructionInput): Promise<TradeConstructionResult> {
@@ -424,14 +413,14 @@ export async function constructTradeCard(input: TradeConstructionInput): Promise
 
   const symbol = promptMatch.symbol;
   const { direction, confidence } = await resolveDirectionAndConfidence(symbol, input.confirmedDirection, input.confirmedConfidence);
-  const trade = await buildTradeInputs(symbol, direction);
+  const { tradeInputs: trade, diagnostics } = await buildTradeInputs(symbol, direction);
 
   const rrRatio = trade.totalRisk > 0 ? trade.totalReward / trade.totalRisk : 0;
   const directionLabel = direction === "bullish" ? "Bullish" : "Bearish";
 
   if (process.env.SCANNER_DEBUG === "1") {
     console.log(
-      `[trade:debug] ${symbol} ${direction} | equity=${trade.equity.toFixed(2)} (${trade.equitySource}) | allocation=${trade.allocation.toFixed(2)} | contracts=${trade.contracts} | option=${trade.optionSymbol} @ ${trade.optionMid.toFixed(2)}`,
+      `[trade:debug] ${symbol} ${direction} | selectedExpiration=${diagnostics.selectedExpiration ?? "n/a"} | strikesExpirationParam=${diagnostics.strikesExpirationParam ?? "n/a"} | strikesRequestTarget=${diagnostics.strikesRequestTarget ?? "n/a"} | strikesCountReturned=${diagnostics.strikesCountReturned ?? -1} | chosenStrike=${diagnostics.chosenStrike ?? "n/a"} | chosenOptionSymbol=${diagnostics.chosenOptionSymbol ?? "n/a"} | failureReason=${diagnostics.failureReason ?? "none"} | equity=${trade.equity.toFixed(2)} (${trade.equitySource}) | allocation=${trade.allocation.toFixed(2)} | contracts=${trade.contracts} | option=${trade.optionSymbol} @ ${trade.optionMid.toFixed(2)}`,
     );
   }
 
