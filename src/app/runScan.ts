@@ -69,6 +69,7 @@ const V1_SCAN_UNIVERSE_CONFIG = {
 const V1_SCAN_UNIVERSE = V1_SCAN_UNIVERSE_CONFIG.symbols;
 const V1_SCAN_UNIVERSE_SET = new Set<string>(V1_SCAN_UNIVERSE);
 const FINALIST_REVIEW_LIMIT = 3;
+const FINAL_SCORE_TIE_TOLERANCE = 0.05;
 
 export type ScanInput = {
   prompt: string;
@@ -252,6 +253,24 @@ type Stage3Evaluation = {
 type FinalistReviewResult = {
   symbol: string;
   rankingScore: number;
+  stage1Inputs: {
+    lastPrice: number;
+    averageVolume: number | null;
+  } | null;
+  stage2Inputs: {
+    targetExpiration: string;
+    targetDte: number;
+    optionOpenInterest: number;
+    optionSpread: number;
+    optionMid: number;
+  } | null;
+  stage3Inputs: {
+    direction: ScanDirection;
+    movePct: number;
+    volumeRatio: number | null;
+    chartReviewScore: number;
+    chartReviewSummary: string;
+  } | null;
   conclusion: ScanResult["conclusion"];
   reason: string;
 };
@@ -325,9 +344,10 @@ function buildFinalRanking(stage3Passed: ChartCandidate[]): { ranked: (ChartCand
   });
 
   const ranked = stage3Passed
-    .map((candidate) => ({ ...candidate, score: scoreStage3Candidate(candidate) }))
+    .map((candidate, idx) => ({ ...candidate, score: scoreStage3Candidate(candidate), stableIdx: idx }))
     .filter((candidate) => Number.isFinite(candidate.score))
-    .sort((a, b) => b.score - a.score);
+    .sort((a, b) => compareRankedFinalists(a, b))
+    .map(({ stableIdx, ...candidate }) => candidate);
 
   const topScore = ranked[0]?.score ?? null;
   for (const item of debug) {
@@ -337,7 +357,7 @@ function buildFinalRanking(stage3Passed: ChartCandidate[]): { ranked: (ChartCand
 
     if (item.symbol === ranked[0]?.symbol) {
       item.selected = true;
-      item.reason = "selected as top final score";
+      item.reason = "selected as top final score (with deterministic tie-breaks)";
       continue;
     }
 
@@ -349,6 +369,43 @@ function buildFinalRanking(stage3Passed: ChartCandidate[]): { ranked: (ChartCand
   }
 
   return { ranked, debug };
+}
+
+function compareRankedFinalists(
+  a: ChartCandidate & { score: number; stableIdx: number },
+  b: ChartCandidate & { score: number; stableIdx: number },
+): number {
+  const scoreDelta = b.score - a.score;
+  if (Math.abs(scoreDelta) > FINAL_SCORE_TIE_TOLERANCE) {
+    return scoreDelta;
+  }
+
+  const reviewScoreDelta = b.chartReviewScore - a.chartReviewScore;
+  if (reviewScoreDelta !== 0) {
+    return reviewScoreDelta;
+  }
+
+  const moveDelta = Math.abs(b.chartMovePct) - Math.abs(a.chartMovePct);
+  if (moveDelta !== 0) {
+    return moveDelta;
+  }
+
+  const oiDelta = b.optionOpenInterest - a.optionOpenInterest;
+  if (oiDelta !== 0) {
+    return oiDelta;
+  }
+
+  const spreadDelta = a.optionSpread - b.optionSpread;
+  if (spreadDelta !== 0) {
+    return spreadDelta;
+  }
+
+  const symbolDelta = a.symbol.localeCompare(b.symbol);
+  if (symbolDelta !== 0) {
+    return symbolDelta;
+  }
+
+  return a.stableIdx - b.stableIdx;
 }
 
 function logFinalRankingDebugSection(entries: FinalRankingEntry[]): void {
@@ -414,10 +471,33 @@ function logFinalistReviewDebugSection(finalists: FinalistReviewResult[], select
 
   for (const finalist of finalists) {
     const selected = selectedSymbol !== null && finalist.symbol === selectedSymbol ? "yes" : "no";
+    const stageInputs = {
+      stage1: finalist.stage1Inputs,
+      stage2: finalist.stage2Inputs,
+      stage3: finalist.stage3Inputs,
+    };
     console.log(
-      `[scanner:debug] ${finalist.symbol}: rankingScore=${finalist.rankingScore.toFixed(2)} | reviewConclusion=${finalist.conclusion} | selected=${selected} | reviewReason=${finalist.reason}`,
+      `[scanner:debug] ${finalist.symbol}: rankingScore=${finalist.rankingScore.toFixed(2)} | reviewConclusion=${finalist.conclusion} | selected=${selected} | reviewReason=${finalist.reason} | inputs=${JSON.stringify(stageInputs)}`,
     );
   }
+}
+
+function getSelectionWhyWonReason(finalists: FinalistReviewResult[], selectedSymbol: string): string {
+  const selectedFinalist = finalists.find((item) => item.symbol === selectedSymbol);
+  if (!selectedFinalist) {
+    return `${selectedSymbol} was the first confirmed finalist in deterministic ranked order.`;
+  }
+
+  const outranked = finalists
+    .filter((item) => item.symbol !== selectedSymbol)
+    .map((item) => `${item.symbol} (${item.conclusion}, rank ${item.rankingScore.toFixed(2)})`)
+    .join("; ");
+
+  if (!outranked) {
+    return `${selectedSymbol} was the only finalist in deterministic ranked order.`;
+  }
+
+  return `${selectedSymbol} won because finalists are reviewed in deterministic ranked order and it was the first confirmed symbol after higher-ranked outcomes (${outranked}).`;
 }
 
 async function evaluateStage3Candidates(
@@ -1573,6 +1653,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
 
     stage1Passed.push({ symbol, lastPrice, averageVolume });
   }
+  const stage1BySymbol = new Map(stage1Passed.map((candidate) => [candidate.symbol, candidate]));
 
   logGeneralScanDebug(
     "Stage 1 passed",
@@ -1591,6 +1672,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
 
   // Stage 2: options tradability filters
   const { passed: stage2Passed, diagnostics: stage2Diagnostics } = await runStage2OptionsTradability(get, stage1Passed);
+  const stage2BySymbol = new Map(stage2Passed.map((candidate) => [candidate.symbol, candidate]));
   logStage2Diagnostics(stage2Diagnostics);
 
   logGeneralScanDebug(
@@ -1611,6 +1693,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
   // Stage 3: multi-timeframe bar/candlestick + volume review
   const stage3Evaluations = await evaluateStage3Candidates(get, stage2Passed);
   const stage3Passed = stage3Evaluations.flatMap((item) => (item.candidate ? [item.candidate] : []));
+  const stage3BySymbol = new Map(stage3Passed.map((candidate) => [candidate.symbol, candidate]));
 
   logGeneralScanDebug(
     "Stage 3 passed",
@@ -1649,6 +1732,34 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
     finalistReviewResults.push({
       symbol: finalist.symbol,
       rankingScore: finalist.score,
+      stage1Inputs: (() => {
+        const item = stage1BySymbol.get(finalist.symbol);
+        return item ? { lastPrice: item.lastPrice, averageVolume: item.averageVolume } : null;
+      })(),
+      stage2Inputs: (() => {
+        const item = stage2BySymbol.get(finalist.symbol);
+        return item
+          ? {
+              targetExpiration: item.targetExpiration,
+              targetDte: item.targetDte,
+              optionOpenInterest: item.optionOpenInterest,
+              optionSpread: item.optionSpread,
+              optionMid: item.optionMid,
+            }
+          : null;
+      })(),
+      stage3Inputs: (() => {
+        const item = stage3BySymbol.get(finalist.symbol);
+        return item
+          ? {
+              direction: item.chartDirection,
+              movePct: item.chartMovePct,
+              volumeRatio: item.volumeRatio,
+              chartReviewScore: item.chartReviewScore,
+              chartReviewSummary: item.chartReviewSummary,
+            }
+          : null;
+      })(),
       conclusion: reviewResult.conclusion,
       reason: reviewResult.reason,
     });
@@ -1661,7 +1772,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
         direction: reviewResult.direction,
         confidence: reviewResult.confidence,
         conclusion: "confirmed",
-        reason: `Finalist confirmation passed after Stage 1/2/3 scoring (reviewed: ${finalists.map((item) => item.symbol).join(", ")}; selected: ${reviewResult.ticker}; rank score ${finalist.score.toFixed(2)}). ${reviewResult.reason}`,
+        reason: `Finalist confirmation passed after Stage 1/2/3 scoring (reviewed: ${finalists.map((item) => item.symbol).join(", ")}; selected: ${reviewResult.ticker}; rank score ${finalist.score.toFixed(2)}). ${getSelectionWhyWonReason(finalistReviewResults, reviewResult.ticker)} ${reviewResult.reason}`,
       };
     }
   }
@@ -1749,7 +1860,16 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
 
   const { ranked, debug: finalRankingDebug } = buildFinalRanking(stage3Passed);
 
-  const nearMisses = stage3NearMissCandidates.sort((a, b) => b.score - a.score).slice(0, 3);
+  const nearMisses = stage3NearMissCandidates
+    .sort((a, b) => {
+      const scoreDelta = b.score - a.score;
+      if (scoreDelta !== 0) {
+        return scoreDelta;
+      }
+
+      return a.symbol.localeCompare(b.symbol);
+    })
+    .slice(0, 3);
 
   return {
     stageCounts: {
