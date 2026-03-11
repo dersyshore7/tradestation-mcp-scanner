@@ -15,7 +15,8 @@
     "tradestation:exchange-code": "tsx src/tradestation/exchangeCode.ts",
     "scanner:stage2-debug": "tsx src/app/debugStage2StarterUniverse.ts",
     "tradestation:options-debug": "tsx src/tradestation/debugOptionsApi.ts",
-    "scanner:stage3-debug": "tsx src/app/debugStage3StarterUniverse.ts"
+    "scanner:stage3-debug": "tsx src/app/debugStage3StarterUniverse.ts",
+    "scanner:single-review-debug": "tsx src/app/debugSingleSymbolReview.ts"
   },
   "keywords": [],
   "author": "",

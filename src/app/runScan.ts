@@ -1887,36 +1887,13 @@ function readNumber(source: Record<string, unknown> | null, keys: string[]): num
   return null;
 }
 
-async function fetchRecentCloseChange(get: (path: string) => Promise<Response>, symbol: string): Promise<number | null> {
-  const response = await get(
-    `/marketdata/barcharts/${encodeURIComponent(symbol)}?interval=5&unit=Minute&barsback=5`,
-  );
-
-  if (!response.ok) {
-    return null;
-  }
-
-  const payload = (await response.json()) as Record<string, unknown>;
-  const bars = payload["Bars"];
-  if (!Array.isArray(bars) || bars.length < 2) {
-    return null;
-  }
-
-  const firstClose = readNumber(bars[0] as Record<string, unknown>, ["Close"]);
-  const lastClose = readNumber(bars[bars.length - 1] as Record<string, unknown>, ["Close"]);
-
-  if (firstClose === null || lastClose === null || firstClose === 0) {
-    return null;
-  }
-
-  return ((lastClose - firstClose) / firstClose) * 100;
-}
-
 async function runSingleSymbolTradeStationAnalysis(symbol: string): Promise<ScanResult> {
   const get = await createTradeStationGetFetcher();
   const { barsByView: bars, timeframeDiagnostics } = await loadMultiTimeframeBars(get, symbol);
   if (bars) {
     const review = runStage3ChartReview(bars, timeframeDiagnostics);
+    const reviewNarrative = buildSingleSymbolReviewNarrative(review);
+
     if (review.pass && review.direction) {
       const confidence: ScanConfidence = review.score >= 5 ? "85-92" : review.score >= 4 ? "75-84" : "65-74";
       return {
@@ -1924,37 +1901,16 @@ async function runSingleSymbolTradeStationAnalysis(symbol: string): Promise<Scan
         direction: review.direction,
         confidence,
         conclusion: "confirmed",
-        reason: `Stage 3 ${review.direction} chart review passed (${review.summary}).`,
+        reason: reviewNarrative,
       };
     }
 
     return {
       ticker: symbol,
-      direction: null,
+      direction: review.direction,
       confidence: null,
-      conclusion: "no_trade_today",
-      reason: `Stage 3 chart review did not pass (${review.summary}).`,
-    };
-  }
-
-  const intradayBarChangePct = await fetchRecentCloseChange(get, symbol).catch(() => null);
-  if (intradayBarChangePct !== null && intradayBarChangePct > 0.2) {
-    return {
-      ticker: symbol,
-      direction: "bullish",
-      confidence: "65-74",
-      conclusion: "confirmed",
-      reason: `Recent intraday bars are trending up (${intradayBarChangePct.toFixed(2)}% over recent bars).`,
-    };
-  }
-
-  if (intradayBarChangePct !== null && intradayBarChangePct < -0.2) {
-    return {
-      ticker: symbol,
-      direction: "bearish",
-      confidence: "65-74",
-      conclusion: "confirmed",
-      reason: `Recent intraday bars are trending down (${intradayBarChangePct.toFixed(2)}% over recent bars).`,
+      conclusion: "rejected",
+      reason: reviewNarrative,
     };
   }
 
@@ -1963,8 +1919,64 @@ async function runSingleSymbolTradeStationAnalysis(symbol: string): Promise<Scan
     direction: null,
     confidence: null,
     conclusion: "no_trade_today",
-    reason: "Unable to confirm a clean Stage 3 chart setup.",
+    reason: "Could not review the full 1D/1W/1M/3M/1Y chart context from TradeStation data, so no_trade_today.",
   };
+}
+
+function buildSingleSymbolReviewNarrative(review: ChartReviewResult): string {
+  const checkByName = new Map(review.diagnostics.checks.map((item) => [item.check, item]));
+  const bodyToRange = review.diagnostics.bodyToRange;
+  const wickiness = review.diagnostics.wickiness;
+  const volumeRatio = review.volumeRatio;
+  const roomPct = review.diagnostics.roomPct;
+
+  const supportive: string[] = [];
+  const problematic: string[] = [];
+
+  supportive.push(`1D/1W alignment ${review.diagnostics.alignmentPass ? "supports the setup" : "is not clean"} (${review.diagnostics.alignmentReason})`);
+
+  if (checkByName.get("body-wick")?.pass) {
+    supportive.push(`candle body/wick quality looks constructive (body/range ${bodyToRange?.toFixed(2) ?? "n/a"}, wickiness ${wickiness?.toFixed(2) ?? "n/a"})`);
+  } else {
+    problematic.push(`candle body/wick quality is weaker than preferred (body/range ${bodyToRange?.toFixed(2) ?? "n/a"}, wickiness ${wickiness?.toFixed(2) ?? "n/a"})`);
+  }
+
+  if (checkByName.get("volume")?.pass) {
+    supportive.push(`volume confirms participation (${volumeRatio === null ? "ratio n/a" : `ratio ${volumeRatio.toFixed(2)}x`})`);
+  } else {
+    problematic.push(`volume confirmation is limited (${volumeRatio === null ? "ratio unavailable" : `ratio ${volumeRatio.toFixed(2)}x`})`);
+  }
+
+  if (checkByName.get("continuation")?.pass) {
+    supportive.push("price action still looks more like continuation than rejection");
+  } else {
+    problematic.push("price action shows rejection risk versus clean continuation");
+  }
+
+  if (checkByName.get("higher-timeframe-room")?.pass) {
+    supportive.push(`higher-timeframe room/resistance appears workable (${roomPct === null ? "room n/a" : `${roomPct.toFixed(2)}% room`})`);
+  } else {
+    problematic.push(`higher-timeframe room/resistance looks tight (${roomPct === null ? "room n/a" : `${roomPct.toFixed(2)}% room`})`);
+  }
+
+  const structureInPrinciple =
+    review.diagnostics.alignmentPass &&
+    !!checkByName.get("body-wick")?.pass &&
+    !!checkByName.get("continuation")?.pass &&
+    !!checkByName.get("higher-timeframe-room")?.pass;
+  if (structureInPrinciple) {
+    supportive.push("the chart supports a clean 2:1-style structure in principle");
+  } else {
+    problematic.push("a clean 2:1-style structure is not clearly supported yet");
+  }
+
+  const timeframeStatus = (["1D", "1W", "1M", "3M", "1Y"] as MultiTimeframeView[])
+    .map((view) => `${view}:${review.diagnostics.timeframeDiagnostics[view]?.barCount ?? 0}`)
+    .join(", ");
+
+  return `Single-symbol chart review (${review.direction ?? "neutral"}) across 1D/1W/1M/3M/1Y [bars ${timeframeStatus}]. Supportive: ${
+    supportive.length > 0 ? supportive.join("; ") : "none"
+  }. Problematic: ${problematic.length > 0 ? problematic.join("; ") : "none"}.`;
 }
 
 export async function runScan(input: ScanInput): Promise<ScanResult> {
