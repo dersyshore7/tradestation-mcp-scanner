@@ -127,18 +127,7 @@ type Stage2SymbolDiagnostic = {
   spreadWidth: number | null;
   spreadPercent: number | null;
   openInterest: number | null;
-  optionQuoteAttempts: {
-    optionSymbol: string;
-    requestTarget: string;
-    status: number;
-    rawQuotePayloadSample: Record<string, unknown> | null;
-    parsedBid: number | null;
-    parsedAsk: number | null;
-    parsedOpenInterest: number | null;
-    spreadWidth: number | null;
-    spreadPercent: number | null;
-    outcome: string;
-  }[];
+  optionQuoteAttempts: DirectOptionQuoteAttempt[];
   pass: boolean;
   reason: string;
 };
@@ -150,6 +139,28 @@ export type OptionStrikeCandidate = {
 };
 
 export type OptionExpirationCandidate = { date: string; dte: number; apiValue: string };
+
+export type DirectOptionQuoteAttempt = {
+  optionSymbol: string;
+  requestTarget: string;
+  status: number;
+  rawQuotePayloadSample: Record<string, unknown> | null;
+  parsedBid: number | null;
+  parsedAsk: number | null;
+  parsedOpenInterest: number | null;
+  spreadWidth: number | null;
+  spreadPercent: number | null;
+  outcome: string;
+};
+
+export type DirectOptionQuoteData = {
+  optionSymbol: string;
+  openInterest: number;
+  spread: number;
+  mid: number;
+  bid: number;
+  ask: number;
+};
 
 type ChartCandidate = OptionsCandidate & {
   chartDirection: ScanDirection;
@@ -1721,7 +1732,7 @@ export function readStrikes(payload: unknown): {
   };
 }
 
-function buildOptionSymbol(symbol: string, expirationDate: string, type: "C" | "P", strike: number): string {
+export function buildOptionSymbol(symbol: string, expirationDate: string, type: "C" | "P", strike: number): string {
   const [yearText, monthText, dayText] = expirationDate.split("-");
   const yearShort = yearText?.slice(-2) ?? "00";
   const month = monthText ?? "01";
@@ -1730,6 +1741,133 @@ function buildOptionSymbol(symbol: string, expirationDate: string, type: "C" | "
     ? strike.toString()
     : strike.toFixed(3).replace(/\.?0+$/, "");
   return `${symbol} ${yearShort}${month}${day}${type}${strikeText}`;
+}
+
+
+export function buildDirectOptionSymbols(
+  symbol: string,
+  expirationDate: string,
+  strike: OptionStrikeCandidate,
+): string[] {
+  return [
+    strike.callSymbol,
+    strike.putSymbol,
+    buildOptionSymbol(symbol, expirationDate, "C", strike.strike),
+    buildOptionSymbol(symbol, expirationDate, "P", strike.strike),
+  ].filter((item, index, list): item is string => {
+    if (typeof item !== "string" || item.trim().length === 0) {
+      return false;
+    }
+
+    return list.indexOf(item) === index;
+  });
+}
+
+export async function fetchFirstUsableDirectOptionQuote(
+  get: (path: string) => Promise<Response>,
+  symbolsToTry: string[],
+): Promise<{ quote: DirectOptionQuoteData | null; attempts: DirectOptionQuoteAttempt[] }> {
+  const attempts: DirectOptionQuoteAttempt[] = [];
+  let capturedFirstHttp200Payload = false;
+
+  for (const optionSymbol of symbolsToTry) {
+    const requestTarget = `/marketdata/quotes/${encodeURIComponent(optionSymbol)}`;
+    const optionQuoteResponse = await get(requestTarget);
+    if (!optionQuoteResponse.ok) {
+      attempts.push({
+        optionSymbol,
+        requestTarget,
+        status: optionQuoteResponse.status,
+        rawQuotePayloadSample: null,
+        parsedBid: null,
+        parsedAsk: null,
+        parsedOpenInterest: null,
+        spreadWidth: null,
+        spreadPercent: null,
+        outcome: "HTTP request failed.",
+      });
+      continue;
+    }
+
+    const optionQuotePayload = await optionQuoteResponse.json();
+    const optionQuote = pickFirstQuote(optionQuotePayload);
+    const openInterest = readNumber(optionQuote, [
+      "OpenInterest",
+      "DailyOpenInterest",
+      "OpenInt",
+      "OI",
+      "Open_Int",
+      "OpenInterestToday",
+    ]);
+    const bid = readNumber(optionQuote, ["Bid", "BidPrice", "BestBid", "BidPx"]);
+    const ask = readNumber(optionQuote, ["Ask", "AskPrice", "BestAsk", "AskPx"]);
+    const mid = bid !== null && ask !== null ? (ask + bid) / 2 : null;
+    const spread = bid !== null && ask !== null ? ask - bid : null;
+    const spreadPct = spread !== null && mid !== null && mid > 0 ? spread / mid : null;
+    const rawQuotePayloadSample = !capturedFirstHttp200Payload && optionQuote
+      ? optionQuote
+      : null;
+
+    if (!capturedFirstHttp200Payload && optionQuote) {
+      capturedFirstHttp200Payload = true;
+    }
+
+    let parseFailureReason: string | null = null;
+    if (openInterest === null) {
+      parseFailureReason = "missing open interest";
+    } else if (bid === null) {
+      parseFailureReason = "missing bid";
+    } else if (ask === null) {
+      parseFailureReason = "missing ask";
+    } else if (bid <= 0) {
+      parseFailureReason = "invalid bid (<= 0)";
+    } else if (ask <= bid) {
+      parseFailureReason = "invalid spread (ask <= bid)";
+    }
+
+    if (parseFailureReason !== null) {
+      attempts.push({
+        optionSymbol,
+        requestTarget,
+        status: optionQuoteResponse.status,
+        rawQuotePayloadSample,
+        parsedBid: bid,
+        parsedAsk: ask,
+        parsedOpenInterest: openInterest,
+        spreadWidth: spread,
+        spreadPercent: spreadPct,
+        outcome: `Quote payload unusable: ${parseFailureReason}.`,
+      });
+      continue;
+    }
+
+    const parsedBid = bid as number;
+    const parsedAsk = ask as number;
+    const parsedOpenInterest = openInterest as number;
+    const quote: DirectOptionQuoteData = {
+      optionSymbol,
+      openInterest: parsedOpenInterest,
+      spread: parsedAsk - parsedBid,
+      mid: (parsedAsk + parsedBid) / 2,
+      bid: parsedBid,
+      ask: parsedAsk,
+    };
+    attempts.push({
+      optionSymbol,
+      requestTarget,
+      status: optionQuoteResponse.status,
+      rawQuotePayloadSample,
+      parsedBid: bid,
+      parsedAsk: ask,
+      parsedOpenInterest: openInterest,
+      spreadWidth: spread,
+      spreadPercent: spreadPct,
+      outcome: "Usable quote payload found.",
+    });
+    return { quote, attempts };
+  }
+
+  return { quote: null, attempts };
 }
 
 async function runStage2OptionsTradability(
@@ -1872,117 +2010,10 @@ async function runStage2OptionsTradability(
 
     diagnostic.selectedStrike = selectedStrike.strike;
 
-    const symbolsToTry = [
-      selectedStrike.callSymbol,
-      selectedStrike.putSymbol,
-      buildOptionSymbol(candidate.symbol, targetExpiration.date, "C", selectedStrike.strike),
-      buildOptionSymbol(candidate.symbol, targetExpiration.date, "P", selectedStrike.strike),
-    ].filter((item, index, list): item is string => {
-      if (typeof item !== "string" || item.trim().length === 0) {
-        return false;
-      }
+    const symbolsToTry = buildDirectOptionSymbols(candidate.symbol, targetExpiration.date, selectedStrike);
 
-      return list.indexOf(item) === index;
-    });
-
-    let quoteData: { optionSymbol: string; openInterest: number; spread: number; mid: number; bid: number; ask: number } | null = null;
-    let capturedFirstHttp200Payload = false;
-    for (const optionSymbol of symbolsToTry) {
-      const requestTarget = `/marketdata/quotes/${encodeURIComponent(optionSymbol)}`;
-      const optionQuoteResponse = await get(requestTarget);
-      if (!optionQuoteResponse.ok) {
-        diagnostic.optionQuoteAttempts.push({
-          optionSymbol,
-          requestTarget,
-          status: optionQuoteResponse.status,
-          rawQuotePayloadSample: null,
-          parsedBid: null,
-          parsedAsk: null,
-          parsedOpenInterest: null,
-          spreadWidth: null,
-          spreadPercent: null,
-          outcome: "HTTP request failed.",
-        });
-        continue;
-      }
-
-      const optionQuotePayload = await optionQuoteResponse.json();
-      const optionQuote = pickFirstQuote(optionQuotePayload);
-      const openInterest = readNumber(optionQuote, [
-        "OpenInterest",
-        "DailyOpenInterest",
-        "OpenInt",
-        "OI",
-        "Open_Int",
-        "OpenInterestToday",
-      ]);
-      const bid = readNumber(optionQuote, ["Bid", "BidPrice", "BestBid", "BidPx"]);
-      const ask = readNumber(optionQuote, ["Ask", "AskPrice", "BestAsk", "AskPx"]);
-      const mid = bid !== null && ask !== null ? (ask + bid) / 2 : null;
-      const spread = bid !== null && ask !== null ? ask - bid : null;
-      const spreadPct = spread !== null && mid !== null && mid > 0 ? spread / mid : null;
-      const rawQuotePayloadSample = !capturedFirstHttp200Payload && optionQuote
-        ? optionQuote
-        : null;
-
-      if (!capturedFirstHttp200Payload && optionQuote) {
-        capturedFirstHttp200Payload = true;
-      }
-
-      let parseFailureReason: string | null = null;
-      if (openInterest === null) {
-        parseFailureReason = "missing open interest";
-      } else if (bid === null) {
-        parseFailureReason = "missing bid";
-      } else if (ask === null) {
-        parseFailureReason = "missing ask";
-      } else if (bid <= 0) {
-        parseFailureReason = "invalid bid (<= 0)";
-      } else if (ask <= bid) {
-        parseFailureReason = "invalid spread (ask <= bid)";
-      }
-
-      if (parseFailureReason !== null) {
-        diagnostic.optionQuoteAttempts.push({
-          optionSymbol,
-          requestTarget,
-          status: optionQuoteResponse.status,
-          rawQuotePayloadSample,
-          parsedBid: bid,
-          parsedAsk: ask,
-          parsedOpenInterest: openInterest,
-          spreadWidth: spread,
-          spreadPercent: spreadPct,
-          outcome: `Quote payload unusable: ${parseFailureReason}.`,
-        });
-        continue;
-      }
-
-      const parsedOpenInterest = openInterest as number;
-      const parsedBid = bid as number;
-      const parsedAsk = ask as number;
-      quoteData = {
-        optionSymbol,
-        openInterest: parsedOpenInterest,
-        spread: parsedAsk - parsedBid,
-        mid: (parsedAsk + parsedBid) / 2,
-        bid: parsedBid,
-        ask: parsedAsk,
-      };
-      diagnostic.optionQuoteAttempts.push({
-        optionSymbol,
-        requestTarget,
-        status: optionQuoteResponse.status,
-        rawQuotePayloadSample,
-        parsedBid: bid,
-        parsedAsk: ask,
-        parsedOpenInterest: openInterest,
-        spreadWidth: spread,
-        spreadPercent: spreadPct,
-        outcome: "Usable quote payload found.",
-      });
-      break;
-    }
+    const { quote: quoteData, attempts } = await fetchFirstUsableDirectOptionQuote(get, symbolsToTry);
+    diagnostic.optionQuoteAttempts.push(...attempts);
 
     if (!quoteData) {
       diagnostic.reason = "No usable direct option quote found for selected strike.";
