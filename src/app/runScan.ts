@@ -68,6 +68,7 @@ const V1_SCAN_UNIVERSE_CONFIG = {
 
 const V1_SCAN_UNIVERSE = V1_SCAN_UNIVERSE_CONFIG.symbols;
 const V1_SCAN_UNIVERSE_SET = new Set<string>(V1_SCAN_UNIVERSE);
+const FINALIST_REVIEW_LIMIT = 3;
 
 export type ScanInput = {
   prompt: string;
@@ -248,6 +249,13 @@ type Stage3Evaluation = {
   rejectionReason: string | null;
 };
 
+type FinalistReviewResult = {
+  symbol: string;
+  rankingScore: number;
+  conclusion: ScanResult["conclusion"];
+  reason: string;
+};
+
 export type StarterUniverseTelemetry = {
   stageCounts: {
     stage1Entered: number;
@@ -389,6 +397,25 @@ function logStage3PassThroughDebugSection(
 
     console.log(
       `[scanner:debug] ${candidate.symbol}: stage3Pass=yes | enteredFinalRanking=${enteredFinalRanking ? "yes" : "no"} | rankingScore=${rankingScore} | rankingThreshold=${thresholdLabel} | selected=${selected ? "yes" : "no"} | reason=${reason}`,
+    );
+  }
+}
+
+function logFinalistReviewDebugSection(finalists: FinalistReviewResult[], selectedSymbol: string | null): void {
+  if (process.env.SCANNER_DEBUG !== "1") {
+    return;
+  }
+
+  console.log("[scanner:debug] Finalist confirmation review:");
+  if (finalists.length === 0) {
+    console.log("[scanner:debug] (no finalists available for review)");
+    return;
+  }
+
+  for (const finalist of finalists) {
+    const selected = selectedSymbol !== null && finalist.symbol === selectedSymbol ? "yes" : "no";
+    console.log(
+      `[scanner:debug] ${finalist.symbol}: rankingScore=${finalist.rankingScore.toFixed(2)} | reviewConclusion=${finalist.conclusion} | selected=${selected} | reviewReason=${finalist.reason}`,
     );
   }
 }
@@ -1600,13 +1627,13 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
     };
   }
 
-  // Stage 4: simple final score and pick
+  // Stage 4: simple final score and finalist list
   const { ranked, debug: finalRankingDebug } = buildFinalRanking(stage3Passed);
   logStage3PassThroughDebugSection(stage3Evaluations, finalRankingDebug, ranked[0]?.score ?? null);
   logFinalRankingDebugSection(finalRankingDebug);
 
-  const best = ranked[0];
-  if (!best) {
+  const finalists = ranked.slice(0, FINALIST_REVIEW_LIMIT);
+  if (finalists.length === 0) {
     return {
       ticker: null,
       direction: null,
@@ -1616,15 +1643,36 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
     };
   }
 
-  const confidence: ScanConfidence = best.score >= 14 ? "85-92" : best.score >= 10 ? "75-84" : "65-74";
-  logGeneralScanDebug("Final selected", [best.symbol]);
+  const finalistReviewResults: FinalistReviewResult[] = [];
+  for (const finalist of finalists) {
+    const reviewResult = await runSingleSymbolTradeStationAnalysis(finalist.symbol);
+    finalistReviewResults.push({
+      symbol: finalist.symbol,
+      rankingScore: finalist.score,
+      conclusion: reviewResult.conclusion,
+      reason: reviewResult.reason,
+    });
 
+    if (reviewResult.conclusion === "confirmed" && reviewResult.ticker && reviewResult.direction && reviewResult.confidence) {
+      logGeneralScanDebug("Final selected", [reviewResult.ticker]);
+      logFinalistReviewDebugSection(finalistReviewResults, reviewResult.ticker);
+      return {
+        ticker: reviewResult.ticker,
+        direction: reviewResult.direction,
+        confidence: reviewResult.confidence,
+        conclusion: "confirmed",
+        reason: `Finalist confirmation passed after Stage 1/2/3 scoring (reviewed: ${finalists.map((item) => item.symbol).join(", ")}; selected: ${reviewResult.ticker}; rank score ${finalist.score.toFixed(2)}). ${reviewResult.reason}`,
+      };
+    }
+  }
+
+  logFinalistReviewDebugSection(finalistReviewResults, null);
   return {
-    ticker: best.symbol,
-    direction: best.chartDirection,
-    confidence,
-    conclusion: "confirmed",
-    reason: `Passed 4-stage scan: price/volume, options (${best.targetDte} DTE, OI ${Math.round(best.optionOpenInterest)}), Stage 3 ${best.chartDirection} review (${best.chartReviewSummary}).`,
+    ticker: null,
+    direction: null,
+    confidence: null,
+    conclusion: "no_trade_today",
+    reason: `Finalists were reviewed but none were confirmed (${finalists.map((item) => item.symbol).join(", ")}).`,
   };
 }
 
