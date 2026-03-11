@@ -213,6 +213,18 @@ type Stage3Diagnostics = {
   resistanceLevel: number | null;
   supportLevel: number | null;
   roomPct: number | null;
+  roomToTargetDiagnostics: {
+    referencePrice: number;
+    direction: ScanDirection;
+    levelDetection: string;
+    levelStrength: string;
+    levelUsed: number | null;
+    roomPct: number | null;
+    targetAssumption: string;
+    decisionMode: "hard_fail" | "score_penalty";
+    sufficientRoom: boolean;
+    insufficientRoomReason: string;
+  };
   checks: Stage3CheckDiagnostic[];
 };
 
@@ -235,6 +247,7 @@ type Stage3NearMiss = {
   direction: ScanDirection | "none";
   score: number;
   failReasons: string[];
+  roomToTargetDiagnostics: Stage3Diagnostics["roomToTargetDiagnostics"] | null;
 };
 
 type FinalRankingEntry = {
@@ -262,6 +275,7 @@ type Stage3Evaluation = {
   reviewScore: number;
   summary: string;
   rejectionReason: string | null;
+  roomToTargetDiagnostics: Stage3Diagnostics["roomToTargetDiagnostics"] | null;
 };
 
 type FinalistReviewResult = {
@@ -285,6 +299,7 @@ type FinalistReviewResult = {
     chartReviewScore: number;
     chartReviewSummary: string;
     structureChecks: string;
+    roomToTargetDecision: string;
   } | null;
   conclusion: ScanResult["conclusion"];
   reason: string;
@@ -500,8 +515,9 @@ function logFinalistReviewDebugSection(finalists: FinalistReviewResult[], select
       stage2: finalist.stage2Inputs,
       stage3: finalist.stage3Inputs,
     };
+    const roomDetails = finalist.stage3Inputs?.roomToTargetDecision ?? "n/a";
     console.log(
-      `[scanner:debug] ${finalist.symbol}: rankingScore=${finalist.rankingScore.toFixed(2)} | reviewConclusion=${finalist.conclusion} | selected=${selected} | reviewReason=${finalist.reason} | inputs=${JSON.stringify(stageInputs)}`,
+      `[scanner:debug] ${finalist.symbol}: rankingScore=${finalist.rankingScore.toFixed(2)} | reviewConclusion=${finalist.conclusion} | selected=${selected} | room2R=${roomDetails} | reviewReason=${finalist.reason} | inputs=${JSON.stringify(stageInputs)}`,
     );
   }
 }
@@ -541,6 +557,7 @@ async function evaluateStage3Candidates(
         reviewScore: 0,
         summary: "failed to load required multi-timeframe bars",
         rejectionReason: "other",
+        roomToTargetDiagnostics: null,
       });
       continue;
     }
@@ -556,7 +573,13 @@ async function evaluateStage3Candidates(
         reviewScore: review.score,
         summary: review.summary,
         rejectionReason: failReason,
+        roomToTargetDiagnostics: review.diagnostics.roomToTargetDiagnostics,
       });
+      if (process.env.SCANNER_DEBUG === "1") {
+        console.log(
+          `[scanner:debug:stage3] ${candidate.symbol}: near-miss detail | ${describeRoomToTargetDecision(review.diagnostics.roomToTargetDiagnostics)}`,
+        );
+      }
       continue;
     }
 
@@ -576,6 +599,7 @@ async function evaluateStage3Candidates(
       reviewScore: review.score,
       summary: review.summary,
       rejectionReason: null,
+      roomToTargetDiagnostics: review.diagnostics.roomToTargetDiagnostics,
     });
   }
 
@@ -663,7 +687,7 @@ function getStage3FailReasons(review: ChartReviewResult): string[] {
     reasons.push("bull/bear trap risk");
   }
   if (failedChecks.includes("higher-timeframe-2r-viability")) {
-    reasons.push("2R room tight");
+    reasons.push(`2R room tight (${describeRoomToTargetDecision(review.diagnostics.roomToTargetDiagnostics)})`);
   }
   if (reasons.length === 0 && failedChecks.length > 0) {
     reasons.push(failedChecks[0] ?? "other");
@@ -690,6 +714,16 @@ function summarizePassingChecks(checks: Stage3CheckDiagnostic[]): string {
 
 function summarizeCheckOutcomes(checks: Stage3CheckDiagnostic[]): string {
   return checks.map((check) => `${check.check}:${check.pass ? "pass" : "fail"}`).join(", ");
+}
+
+function describeRoomToTargetDecision(
+  diagnostics: Stage3Diagnostics["roomToTargetDiagnostics"],
+): string {
+  const levelLabel = diagnostics.levelUsed === null ? "n/a" : diagnostics.levelUsed.toFixed(2);
+  const roomLabel = diagnostics.roomPct === null ? "n/a" : `${diagnostics.roomPct.toFixed(2)}%`;
+  const roomStatus = diagnostics.sufficientRoom ? "sufficient" : "insufficient";
+
+  return `2R room check -> ref=${diagnostics.referencePrice.toFixed(2)}, dir=${diagnostics.direction}, level=${levelLabel}, room=${roomLabel}, assumption=${diagnostics.targetAssumption}, decision=${diagnostics.decisionMode}, status=${roomStatus}, reason=${diagnostics.insufficientRoomReason}`;
 }
 
 async function loadMultiTimeframeBars(
@@ -816,6 +850,18 @@ function runStage3ChartReview(
         resistanceLevel: null,
         supportLevel: null,
         roomPct: null,
+        roomToTargetDiagnostics: {
+          referencePrice: 0,
+          direction: "bullish",
+          levelDetection: "n/a",
+          levelStrength: "n/a",
+          levelUsed: null,
+          roomPct: null,
+          targetAssumption: "2R requires roomPct >= 2.00%",
+          decisionMode: "hard_fail",
+          sufficientRoom: true,
+          insufficientRoomReason: "No data because directional setup was not available.",
+        },
         checks: [{ check: "data-integrity", pass: false, reason: "missing/incomplete bar data (1D or 1W close unavailable)" }],
       },
     };
@@ -859,6 +905,18 @@ function runStage3ChartReview(
         resistanceLevel: null,
         supportLevel: null,
         roomPct: null,
+        roomToTargetDiagnostics: {
+          referencePrice: 0,
+          direction: "bullish",
+          levelDetection: "n/a",
+          levelStrength: "n/a",
+          levelUsed: null,
+          roomPct: null,
+          targetAssumption: "2R requires roomPct >= 2.00%",
+          decisionMode: "hard_fail",
+          sufficientRoom: true,
+          insufficientRoomReason: "No data because directional setup was not available.",
+        },
         checks: [{ check: "alignment", pass: false, reason: alignmentReason }],
       },
     };
@@ -902,6 +960,18 @@ function runStage3ChartReview(
         resistanceLevel: null,
         supportLevel: null,
         roomPct: null,
+        roomToTargetDiagnostics: {
+          referencePrice: 0,
+          direction: "bullish",
+          levelDetection: "n/a",
+          levelStrength: "n/a",
+          levelUsed: null,
+          roomPct: null,
+          targetAssumption: "2R requires roomPct >= 2.00%",
+          decisionMode: "hard_fail",
+          sufficientRoom: true,
+          insufficientRoomReason: "No data because directional setup was not available.",
+        },
         checks: [{ check: "data-integrity", pass: false, reason: "missing/incomplete bar data (latest 1D candle OHLC unavailable)" }],
       },
     };
@@ -1134,14 +1204,43 @@ function runStage3ChartReview(
 
   const resistanceLevel = direction === "bullish" ? Math.min(max3M ?? Infinity, max1Y ?? Infinity) : null;
   const supportLevel = direction === "bearish" ? Math.max(min3M ?? -Infinity, min1Y ?? -Infinity) : null;
-  const roomPct =
+  const levelUsed =
     direction === "bullish" && resistanceLevel !== null && Number.isFinite(resistanceLevel)
-      ? ((resistanceLevel - close) / close) * 100
+      ? resistanceLevel
       : direction === "bearish" && supportLevel !== null && Number.isFinite(supportLevel)
-        ? ((close - supportLevel) / close) * 100
+        ? supportLevel
+        : null;
+  const roomPct =
+    direction === "bullish" && levelUsed !== null
+      ? ((levelUsed - close) / close) * 100
+      : direction === "bearish" && levelUsed !== null
+        ? ((close - levelUsed) / close) * 100
         : null;
   const higherTimeframeRoomPass = roomPct === null || roomPct >= 1;
   const higherTimeframe2RPass = roomPct === null || roomPct >= 2;
+  const roomToTargetDiagnostics: Stage3Diagnostics["roomToTargetDiagnostics"] = {
+    referencePrice: close,
+    direction,
+    levelDetection:
+      direction === "bullish"
+        ? `bullish uses nearest overhead high from 3M/1Y => min(max3M=${max3M?.toFixed(2) ?? "n/a"}, max1Y=${max1Y?.toFixed(2) ?? "n/a"})`
+        : `bearish uses nearest downside low from 3M/1Y => max(min3M=${min3M?.toFixed(2) ?? "n/a"}, min1Y=${min1Y?.toFixed(2) ?? "n/a"})`,
+    levelStrength:
+      direction === "bullish"
+        ? `3M high=${max3M?.toFixed(2) ?? "n/a"}, 1Y high=${max1Y?.toFixed(2) ?? "n/a"}`
+        : `3M low=${min3M?.toFixed(2) ?? "n/a"}, 1Y low=${min1Y?.toFixed(2) ?? "n/a"}`,
+    levelUsed,
+    roomPct,
+    targetAssumption: "2R requires roomPct >= 2.00%",
+    decisionMode: "hard_fail",
+    sufficientRoom: higherTimeframe2RPass,
+    insufficientRoomReason:
+      roomPct === null
+        ? "No finite higher-timeframe level available, treated as pass by current rule."
+        : higherTimeframe2RPass
+          ? `Room ${roomPct.toFixed(2)}% meets/exceeds 2.00% threshold.`
+          : `Room ${roomPct.toFixed(2)}% is below the 2.00% threshold, so 2R viability fails.`,
+  };
   const higherTimeframeContextPresent = direction === "bullish" ? max3M !== null && max1Y !== null : min3M !== null && min1Y !== null;
 
   const triggerZoneFlipCount = (() => {
@@ -1222,8 +1321,8 @@ function runStage3ChartReview(
       pass: higherTimeframeContextPresent,
       reason: higherTimeframeContextPresent ? "3M/1Y highs/lows available" : "missing higher-timeframe context (3M/1Y high/low data)",
     },
-    { check: "higher-timeframe-room", pass: higherTimeframeRoomPass, reason: `roomPct=${roomPct === null ? "n/a" : roomPct.toFixed(2)}%` },
-    { check: "higher-timeframe-2r-viability", pass: higherTimeframe2RPass, reason: `roomPct=${roomPct === null ? "n/a" : roomPct.toFixed(2)}%, requires >=2.00%` },
+    { check: "higher-timeframe-room", pass: higherTimeframeRoomPass, reason: `roomPct=${roomPct === null ? "n/a" : roomPct.toFixed(2)}%; ${describeRoomToTargetDecision(roomToTargetDiagnostics)}` },
+    { check: "higher-timeframe-2r-viability", pass: higherTimeframe2RPass, reason: `${describeRoomToTargetDecision(roomToTargetDiagnostics)}` },
   ];
 
   const checks = [
@@ -1292,6 +1391,7 @@ function runStage3ChartReview(
       resistanceLevel: resistanceLevel !== null && Number.isFinite(resistanceLevel) ? resistanceLevel : null,
       supportLevel: supportLevel !== null && Number.isFinite(supportLevel) ? supportLevel : null,
       roomPct,
+      roomToTargetDiagnostics,
       checks: checkDiagnostics,
     },
   };
@@ -2210,6 +2310,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
                 chartReviewScore: item.chartReviewScore,
                 chartReviewSummary: item.chartReviewSummary,
                 structureChecks: summarizeCheckOutcomes(item.chartDiagnostics.checks),
+                roomToTargetDecision: describeRoomToTargetDecision(item.chartDiagnostics.roomToTargetDiagnostics),
               }
               : null;
           })(),
@@ -2250,6 +2351,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
               chartReviewScore: item.chartReviewScore,
               chartReviewSummary: item.chartReviewSummary,
               structureChecks: summarizeCheckOutcomes(item.chartDiagnostics.checks),
+              roomToTargetDecision: describeRoomToTargetDecision(item.chartDiagnostics.roomToTargetDiagnostics),
             }
           : null;
       })(),
@@ -2348,6 +2450,7 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
       direction: evaluation.direction,
       score: evaluation.reviewScore,
       failReasons: [evaluation.rejectionReason ?? "other"],
+      roomToTargetDiagnostics: evaluation.roomToTargetDiagnostics,
     });
   }
 
@@ -2436,6 +2539,18 @@ export async function runStage3DebugForStarterUniverse(): Promise<
           resistanceLevel: null,
           supportLevel: null,
           roomPct: null,
+          roomToTargetDiagnostics: {
+            referencePrice: 0,
+            direction: "bullish",
+            levelDetection: "n/a",
+            levelStrength: "n/a",
+            levelUsed: null,
+            roomPct: null,
+            targetAssumption: "2R requires roomPct >= 2.00%",
+            decisionMode: "hard_fail",
+            sufficientRoom: true,
+            insufficientRoomReason: "No data because bars failed to load.",
+          },
           checks: [{ check: "bars-load", pass: false, reason: "failed to load required multi-timeframe bars" }],
         },
       });
@@ -2641,10 +2756,11 @@ function buildSingleSymbolReviewNarrative(review: ChartReviewResult): string {
     problematic.push("fake-hold/distribution or trap behavior is elevated");
   }
 
+  const roomDecision = describeRoomToTargetDecision(review.diagnostics.roomToTargetDiagnostics);
   if (checkByName.get("higher-timeframe-room")?.pass) {
-    supportive.push(`higher-timeframe room/resistance appears workable (${roomPct === null ? "room n/a" : `${roomPct.toFixed(2)}% room`})`);
+    supportive.push(`higher-timeframe room/resistance appears workable (${roomPct === null ? "room n/a" : `${roomPct.toFixed(2)}% room`}; ${roomDecision})`);
   } else {
-    problematic.push(`higher-timeframe room/resistance looks tight (${roomPct === null ? "room n/a" : `${roomPct.toFixed(2)}% room`})`);
+    problematic.push(`higher-timeframe room/resistance looks tight (${roomPct === null ? "room n/a" : `${roomPct.toFixed(2)}% room`}; ${roomDecision})`);
   }
 
   const structureInPrinciple =
