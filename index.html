@@ -23,6 +23,12 @@
         padding: 16px;
         margin-bottom: 16px;
       }
+      h1,
+      h2,
+      h3,
+      h4 {
+        margin-top: 0;
+      }
       label {
         display: block;
         margin-bottom: 8px;
@@ -30,7 +36,8 @@
       }
       input,
       textarea,
-      button {
+      button,
+      summary {
         font: inherit;
       }
       input,
@@ -61,6 +68,14 @@
       .row {
         margin-bottom: 8px;
       }
+      .muted {
+        color: #555;
+      }
+      .hr {
+        border: 0;
+        border-top: 1px solid #eee;
+        margin: 12px 0;
+      }
       .modal {
         position: fixed;
         inset: 0;
@@ -88,6 +103,17 @@
         border-radius: 6px;
         padding: 12px;
         overflow-x: auto;
+        margin: 8px 0;
+      }
+      details {
+        margin-top: 10px;
+      }
+      summary {
+        cursor: pointer;
+        font-weight: 600;
+      }
+      #advancedPromptFields {
+        margin-top: 10px;
       }
     </style>
   </head>
@@ -95,9 +121,16 @@
     <main>
       <h1>Scanner Workflow</h1>
       <div class="card">
-        <label for="prompt">Prompt</label>
-        <input id="prompt" value="find bullish setups" />
-        <button id="runScanButton">Run Scan</button>
+        <div class="row muted">Run the standard weekly scan with one click.</div>
+        <button id="runScanButton">Run Weekly Scan</button>
+
+        <details>
+          <summary>Advanced / Custom Prompt</summary>
+          <div id="advancedPromptFields">
+            <label for="prompt">Prompt override</label>
+            <input id="prompt" value="find bullish setups" />
+          </div>
+        </details>
       </div>
 
       <div class="card">
@@ -126,6 +159,8 @@
     </div>
 
     <script>
+      const DEFAULT_SCAN_PROMPT = "find bullish setups";
+
       const runScanButton = document.getElementById("runScanButton");
       const promptInput = document.getElementById("prompt");
       const resultArea = document.getElementById("resultArea");
@@ -134,6 +169,7 @@
       const saveTradeLogButton = document.getElementById("saveTradeLog");
 
       let latestTradeLog = null;
+      let latestBackendData = null;
 
       function escapeHtml(value) {
         return String(value)
@@ -144,6 +180,27 @@
           .replaceAll("'", "&#039;");
       }
 
+      function renderMaybe(value, fallback = "n/a") {
+        return value === null || value === undefined || value === "" ? fallback : String(value);
+      }
+
+      function renderList(items) {
+        if (!Array.isArray(items) || items.length === 0) {
+          return "<div class=\"muted\">None</div>";
+        }
+        return `<ul>${items.map((item) => `<li>${escapeHtml(String(item))}</li>`).join("")}</ul>`;
+      }
+
+      function renderObjectRows(obj) {
+        const entries = Object.entries(obj || {});
+        if (entries.length === 0) {
+          return "<div class=\"muted\">None</div>";
+        }
+        return entries
+          .map(([key, value]) => `<div class=\"row\"><strong>${escapeHtml(key)}:</strong> ${escapeHtml(String(value))}</div>`)
+          .join("");
+      }
+
       function openModal() {
         tradeModal.style.display = "flex";
       }
@@ -152,35 +209,76 @@
         tradeModal.style.display = "none";
       }
 
-      function renderNoTrade(scan) {
+      function renderDebugDetailsPanel() {
+        if (!latestBackendData) {
+          return "";
+        }
+
+        return `
+          <details>
+            <summary>Debug Details</summary>
+            <pre>${escapeHtml(JSON.stringify(latestBackendData, null, 2))}</pre>
+          </details>
+        `;
+      }
+
+      function renderNoTrade(scan, telemetry) {
         resultArea.innerHTML = `
           <div class="row"><strong>Outcome:</strong> no_trade_today</div>
-          <div class="row"><strong>Reason:</strong> ${escapeHtml(scan.reason)}</div>
+          <div class="row"><strong>Reason:</strong> ${escapeHtml(renderMaybe(scan.reason))}</div>
+
+          <hr class="hr" />
+          <h3>Calibration Debug Summary</h3>
+          <div class="row"><strong>Stage pass counts:</strong></div>
+          ${renderObjectRows(telemetry?.stageCounts)}
+
+          <div class="row"><strong>Rejection summaries:</strong></div>
+          <div class="row"><strong>Stage 1</strong></div>
+          ${renderObjectRows(telemetry?.rejectionSummaries?.stage1)}
+          <div class="row"><strong>Stage 2</strong></div>
+          ${renderObjectRows(telemetry?.rejectionSummaries?.stage2)}
+          <div class="row"><strong>Stage 3</strong></div>
+          ${renderObjectRows(telemetry?.rejectionSummaries?.stage3)}
+
+          <div class="row"><strong>Near misses:</strong></div>
+          ${renderList((telemetry?.nearMisses || []).map((item) => `${item.symbol} (${item.direction}, score ${item.score.toFixed(2)}): ${item.failReasons.join("; ")}`))}
+
+          <div class="row"><strong>Finalist review summary:</strong></div>
+          ${renderList((telemetry?.finalRankingDebug || []).map((item) => `${item.symbol}: ${item.reason}`))}
+
+          ${renderDebugDetailsPanel()}
         `;
       }
 
       function renderTrade(scan, tradeCard) {
         resultArea.innerHTML = `
-          <div class="row"><strong>Scan conclusion:</strong> ${escapeHtml(scan.conclusion)}</div>
-          <div class="row"><strong>Ticker:</strong> ${escapeHtml(scan.ticker)}</div>
-          <div class="row"><strong>Direction:</strong> ${escapeHtml(scan.direction)}</div>
-          <div class="row"><strong>Confidence:</strong> ${escapeHtml(scan.confidence)}</div>
-          <div class="row"><strong>Scan / confirmation reasoning:</strong> ${escapeHtml(scan.reason)}</div>
-          <hr />
+          <div class="row"><strong>Outcome:</strong> confirmed trade setup</div>
+          <div class="row"><strong>Ticker:</strong> ${escapeHtml(renderMaybe(scan.ticker))}</div>
+          <div class="row"><strong>Direction:</strong> ${escapeHtml(renderMaybe(scan.direction))}</div>
+          <div class="row"><strong>Confidence:</strong> ${escapeHtml(renderMaybe(scan.confidence))}</div>
+
+          <hr class="hr" />
+          <h3>Reasoning</h3>
+          <div class="row"><strong>Scan reasoning:</strong> ${escapeHtml(renderMaybe(scan.reason))}</div>
+          <div class="row"><strong>Confirmation reasoning:</strong> ${escapeHtml(renderMaybe(scan.reason))}</div>
+
+          <hr class="hr" />
           <h3>Trade Card</h3>
-          <div class="row"><strong>Ticker:</strong> ${escapeHtml(tradeCard.ticker)}</div>
-          <div class="row"><strong>Direction:</strong> ${escapeHtml(tradeCard.direction)}</div>
-          <div class="row"><strong>Confidence:</strong> ${escapeHtml(tradeCard.confidence)}</div>
-          <div class="row"><strong>Buy:</strong> ${escapeHtml(tradeCard.buy)}</div>
-          <div class="row"><strong>Invalidation Exit:</strong> ${escapeHtml(tradeCard.invalidationExit)}</div>
-          <div class="row"><strong>Take-Profit Exit:</strong> ${escapeHtml(tradeCard.takeProfitExit)}</div>
-          <div class="row"><strong>Time Exit:</strong> ${escapeHtml(tradeCard.timeExit)}</div>
-          <div class="row"><strong>R:R Math:</strong> ${escapeHtml(tradeCard.rrMath)}</div>
-          <div class="row"><strong>Rationale:</strong> ${escapeHtml(tradeCard.rationale)}</div>
+          <div class="row"><strong>Ticker:</strong> ${escapeHtml(renderMaybe(tradeCard.ticker))}</div>
+          <div class="row"><strong>Direction:</strong> ${escapeHtml(renderMaybe(tradeCard.direction))}</div>
+          <div class="row"><strong>Confidence:</strong> ${escapeHtml(renderMaybe(tradeCard.confidence))}</div>
+          <div class="row"><strong>Buy:</strong> ${escapeHtml(renderMaybe(tradeCard.buy))}</div>
+          <div class="row"><strong>Invalidation Exit:</strong> ${escapeHtml(renderMaybe(tradeCard.invalidationExit))}</div>
+          <div class="row"><strong>Take-Profit Exit:</strong> ${escapeHtml(renderMaybe(tradeCard.takeProfitExit))}</div>
+          <div class="row"><strong>Time Exit:</strong> ${escapeHtml(renderMaybe(tradeCard.timeExit))}</div>
+          <div class="row"><strong>R:R Math:</strong> ${escapeHtml(renderMaybe(tradeCard.rrMath))}</div>
+          <div class="row"><strong>Rationale:</strong> ${escapeHtml(renderMaybe(tradeCard.rationale))}</div>
           <div style="margin-top: 12px;">
             <button id="tookTradeButton">I took this trade</button>
           </div>
           <div id="localTradeCapture"></div>
+
+          ${renderDebugDetailsPanel()}
         `;
 
         const tookTradeButton = document.getElementById("tookTradeButton");
@@ -199,13 +297,17 @@
         resultArea.textContent = "Running scan...";
 
         try {
+          const customPrompt = promptInput.value.trim();
+          const prompt = customPrompt.length > 0 ? customPrompt : DEFAULT_SCAN_PROMPT;
+
           const response = await fetch("/api/workflow", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ prompt: promptInput.value }),
+            body: JSON.stringify({ prompt }),
           });
 
           const data = await response.json();
+          latestBackendData = data;
 
           if (!response.ok) {
             resultArea.textContent = data.error || "Request failed.";
@@ -213,7 +315,7 @@
           }
 
           if (!data.tradeCard) {
-            renderNoTrade(data.scan);
+            renderNoTrade(data.scan, data.telemetry || null);
             return;
           }
 
