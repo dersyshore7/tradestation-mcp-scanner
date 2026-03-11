@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { runStage3DebugForStarterUniverse } from "./runScan.js";
+import { runStage3DebugForStarterUniverse, runStarterUniverseTelemetryDebug } from "./runScan.js";
 
 function loadDotEnvFileIfPresent(): void {
   const envPath = resolve(process.cwd(), ".env");
@@ -33,7 +33,25 @@ function loadDotEnvFileIfPresent(): void {
 
 async function runDebug(): Promise<void> {
   loadDotEnvFileIfPresent();
+  const telemetry = await runStarterUniverseTelemetryDebug();
   const diagnostics = await runStage3DebugForStarterUniverse();
+
+  console.log("Stage pass counts:");
+  console.log(JSON.stringify(telemetry.stageCounts, null, 2));
+
+  console.log("Rejection summaries:");
+  console.log(JSON.stringify(telemetry.rejectionSummaries, null, 2));
+
+  console.log("Top Stage 3 near misses:");
+  if (telemetry.nearMisses.length === 0) {
+    console.log("(none)");
+  } else {
+    for (const miss of telemetry.nearMisses) {
+      console.log(
+        `${miss.symbol}: dir=${miss.direction} | score=${miss.score} | fail=${miss.failReasons.join(", ")}`,
+      );
+    }
+  }
 
   const passed = diagnostics.filter((item) => item.pass);
   console.log(`Stage 3 review summary (${diagnostics.length} symbols, ${passed.length} passed)`);

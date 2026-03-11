@@ -171,6 +171,31 @@ type Stage3TimeframeDiagnostic = {
   parsedVolume: boolean;
 };
 
+type StageFailureSummary = Record<string, number>;
+
+type Stage3NearMiss = {
+  symbol: string;
+  direction: ScanDirection | "none";
+  score: number;
+  failReasons: string[];
+};
+
+export type StarterUniverseTelemetry = {
+  stageCounts: {
+    stage1Entered: number;
+    stage1Passed: number;
+    stage2Passed: number;
+    stage3Passed: number;
+    finalRanking: number;
+  };
+  rejectionSummaries: {
+    stage1: StageFailureSummary;
+    stage2: StageFailureSummary;
+    stage3: StageFailureSummary;
+  };
+  nearMisses: Stage3NearMiss[];
+};
+
 type MultiTimeframeBarsLoadResult = {
   barsByView: MultiTimeframeBars | null;
   timeframeDiagnostics: Record<MultiTimeframeView, Stage3TimeframeDiagnostic>;
@@ -210,6 +235,46 @@ function logStage2Diagnostics(diagnostics: Stage2SymbolDiagnostic[]): void {
   for (const item of diagnostics) {
     console.log(`[scanner:debug:stage2] ${item.symbol}: ${JSON.stringify(item)}`);
   }
+}
+
+function incrementSummary(summary: StageFailureSummary, reason: string): void {
+  summary[reason] = (summary[reason] ?? 0) + 1;
+}
+
+function categorizeStage2Failure(reason: string): string {
+  if (reason.includes("OI threshold")) {
+    return "oi";
+  }
+  if (reason.includes("spread threshold")) {
+    return "spread";
+  }
+  return "other";
+}
+
+function getStage3FailReasons(review: ChartReviewResult): string[] {
+  const failedChecks = review.diagnostics.checks.filter((check) => !check.pass).map((check) => check.check);
+  const reasons: string[] = [];
+
+  if (failedChecks.includes("alignment")) {
+    reasons.push("alignment");
+  }
+  if (failedChecks.includes("expansion")) {
+    reasons.push("weak expansion");
+  }
+  if (failedChecks.includes("volume")) {
+    reasons.push("weak volume");
+  }
+  if (failedChecks.includes("continuation")) {
+    reasons.push("rejection risk");
+  }
+  if (reasons.length === 0 && failedChecks.length > 0) {
+    reasons.push(failedChecks[0] ?? "other");
+  }
+  if (reasons.length === 0) {
+    reasons.push("other");
+  }
+
+  return reasons;
 }
 
 async function loadMultiTimeframeBars(
@@ -1330,6 +1395,116 @@ export async function runStage2DebugForStarterUniverse(): Promise<Stage2SymbolDi
   }));
   const { diagnostics } = await runStage2OptionsTradability(get, stage1Candidates);
   return diagnostics;
+}
+
+export async function runStarterUniverseTelemetryDebug(): Promise<StarterUniverseTelemetry> {
+  const get = await createTradeStationGetFetcher();
+  const stage1RejectionSummary: StageFailureSummary = {};
+  const stage2RejectionSummary: StageFailureSummary = {};
+  const stage3RejectionSummary: StageFailureSummary = {};
+
+  const stage1Entered = [...V1_SCAN_UNIVERSE];
+  const stage1Passed: Stage1Candidate[] = [];
+  for (const symbol of stage1Entered) {
+    const quoteResponse = await get(`/marketdata/quotes/${encodeURIComponent(symbol)}`);
+    if (!quoteResponse.ok) {
+      incrementSummary(stage1RejectionSummary, "quote");
+      continue;
+    }
+
+    const quotePayload = await quoteResponse.json();
+    const quote = pickFirstQuote(quotePayload);
+    const lastPrice = readNumber(quote, ["Last", "LastTrade", "Trade", "Close"]);
+    const averageVolume = readNumber(quote, ["AverageVolume", "AverageDailyVolume", "AvgVolume", "Volume"]);
+
+    if (lastPrice === null || lastPrice < 10 || lastPrice > 500) {
+      incrementSummary(stage1RejectionSummary, "price");
+      continue;
+    }
+
+    if (averageVolume !== null && averageVolume <= 1_000_000) {
+      incrementSummary(stage1RejectionSummary, "volume");
+      continue;
+    }
+
+    stage1Passed.push({ symbol, lastPrice, averageVolume });
+  }
+
+  const { passed: stage2Passed, diagnostics: stage2Diagnostics } = await runStage2OptionsTradability(get, stage1Passed);
+  for (const item of stage2Diagnostics) {
+    if (!item.pass) {
+      incrementSummary(stage2RejectionSummary, categorizeStage2Failure(item.reason));
+    }
+  }
+
+  const stage3Passed: ChartCandidate[] = [];
+  const stage3NearMissCandidates: Stage3NearMiss[] = [];
+  for (const candidate of stage2Passed) {
+    const { barsByView: multiTimeframeBars, timeframeDiagnostics } = await loadMultiTimeframeBars(get, candidate.symbol);
+    if (!multiTimeframeBars) {
+      incrementSummary(stage3RejectionSummary, "other");
+      stage3NearMissCandidates.push({
+        symbol: candidate.symbol,
+        direction: "none",
+        score: 0,
+        failReasons: ["other"],
+      });
+      continue;
+    }
+
+    const review = runStage3ChartReview(multiTimeframeBars, timeframeDiagnostics);
+    if (!review.pass || !review.direction) {
+      const failReasons = getStage3FailReasons(review);
+      for (const failReason of failReasons) {
+        incrementSummary(stage3RejectionSummary, failReason);
+      }
+      stage3NearMissCandidates.push({
+        symbol: candidate.symbol,
+        direction: review.direction ?? "none",
+        score: review.score,
+        failReasons,
+      });
+      continue;
+    }
+
+    stage3Passed.push({
+      ...candidate,
+      chartDirection: review.direction,
+      chartMovePct: review.movePct,
+      volumeRatio: review.volumeRatio,
+      chartReviewSummary: review.summary,
+      chartReviewScore: review.score,
+    });
+  }
+
+  const ranked = stage3Passed
+    .map((candidate) => {
+      const moveScore = Math.min(Math.abs(candidate.chartMovePct), 6);
+      const oiScore = Math.min(candidate.optionOpenInterest / 500, 6);
+      const spreadScore = Math.max(0, 3 - (candidate.optionSpread / Math.max(candidate.optionMid, 0.01)) * 10);
+      const volumeScore = candidate.volumeRatio === null ? 1 : Math.min(candidate.volumeRatio, 2);
+      const score = moveScore + oiScore + spreadScore + volumeScore + candidate.chartReviewScore;
+      return { ...candidate, score };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  const nearMisses = stage3NearMissCandidates.sort((a, b) => b.score - a.score).slice(0, 3);
+
+  return {
+    stageCounts: {
+      stage1Entered: stage1Entered.length,
+      stage1Passed: stage1Passed.length,
+      stage2Passed: stage2Passed.length,
+      stage3Passed: stage3Passed.length,
+      finalRanking: ranked.length,
+    },
+    rejectionSummaries: {
+      stage1: stage1RejectionSummary,
+      stage2: stage2RejectionSummary,
+      stage3: stage3RejectionSummary,
+    },
+    nearMisses,
+  };
 }
 
 export async function runStage3DebugForStarterUniverse(): Promise<
