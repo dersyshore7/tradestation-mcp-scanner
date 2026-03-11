@@ -92,8 +92,12 @@ async function runDebug(): Promise<void> {
     console.log("(none)");
   } else {
     for (const miss of telemetry.nearMisses) {
+      const room = miss.roomToTargetDiagnostics;
+      const roomDetail = room
+        ? ` | 2R ref=${room.referencePrice.toFixed(2)} dir=${room.direction} level=${room.levelUsed === null ? "n/a" : room.levelUsed.toFixed(2)} room=${room.roomPct === null ? "n/a" : `${room.roomPct.toFixed(2)}%`} reason=${room.insufficientRoomReason}`
+        : "";
       console.log(
-        `${miss.symbol}: dir=${miss.direction} | score=${miss.score} | fail=${miss.failReasons.join(", ")}`,
+        `${miss.symbol}: dir=${miss.direction} | score=${miss.score} | fail=${miss.failReasons.join(", ")}${roomDetail}`,
       );
     }
   }
