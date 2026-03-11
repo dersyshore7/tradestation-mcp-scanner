@@ -271,6 +271,7 @@ type FinalistReviewResult = {
     volumeRatio: number | null;
     chartReviewScore: number;
     chartReviewSummary: string;
+    structureChecks: string;
   } | null;
   conclusion: ScanResult["conclusion"];
   reason: string;
@@ -639,6 +640,18 @@ function getStage3FailReasons(review: ChartReviewResult): string[] {
   if (failedChecks.includes("continuation")) {
     reasons.push("rejection risk");
   }
+  if (failedChecks.includes("impulse-consolidation")) {
+    reasons.push("impulse/hold quality");
+  }
+  if (failedChecks.includes("fake-hold-distribution")) {
+    reasons.push("distribution risk");
+  }
+  if (failedChecks.includes("failed-breakout-trap")) {
+    reasons.push("bull/bear trap risk");
+  }
+  if (failedChecks.includes("higher-timeframe-2r-viability")) {
+    reasons.push("2R room tight");
+  }
   if (reasons.length === 0 && failedChecks.length > 0) {
     reasons.push(failedChecks[0] ?? "other");
   }
@@ -660,6 +673,10 @@ function scoreStage3Candidate(candidate: ChartCandidate): number {
 function summarizePassingChecks(checks: Stage3CheckDiagnostic[]): string {
   const passingChecks = checks.filter((check) => check.pass).map((check) => check.check);
   return passingChecks.length > 0 ? passingChecks.join(", ") : "no failed checks";
+}
+
+function summarizeCheckOutcomes(checks: Stage3CheckDiagnostic[]): string {
+  return checks.map((check) => `${check.check}:${check.pass ? "pass" : "fail"}`).join(", ");
 }
 
 async function loadMultiTimeframeBars(
@@ -915,6 +932,149 @@ function runStage3ChartReview(
       : bodyToRange >= 0.45 && closeLocation <= 0.4 && lowerWick <= body;
   const volumePass = volumeRatio === null || volumeRatio >= 0.9;
 
+  const consolidationBars = bars1D.slice(-6, -1);
+  const impulseBars = bars1D.slice(-12, -6);
+
+  const averageRangeFor = (bars: Record<string, unknown>[]): number | null => {
+    let sum = 0;
+    let count = 0;
+    for (const bar of bars) {
+      const barHigh = readNumber(bar, ["High"]);
+      const barLow = readNumber(bar, ["Low"]);
+      if (barHigh !== null && barLow !== null && barHigh > barLow) {
+        sum += barHigh - barLow;
+        count += 1;
+      }
+    }
+
+    return count > 0 ? sum / count : null;
+  };
+
+  const impulseAverageRange = averageRangeFor(impulseBars);
+  const consolidationAverageRange = averageRangeFor(consolidationBars);
+  const impulseStartClose = readNumber(impulseBars[0] ?? null, ["Close"]);
+  const impulseEndClose = readNumber(impulseBars[impulseBars.length - 1] ?? null, ["Close"]);
+  const impulseMovePct =
+    impulseStartClose !== null && impulseEndClose !== null && impulseStartClose > 0
+      ? ((impulseEndClose - impulseStartClose) / impulseStartClose) * 100
+      : null;
+  const impulseMoveDirectionalPass =
+    impulseMovePct === null
+      ? false
+      : direction === "bullish"
+        ? impulseMovePct >= 1.2
+        : impulseMovePct <= -1.2;
+  const consolidationTightPass =
+    impulseAverageRange !== null && consolidationAverageRange !== null && impulseAverageRange > 0
+      ? consolidationAverageRange <= impulseAverageRange * 0.9
+      : false;
+  const impulseConsolidationPass = impulseMoveDirectionalPass && consolidationTightPass;
+
+  const consolidationHighs = consolidationBars
+    .map((bar) => readNumber(bar, ["High"]))
+    .filter((value): value is number => value !== null);
+  const consolidationLows = consolidationBars
+    .map((bar) => readNumber(bar, ["Low"]))
+    .filter((value): value is number => value !== null);
+  const consolidationRangeHigh = consolidationHighs.length > 0 ? Math.max(...consolidationHighs) : null;
+  const consolidationRangeLow = consolidationLows.length > 0 ? Math.min(...consolidationLows) : null;
+
+  const lowerHighCount = (() => {
+    if (consolidationHighs.length < 2) {
+      return 0;
+    }
+
+    let count = 0;
+    for (let index = 1; index < consolidationHighs.length; index += 1) {
+      const currentHigh = consolidationHighs[index];
+      const previousHigh = consolidationHighs[index - 1];
+      if (currentHigh !== undefined && previousHigh !== undefined && currentHigh < previousHigh) {
+        count += 1;
+      }
+    }
+    return count;
+  })();
+
+  const consolidationCloses = consolidationBars
+    .map((bar) => readNumber(bar, ["Close"]))
+    .filter((value): value is number => value !== null);
+  const lowerZoneCloseCount = (() => {
+    if (consolidationRangeHigh === null || consolidationRangeLow === null || consolidationRangeHigh <= consolidationRangeLow) {
+      return 0;
+    }
+
+    const cutoff = consolidationRangeLow + (consolidationRangeHigh - consolidationRangeLow) * 0.35;
+    return consolidationCloses.filter((value) => value <= cutoff).length;
+  })();
+
+  const fakeHoldDistributionPass =
+    (direction === "bullish" && lowerHighCount <= 2 && lowerZoneCloseCount <= 2) ||
+    (direction === "bearish" && lowerHighCount <= 2);
+
+  const keyLevel = direction === "bullish"
+    ? readNumber(bars1D[bars1D.length - 2] ?? null, ["High"])
+    : readNumber(bars1D[bars1D.length - 2] ?? null, ["Low"]);
+  const failedBreakoutBullTrapPass =
+    direction === "bullish"
+      ? keyLevel !== null && !(high > keyLevel && close < keyLevel)
+      : keyLevel !== null && !(low < keyLevel && close > keyLevel);
+
+  const pullbackBars = consolidationBars.filter((bar) => {
+    const barOpen = readNumber(bar, ["Open"]);
+    const barClose = readNumber(bar, ["Close"]);
+    if (barOpen === null || barClose === null) {
+      return false;
+    }
+
+    return direction === "bullish" ? barClose < barOpen : barClose > barOpen;
+  });
+
+  const averageBodyFor = (bars: Record<string, unknown>[]): number | null => {
+    let sum = 0;
+    let count = 0;
+    for (const bar of bars) {
+      const barOpen = readNumber(bar, ["Open"]);
+      const barClose = readNumber(bar, ["Close"]);
+      if (barOpen !== null && barClose !== null) {
+        sum += Math.abs(barClose - barOpen);
+        count += 1;
+      }
+    }
+
+    return count > 0 ? sum / count : null;
+  };
+
+  const pullbackAverageBody = averageBodyFor(pullbackBars);
+  const consolidationAverageBody = averageBodyFor(consolidationBars);
+  const pullbackBodyControlPass =
+    pullbackAverageBody === null || consolidationAverageBody === null || consolidationAverageBody <= 0
+      ? true
+      : pullbackAverageBody <= consolidationAverageBody * 1.1;
+
+  const pullbackVolumes = pullbackBars
+    .map((bar) => readNumber(bar, ["TotalVolume", "Volume", "Vol", "TotalVolumeTraded"]))
+    .filter((value): value is number => value !== null);
+  const averagePullbackVolume = pullbackVolumes.length > 0
+    ? pullbackVolumes.reduce((sum, value) => sum + value, 0) / pullbackVolumes.length
+    : null;
+  const nonPullbackBars = consolidationBars.filter((bar) => !pullbackBars.includes(bar));
+  const averageNonPullbackVolume = (() => {
+    const values = nonPullbackBars
+      .map((bar) => readNumber(bar, ["TotalVolume", "Volume", "Vol", "TotalVolumeTraded"]))
+      .filter((value): value is number => value !== null);
+    if (values.length === 0) {
+      return null;
+    }
+
+    return values.reduce((sum, value) => sum + value, 0) / values.length;
+  })();
+  const pullbackVolumeTrendUp =
+    pullbackVolumes.length >= 2 ? pullbackVolumes[pullbackVolumes.length - 1]! > pullbackVolumes[0]! : false;
+  const pullbackSellingVolumePass =
+    averagePullbackVolume === null || averageNonPullbackVolume === null
+      ? true
+      : !(averagePullbackVolume > averageNonPullbackVolume * 1.05 && pullbackVolumeTrendUp);
+
   const closes = bars1D.slice(-7).map((bar) => readNumber(bar, ["Close"]))
     .filter((value): value is number => value !== null);
   let flipCount = 0;
@@ -968,7 +1128,32 @@ function runStage3ChartReview(
         ? ((close - supportLevel) / close) * 100
         : null;
   const higherTimeframeRoomPass = roomPct === null || roomPct >= 1;
+  const higherTimeframe2RPass = roomPct === null || roomPct >= 2;
   const higherTimeframeContextPresent = direction === "bullish" ? max3M !== null && max1Y !== null : min3M !== null && min1Y !== null;
+
+  const triggerZoneFlipCount = (() => {
+    const triggerCloses = bars1D.slice(-6).map((bar) => readNumber(bar, ["Close"]));
+    let flips = 0;
+    for (let index = 2; index < triggerCloses.length; index += 1) {
+      const a = triggerCloses[index - 2];
+      const b = triggerCloses[index - 1];
+      const c = triggerCloses[index];
+      if (a === null || b === null || c === null || a === undefined || b === undefined || c === undefined) {
+        continue;
+      }
+
+      const prevDelta = b - a;
+      const currentDelta = c - b;
+      if (prevDelta === 0 || currentDelta === 0) {
+        continue;
+      }
+      if (Math.sign(prevDelta) !== Math.sign(currentDelta)) {
+        flips += 1;
+      }
+    }
+    return flips;
+  })();
+  const messyTriggerZonePass = triggerZoneFlipCount <= 2 && choppyPass;
 
   const checkDiagnostics: Stage3CheckDiagnostic[] = [
     { check: "alignment", pass: alignmentPass, reason: alignmentReason },
@@ -988,6 +1173,36 @@ function runStage3ChartReview(
       reason: volumeDataPresent ? "volume values parsed from at least one 1D bar" : "missing volume data in 1D bars",
     },
     { check: "choppy", pass: choppyPass, reason: `flipCount=${flipCount}` },
+    {
+      check: "impulse-consolidation",
+      pass: impulseConsolidationPass,
+      reason: `impulseMovePct=${impulseMovePct === null ? "n/a" : `${impulseMovePct.toFixed(2)}%`}, impulseAvgRange=${impulseAverageRange?.toFixed(2) ?? "n/a"}, consolidationAvgRange=${consolidationAverageRange?.toFixed(2) ?? "n/a"}`,
+    },
+    {
+      check: "fake-hold-distribution",
+      pass: fakeHoldDistributionPass,
+      reason: `lowerHighCount=${lowerHighCount}, lowerZoneCloseCount=${lowerZoneCloseCount}`,
+    },
+    {
+      check: "failed-breakout-trap",
+      pass: failedBreakoutBullTrapPass,
+      reason: direction === "bullish" ? `high=${high.toFixed(2)}, close=${close.toFixed(2)}, keyLevel=${keyLevel?.toFixed(2) ?? "n/a"}` : `low=${low.toFixed(2)}, close=${close.toFixed(2)}, keyLevel=${keyLevel?.toFixed(2) ?? "n/a"}`,
+    },
+    {
+      check: "pullback-body-control",
+      pass: pullbackBodyControlPass,
+      reason: `pullbackAvgBody=${pullbackAverageBody?.toFixed(2) ?? "n/a"}, consolidationAvgBody=${consolidationAverageBody?.toFixed(2) ?? "n/a"}`,
+    },
+    {
+      check: "pullback-volume-control",
+      pass: pullbackSellingVolumePass,
+      reason: `pullbackAvgVol=${averagePullbackVolume?.toFixed(0) ?? "n/a"}, nonPullbackAvgVol=${averageNonPullbackVolume?.toFixed(0) ?? "n/a"}, trendUp=${pullbackVolumeTrendUp ? "yes" : "no"}`,
+    },
+    {
+      check: "trigger-zone-clean",
+      pass: messyTriggerZonePass,
+      reason: `triggerZoneFlipCount=${triggerZoneFlipCount}`,
+    },
     { check: "continuation", pass: continuationPass, reason: direction === "bullish" ? `close=${close.toFixed(2)} vs prevHigh=${prevHigh?.toFixed(2) ?? "n/a"}` : `close=${close.toFixed(2)} vs prevLow=${prevLow?.toFixed(2) ?? "n/a"}` },
     {
       check: "higher-timeframe-context",
@@ -995,19 +1210,41 @@ function runStage3ChartReview(
       reason: higherTimeframeContextPresent ? "3M/1Y highs/lows available" : "missing higher-timeframe context (3M/1Y high/low data)",
     },
     { check: "higher-timeframe-room", pass: higherTimeframeRoomPass, reason: `roomPct=${roomPct === null ? "n/a" : roomPct.toFixed(2)}%` },
+    { check: "higher-timeframe-2r-viability", pass: higherTimeframe2RPass, reason: `roomPct=${roomPct === null ? "n/a" : roomPct.toFixed(2)}%, requires >=2.00%` },
   ];
 
-  const checks = [expansionPass, bodyQualityPass, volumePass, choppyPass, continuationPass, higherTimeframeRoomPass];
+  const checks = [
+    expansionPass,
+    bodyQualityPass,
+    volumePass,
+    choppyPass,
+    continuationPass,
+    higherTimeframeRoomPass,
+    impulseConsolidationPass,
+    fakeHoldDistributionPass,
+    failedBreakoutBullTrapPass,
+    pullbackBodyControlPass,
+    pullbackSellingVolumePass,
+    messyTriggerZonePass,
+    higherTimeframe2RPass,
+  ];
   const passedChecks = checks.filter(Boolean).length;
-  const pass = passedChecks >= 4 && continuationPass;
+  const pass = passedChecks >= 8 && continuationPass && higherTimeframe2RPass && failedBreakoutBullTrapPass;
 
   const detailParts = [
     `expansion ${expansionPass ? "ok" : "weak"}`,
     `body/wick ${bodyQualityPass ? "clean" : "messy"}`,
     `volume ${volumePass ? "supports" : "light"}`,
     `chop ${choppyPass ? "contained" : "high"}`,
+    `impulse/hold ${impulseConsolidationPass ? "clean" : "weak"}`,
+    `distribution ${fakeHoldDistributionPass ? "limited" : "elevated"}`,
+    `trap-risk ${failedBreakoutBullTrapPass ? "low" : "present"}`,
+    `pullback-body ${pullbackBodyControlPass ? "controlled" : "heavy"}`,
+    `pullback-volume ${pullbackSellingVolumePass ? "controlled" : "expanding sell"}`,
+    `trigger-zone ${messyTriggerZonePass ? "clean" : "messy"}`,
     `continuation ${continuationPass ? "yes" : "rejection risk"}`,
     `HTF room ${higherTimeframeRoomPass ? "adequate" : "limited"}`,
+    `HTF 2R ${higherTimeframe2RPass ? "viable" : "tight"}`,
   ];
 
   return {
@@ -1921,6 +2158,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
                 volumeRatio: item.volumeRatio,
                 chartReviewScore: item.chartReviewScore,
                 chartReviewSummary: item.chartReviewSummary,
+                structureChecks: summarizeCheckOutcomes(item.chartDiagnostics.checks),
               }
               : null;
           })(),
@@ -1960,6 +2198,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
               volumeRatio: item.volumeRatio,
               chartReviewScore: item.chartReviewScore,
               chartReviewSummary: item.chartReviewSummary,
+              structureChecks: summarizeCheckOutcomes(item.chartDiagnostics.checks),
             }
           : null;
       })(),
@@ -2339,6 +2578,18 @@ function buildSingleSymbolReviewNarrative(review: ChartReviewResult): string {
     problematic.push("price action shows rejection risk versus clean continuation");
   }
 
+  if (checkByName.get("impulse-consolidation")?.pass) {
+    supportive.push("impulse plus consolidation structure is present (expansion then tighter hold)");
+  } else {
+    problematic.push("impulse plus consolidation structure is not clean enough");
+  }
+
+  if (checkByName.get("fake-hold-distribution")?.pass && checkByName.get("failed-breakout-trap")?.pass) {
+    supportive.push("fake-hold/distribution and trap behavior look controlled");
+  } else {
+    problematic.push("fake-hold/distribution or trap behavior is elevated");
+  }
+
   if (checkByName.get("higher-timeframe-room")?.pass) {
     supportive.push(`higher-timeframe room/resistance appears workable (${roomPct === null ? "room n/a" : `${roomPct.toFixed(2)}% room`})`);
   } else {
@@ -2349,7 +2600,10 @@ function buildSingleSymbolReviewNarrative(review: ChartReviewResult): string {
     review.diagnostics.alignmentPass &&
     !!checkByName.get("body-wick")?.pass &&
     !!checkByName.get("continuation")?.pass &&
-    !!checkByName.get("higher-timeframe-room")?.pass;
+    !!checkByName.get("impulse-consolidation")?.pass &&
+    !!checkByName.get("failed-breakout-trap")?.pass &&
+    !!checkByName.get("higher-timeframe-room")?.pass &&
+    !!checkByName.get("higher-timeframe-2r-viability")?.pass;
   if (structureInPrinciple) {
     supportive.push("the chart supports a clean 2:1-style structure in principle");
   } else {
