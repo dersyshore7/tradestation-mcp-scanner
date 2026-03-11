@@ -139,6 +139,25 @@ function renderMoney(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
+function formatIsoDate(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function computeThursdayBeforeExpiration(expirationDate: string): string | null {
+  const expiration = new Date(`${expirationDate}T00:00:00Z`);
+  if (Number.isNaN(expiration.getTime())) {
+    return null;
+  }
+
+  const thursdayBefore = new Date(expiration);
+  thursdayBefore.setUTCDate(thursdayBefore.getUTCDate() - 1);
+  while (thursdayBefore.getUTCDay() !== 4) {
+    thursdayBefore.setUTCDate(thursdayBefore.getUTCDate() - 1);
+  }
+
+  return formatIsoDate(thursdayBefore);
+}
+
 async function resolveDirectionAndConfidence(
   symbol: string,
   confirmedDirection?: ScanDirection,
@@ -370,7 +389,7 @@ async function buildTradeInputs(
 
     const riskPerContract = Math.max(0.01, (optionMid - optionAtInvalidation) * 100);
     const rewardPerContract = Math.max(0.01, (optionAtTarget - optionMid) * 100);
-    const contracts = Math.max(1, Math.floor(allocation / riskPerContract));
+    const contracts = Math.max(0, Math.floor(allocation / (optionMid * 100)));
     const notional = contracts * optionMid * 100;
     const totalRisk = contracts * riskPerContract;
     const totalReward = contracts * rewardPerContract;
@@ -425,6 +444,8 @@ export async function constructTradeCard(input: TradeConstructionInput): Promise
 
   const rrRatio = trade.totalRisk > 0 ? trade.totalReward / trade.totalRisk : 0;
   const directionLabel = direction === "bullish" ? "Bullish" : "Bearish";
+  const thursdayBeforeExpiration = computeThursdayBeforeExpiration(trade.expirationDate);
+  const timeExitDate = thursdayBeforeExpiration ?? trade.expirationDate;
 
   if (process.env.SCANNER_DEBUG === "1") {
     console.log(
@@ -436,10 +457,10 @@ export async function constructTradeCard(input: TradeConstructionInput): Promise
     ticker: symbol,
     direction,
     confidence,
-    buy: `${trade.contracts}x ${trade.optionSymbol} @ ${renderMoney(trade.optionMid)} limit (approx capital ${renderMoney(trade.notional)}, 33% allocation target ${renderMoney(trade.allocation)} from equity ${renderMoney(trade.equity)})`,
+    buy: `${trade.contracts}x ${trade.optionSymbol} @ ${renderMoney(trade.optionMid)} limit (capital used ${renderMoney(trade.notional)} of 33% allocation target ${renderMoney(trade.allocation)} from equity ${renderMoney(trade.equity)})`,
     invalidationExit: `Exit if ${symbol} trades through ${trade.invalidationUnderlying.toFixed(2)} (approx option ${renderMoney(trade.optionAtInvalidation)}).`,
     takeProfitExit: `Take profit near ${symbol} ${trade.targetUnderlying.toFixed(2)} (approx option ${renderMoney(trade.optionAtTarget)}).`,
-    timeExit: `Exit by DTE <= 7 or after 7 calendar days, whichever comes first (selected ${trade.dte} DTE ${trade.expirationDate}).`,
+    timeExit: `Exit on Thursday before expiration (${timeExitDate}), or sooner if option value decays by more than 25% from entry premium (${renderMoney(trade.optionMid)}).`,
     rrMath: `Risk/contract ${renderMoney(trade.riskPerContract)}, reward/contract ${renderMoney(trade.rewardPerContract)}; total risk ${renderMoney(trade.totalRisk)} vs total reward ${renderMoney(trade.totalReward)} (~${rrRatio.toFixed(2)}:1 reward:risk).`,
     rationale: `${directionLabel} setup follows confirmed review bias and uses nearest practical ATM ${trade.expirationDate} (${trade.dte} DTE) option for a simple first-pass 2:1 structure. Pricing uses current premium plus a delta-based approximation; equity source: ${trade.equitySource}.`,
   };
