@@ -16,7 +16,7 @@ It exposes two tools:
 
 That tool checks for a single symbol prompt first. If present, it runs the same single-symbol read-only analysis.
 
-If no single symbol is detected, it now runs a tiny real-data scan-and-review pipeline on a hardcoded V1 scan universe of about 60 liquid, options-heavy U.S. names defined in `src/app/runScan.ts` (`V1_SCAN_UNIVERSE_CONFIG`).
+If no single symbol is detected, it now runs a tiny real-data scan-and-review pipeline on a hardcoded V1 scan universe of about 100 liquid, options-heavy U.S. names defined in `src/app/runScan.ts` (`V1_SCAN_UNIVERSE_CONFIG`).
 
 The fake scanner fallback is still present only as a safety fallback if real-data requests fail.
 
