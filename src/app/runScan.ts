@@ -152,6 +152,7 @@ type ChartCandidate = OptionsCandidate & {
   volumeRatio: number | null;
   chartReviewSummary: string;
   chartReviewScore: number;
+  chartDiagnostics: Stage3Diagnostics;
 };
 
 type MultiTimeframeView = "1D" | "1W" | "1M" | "3M" | "1Y";
@@ -228,12 +229,27 @@ export type StarterUniverseTelemetry = {
     stage3Passed: number;
     finalRanking: number;
   };
+  stageSymbols: {
+    stage1Entered: string[];
+    stage1Passed: string[];
+    stage2Passed: string[];
+    stage3Passed: string[];
+    finalRanking: string[];
+  };
+  stage3PassedDetails: {
+    symbol: string;
+    direction: ScanDirection;
+    score: number;
+    summary: string;
+    whyPassed: string;
+  }[];
   rejectionSummaries: {
     stage1: StageFailureSummary;
     stage2: StageFailureSummary;
     stage3: StageFailureSummary;
   };
   nearMisses: Stage3NearMiss[];
+  finalSelectedSymbol: string | null;
 };
 
 type MultiTimeframeBarsLoadResult = {
@@ -315,6 +331,19 @@ function getStage3FailReasons(review: ChartReviewResult): string[] {
   }
 
   return reasons;
+}
+
+function scoreStage3Candidate(candidate: ChartCandidate): number {
+  const moveScore = Math.min(Math.abs(candidate.chartMovePct), 6);
+  const oiScore = Math.min(candidate.optionOpenInterest / 500, 6);
+  const spreadScore = Math.max(0, 3 - (candidate.optionSpread / Math.max(candidate.optionMid, 0.01)) * 10);
+  const volumeScore = candidate.volumeRatio === null ? 1 : Math.min(candidate.volumeRatio, 2);
+  return moveScore + oiScore + spreadScore + volumeScore + candidate.chartReviewScore;
+}
+
+function summarizePassingChecks(checks: Stage3CheckDiagnostic[]): string {
+  const passingChecks = checks.filter((check) => check.pass).map((check) => check.check);
+  return passingChecks.length > 0 ? passingChecks.join(", ") : "no failed checks";
 }
 
 async function loadMultiTimeframeBars(
@@ -1373,6 +1402,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
       volumeRatio: review.volumeRatio,
       chartReviewSummary: review.summary,
       chartReviewScore: review.score,
+      chartDiagnostics: review.diagnostics,
     });
   }
 
@@ -1394,11 +1424,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
   // Stage 4: simple final score and pick
   const ranked = stage3Passed
     .map((candidate) => {
-      const moveScore = Math.min(Math.abs(candidate.chartMovePct), 6);
-      const oiScore = Math.min(candidate.optionOpenInterest / 500, 6);
-      const spreadScore = Math.max(0, 3 - (candidate.optionSpread / Math.max(candidate.optionMid, 0.01)) * 10);
-      const volumeScore = candidate.volumeRatio === null ? 1 : Math.min(candidate.volumeRatio, 2);
-      const score = moveScore + oiScore + spreadScore + volumeScore + candidate.chartReviewScore;
+      const score = scoreStage3Candidate(candidate);
       return { ...candidate, score };
     })
     .sort((a, b) => b.score - a.score);
@@ -1514,16 +1540,13 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
       volumeRatio: review.volumeRatio,
       chartReviewSummary: review.summary,
       chartReviewScore: review.score,
+      chartDiagnostics: review.diagnostics,
     });
   }
 
   const ranked = stage3Passed
     .map((candidate) => {
-      const moveScore = Math.min(Math.abs(candidate.chartMovePct), 6);
-      const oiScore = Math.min(candidate.optionOpenInterest / 500, 6);
-      const spreadScore = Math.max(0, 3 - (candidate.optionSpread / Math.max(candidate.optionMid, 0.01)) * 10);
-      const volumeScore = candidate.volumeRatio === null ? 1 : Math.min(candidate.volumeRatio, 2);
-      const score = moveScore + oiScore + spreadScore + volumeScore + candidate.chartReviewScore;
+      const score = scoreStage3Candidate(candidate);
       return { ...candidate, score };
     })
     .sort((a, b) => b.score - a.score);
@@ -1538,12 +1561,27 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
       stage3Passed: stage3Passed.length,
       finalRanking: ranked.length,
     },
+    stageSymbols: {
+      stage1Entered,
+      stage1Passed: stage1Passed.map((candidate) => candidate.symbol),
+      stage2Passed: stage2Passed.map((candidate) => candidate.symbol),
+      stage3Passed: stage3Passed.map((candidate) => candidate.symbol),
+      finalRanking: ranked.map((candidate) => candidate.symbol),
+    },
+    stage3PassedDetails: ranked.map((candidate) => ({
+      symbol: candidate.symbol,
+      direction: candidate.chartDirection,
+      score: candidate.score,
+      summary: candidate.chartReviewSummary,
+      whyPassed: summarizePassingChecks(candidate.chartDiagnostics.checks),
+    })),
     rejectionSummaries: {
       stage1: stage1RejectionSummary,
       stage2: stage2RejectionSummary,
       stage3: stage3RejectionSummary,
     },
     nearMisses,
+    finalSelectedSymbol: ranked[0]?.symbol ?? null,
   };
 }
 

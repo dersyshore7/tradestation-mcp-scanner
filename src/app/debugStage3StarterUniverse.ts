@@ -31,7 +31,9 @@ function loadDotEnvFileIfPresent(): void {
   }
 }
 
-const MAX_STAGE3_LINES = Number(process.env.STAGE3_DEBUG_MAX_LINES ?? "20");
+const stage3MaxLinesRaw = process.env.STAGE3_DEBUG_MAX_LINES;
+const stage3MaxLines = stage3MaxLinesRaw ? Number(stage3MaxLinesRaw) : null;
+const hasStage3MaxLines = stage3MaxLines !== null && Number.isFinite(stage3MaxLines) && stage3MaxLines >= 0;
 
 async function runDebug(): Promise<void> {
   loadDotEnvFileIfPresent();
@@ -40,6 +42,46 @@ async function runDebug(): Promise<void> {
 
   console.log("Stage pass counts:");
   console.log(JSON.stringify(telemetry.stageCounts, null, 2));
+
+  const countMismatches: string[] = [];
+  const expectedStage1Entered = telemetry.stageSymbols.stage1Entered.length;
+  if (telemetry.stageCounts.stage1Entered !== expectedStage1Entered) {
+    countMismatches.push(`stage1Entered count=${telemetry.stageCounts.stage1Entered} symbols=${expectedStage1Entered}`);
+  }
+
+  const expectedStage1Passed = telemetry.stageSymbols.stage1Passed.length;
+  if (telemetry.stageCounts.stage1Passed !== expectedStage1Passed) {
+    countMismatches.push(`stage1Passed count=${telemetry.stageCounts.stage1Passed} symbols=${expectedStage1Passed}`);
+  }
+
+  const expectedStage2Passed = telemetry.stageSymbols.stage2Passed.length;
+  if (telemetry.stageCounts.stage2Passed !== expectedStage2Passed) {
+    countMismatches.push(`stage2Passed count=${telemetry.stageCounts.stage2Passed} symbols=${expectedStage2Passed}`);
+  }
+
+  const expectedStage3Passed = telemetry.stageSymbols.stage3Passed.length;
+  if (telemetry.stageCounts.stage3Passed !== expectedStage3Passed) {
+    countMismatches.push(`stage3Passed count=${telemetry.stageCounts.stage3Passed} symbols=${expectedStage3Passed}`);
+  }
+
+  const expectedFinalRanking = telemetry.stageSymbols.finalRanking.length;
+  if (telemetry.stageCounts.finalRanking !== expectedFinalRanking) {
+    countMismatches.push(`finalRanking count=${telemetry.stageCounts.finalRanking} symbols=${expectedFinalRanking}`);
+  }
+
+  const diagnosticsStage3Passed = diagnostics.filter((item) => item.pass).length;
+  if (telemetry.stageCounts.stage3Passed !== diagnosticsStage3Passed) {
+    countMismatches.push(`stage3Passed telemetry=${telemetry.stageCounts.stage3Passed} diagnostics=${diagnosticsStage3Passed}`);
+  }
+
+  if (countMismatches.length > 0) {
+    console.log("Count mismatches detected:");
+    for (const mismatch of countMismatches) {
+      console.log(`- ${mismatch}`);
+    }
+  } else {
+    console.log("Count consistency: OK");
+  }
 
   console.log("Rejection summaries:");
   console.log(JSON.stringify(telemetry.rejectionSummaries, null, 2));
@@ -71,7 +113,32 @@ async function runDebug(): Promise<void> {
     }
   }
 
-  const displayedDiagnostics = diagnostics.slice(0, Math.max(0, MAX_STAGE3_LINES));
+  console.log("Stage 3 passed symbols:");
+  if (telemetry.stage3PassedDetails.length === 0) {
+    console.log("(none)");
+  } else {
+    for (const item of telemetry.stage3PassedDetails) {
+      console.log(
+        `${item.symbol}: dir=${item.direction} | score=${item.score.toFixed(2)} | summary=${item.summary} | why=${item.whyPassed}`,
+      );
+    }
+  }
+
+  console.log("Stage 3 passed but not final selected:");
+  const notSelected = telemetry.stage3PassedDetails.filter((item) => item.symbol !== telemetry.finalSelectedSymbol);
+  if (notSelected.length === 0) {
+    console.log("(none)");
+  } else {
+    for (const item of notSelected) {
+      console.log(
+        `${item.symbol}: not selected because score ${item.score.toFixed(2)} is below top score ${(telemetry.stage3PassedDetails[0]?.score ?? 0).toFixed(2)} (${telemetry.finalSelectedSymbol ?? "none"}).`,
+      );
+    }
+  }
+
+  const displayedDiagnostics = hasStage3MaxLines
+    ? diagnostics.slice(0, Math.max(0, Math.floor(stage3MaxLines ?? 0)))
+    : diagnostics;
   for (const item of displayedDiagnostics) {
     const direction = item.direction ?? "none";
     const move = `${item.movePct.toFixed(2)}%`;
@@ -81,7 +148,7 @@ async function runDebug(): Promise<void> {
     );
   }
 
-  if (diagnostics.length > displayedDiagnostics.length) {
+  if (hasStage3MaxLines && diagnostics.length > displayedDiagnostics.length) {
     console.log(`... truncated ${diagnostics.length - displayedDiagnostics.length} symbol rows (set STAGE3_DEBUG_MAX_LINES to adjust).`);
   }
 }
