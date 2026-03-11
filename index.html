@@ -122,13 +122,14 @@
       <h1>Scanner Workflow</h1>
       <div class="card">
         <div class="row muted">Run the standard weekly scan with one click.</div>
+        <div class="row"><strong>Default prompt:</strong> <code id="defaultPromptText"></code></div>
         <button id="runScanButton">Run Weekly Scan</button>
 
         <details>
           <summary>Advanced / Custom Prompt</summary>
           <div id="advancedPromptFields">
             <label for="prompt">Prompt override</label>
-            <input id="prompt" value="find bullish setups" />
+            <input id="prompt" placeholder="Optional custom prompt" />
           </div>
         </details>
       </div>
@@ -159,16 +160,20 @@
     </div>
 
     <script>
-      const DEFAULT_SCAN_PROMPT = "find bullish setups";
+      let defaultScanPrompt = "";
 
       const runScanButton = document.getElementById("runScanButton");
       const promptInput = document.getElementById("prompt");
       const resultArea = document.getElementById("resultArea");
+      const defaultPromptText = document.getElementById("defaultPromptText");
       const tradeModal = document.getElementById("tradeModal");
       const closeModalButton = document.getElementById("closeModal");
       const saveTradeLogButton = document.getElementById("saveTradeLog");
 
       let latestTradeLog = null;
+      if (defaultPromptText) {
+        defaultPromptText.textContent = "Loading...";
+      }
       let latestBackendData = null;
 
       function escapeHtml(value) {
@@ -207,6 +212,24 @@
 
       function closeModal() {
         tradeModal.style.display = "none";
+      }
+
+      async function loadDefaults() {
+        try {
+          const response = await fetch("/api/defaults");
+          const data = await response.json();
+          defaultScanPrompt = typeof data.defaultScanPrompt === "string" ? data.defaultScanPrompt : "";
+          if (defaultPromptText) {
+            defaultPromptText.textContent = defaultScanPrompt || "Unavailable";
+          }
+          if (!promptInput.value && defaultScanPrompt) {
+            promptInput.placeholder = defaultScanPrompt;
+          }
+        } catch {
+          if (defaultPromptText) {
+            defaultPromptText.textContent = "Unavailable";
+          }
+        }
       }
 
       function renderDebugDetailsPanel() {
@@ -298,12 +321,12 @@
 
         try {
           const customPrompt = promptInput.value.trim();
-          const prompt = customPrompt.length > 0 ? customPrompt : DEFAULT_SCAN_PROMPT;
+          const requestBody = customPrompt.length > 0 ? { prompt: customPrompt } : {};
 
           const response = await fetch("/api/workflow", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ prompt }),
+            body: JSON.stringify(requestBody),
           });
 
           const data = await response.json();
@@ -333,6 +356,8 @@
           closeModal();
         }
       });
+
+      loadDefaults();
 
       saveTradeLogButton.addEventListener("click", () => {
         latestTradeLog = {

@@ -1,6 +1,7 @@
 import { runScan, type ScanInput } from "../src/app/runScan.js";
 import { runStarterUniverseTelemetryDebug } from "../src/app/runScan.js";
 import { constructTradeCard } from "../src/app/runTradeConstruction.js";
+import { DEFAULT_SCAN_PROMPT } from "../src/config/defaultScanPrompt.js";
 
 type VercelRequestLike = {
   method?: string;
@@ -19,7 +20,7 @@ type WorkflowRequestBody = {
 
 function normalizeInput(body: unknown): ScanInput {
   const payload = (body ?? {}) as WorkflowRequestBody;
-  const prompt = typeof payload.prompt === "string" && payload.prompt.trim().length > 0 ? payload.prompt.trim() : "find bullish setups";
+  const prompt = typeof payload.prompt === "string" && payload.prompt.trim().length > 0 ? payload.prompt.trim() : DEFAULT_SCAN_PROMPT;
   const excludedTickers = Array.isArray(payload.excludedTickers)
     ? payload.excludedTickers.filter((item): item is string => typeof item === "string")
     : [];
