@@ -196,6 +196,17 @@ npm install
 OPENAI_API_KEY=your_key_here npm run scanner:test
 ```
 
+## Thin Vercel UI (first pass)
+
+A minimal UI is available at the project root (`/`) for running the existing scan -> confirm -> trade-card workflow.
+
+- Click **Run Scan** to call `POST /api/workflow`.
+- The API reuses existing engine functions (`runScan` and `constructTradeCard`) without changing scan/trade logic.
+- If no confirmed setup exists, the UI shows `no_trade_today`.
+- If confirmed, it shows the scan reasoning and full trade card plus an **I took this trade** local-only capture form.
+
+This UI is intentionally thin and does not place orders or persist a journal yet.
+
 ## Local MCP server (still works)
 
 ```bash

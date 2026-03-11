@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TradeStation Scanner UI</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        background: #f7f7f8;
+        color: #111;
+      }
+      main {
+        max-width: 860px;
+        margin: 40px auto;
+        padding: 0 16px;
+      }
+      .card {
+        background: white;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 16px;
+        margin-bottom: 16px;
+      }
+      label {
+        display: block;
+        margin-bottom: 8px;
+        font-weight: 600;
+      }
+      input,
+      textarea,
+      button {
+        font: inherit;
+      }
+      input,
+      textarea {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        padding: 8px;
+        margin-bottom: 12px;
+      }
+      button {
+        border: 1px solid #222;
+        border-radius: 6px;
+        background: #111;
+        color: #fff;
+        padding: 8px 12px;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: white;
+        color: #111;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .row {
+        margin-bottom: 8px;
+      }
+      .modal {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.45);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+      }
+      .modal-content {
+        width: 100%;
+        max-width: 480px;
+        background: white;
+        border-radius: 8px;
+        border: 1px solid #ddd;
+        padding: 16px;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+      }
+      pre {
+        background: #fafafa;
+        border: 1px solid #e5e5e5;
+        border-radius: 6px;
+        padding: 12px;
+        overflow-x: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Scanner Workflow</h1>
+      <div class="card">
+        <label for="prompt">Prompt</label>
+        <input id="prompt" value="find bullish setups" />
+        <button id="runScanButton">Run Scan</button>
+      </div>
+
+      <div class="card">
+        <h2>Result</h2>
+        <div id="resultArea">No run yet.</div>
+      </div>
+    </main>
+
+    <div class="modal" id="tradeModal" role="dialog" aria-modal="true" aria-label="I took this trade">
+      <div class="modal-content">
+        <h3>I took this trade</h3>
+        <label for="actualEntry">Actual entry price</label>
+        <input id="actualEntry" type="number" step="0.01" placeholder="e.g. 2.15" />
+
+        <label for="quantity">Quantity / contracts</label>
+        <input id="quantity" type="number" step="1" placeholder="e.g. 3" />
+
+        <label for="note">Optional note</label>
+        <textarea id="note" rows="3" placeholder="Optional execution note"></textarea>
+
+        <div class="actions">
+          <button id="saveTradeLog">Save locally</button>
+          <button id="closeModal" class="secondary">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const runScanButton = document.getElementById("runScanButton");
+      const promptInput = document.getElementById("prompt");
+      const resultArea = document.getElementById("resultArea");
+      const tradeModal = document.getElementById("tradeModal");
+      const closeModalButton = document.getElementById("closeModal");
+      const saveTradeLogButton = document.getElementById("saveTradeLog");
+
+      let latestTradeLog = null;
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      function openModal() {
+        tradeModal.style.display = "flex";
+      }
+
+      function closeModal() {
+        tradeModal.style.display = "none";
+      }
+
+      function renderNoTrade(scan) {
+        resultArea.innerHTML = `
+          <div class="row"><strong>Outcome:</strong> no_trade_today</div>
+          <div class="row"><strong>Reason:</strong> ${escapeHtml(scan.reason)}</div>
+        `;
+      }
+
+      function renderTrade(scan, tradeCard) {
+        resultArea.innerHTML = `
+          <div class="row"><strong>Scan conclusion:</strong> ${escapeHtml(scan.conclusion)}</div>
+          <div class="row"><strong>Ticker:</strong> ${escapeHtml(scan.ticker)}</div>
+          <div class="row"><strong>Direction:</strong> ${escapeHtml(scan.direction)}</div>
+          <div class="row"><strong>Confidence:</strong> ${escapeHtml(scan.confidence)}</div>
+          <div class="row"><strong>Scan / confirmation reasoning:</strong> ${escapeHtml(scan.reason)}</div>
+          <hr />
+          <h3>Trade Card</h3>
+          <div class="row"><strong>Ticker:</strong> ${escapeHtml(tradeCard.ticker)}</div>
+          <div class="row"><strong>Direction:</strong> ${escapeHtml(tradeCard.direction)}</div>
+          <div class="row"><strong>Confidence:</strong> ${escapeHtml(tradeCard.confidence)}</div>
+          <div class="row"><strong>Buy:</strong> ${escapeHtml(tradeCard.buy)}</div>
+          <div class="row"><strong>Invalidation Exit:</strong> ${escapeHtml(tradeCard.invalidationExit)}</div>
+          <div class="row"><strong>Take-Profit Exit:</strong> ${escapeHtml(tradeCard.takeProfitExit)}</div>
+          <div class="row"><strong>Time Exit:</strong> ${escapeHtml(tradeCard.timeExit)}</div>
+          <div class="row"><strong>R:R Math:</strong> ${escapeHtml(tradeCard.rrMath)}</div>
+          <div class="row"><strong>Rationale:</strong> ${escapeHtml(tradeCard.rationale)}</div>
+          <div style="margin-top: 12px;">
+            <button id="tookTradeButton">I took this trade</button>
+          </div>
+          <div id="localTradeCapture"></div>
+        `;
+
+        const tookTradeButton = document.getElementById("tookTradeButton");
+        tookTradeButton?.addEventListener("click", openModal);
+
+        if (latestTradeLog) {
+          const holder = document.getElementById("localTradeCapture");
+          if (holder) {
+            holder.innerHTML = `<h4>Local capture</h4><pre>${escapeHtml(JSON.stringify(latestTradeLog, null, 2))}</pre>`;
+          }
+        }
+      }
+
+      runScanButton.addEventListener("click", async () => {
+        runScanButton.disabled = true;
+        resultArea.textContent = "Running scan...";
+
+        try {
+          const response = await fetch("/api/workflow", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ prompt: promptInput.value }),
+          });
+
+          const data = await response.json();
+
+          if (!response.ok) {
+            resultArea.textContent = data.error || "Request failed.";
+            return;
+          }
+
+          if (!data.tradeCard) {
+            renderNoTrade(data.scan);
+            return;
+          }
+
+          renderTrade(data.scan, data.tradeCard);
+        } catch (error) {
+          resultArea.textContent = error instanceof Error ? error.message : "Unexpected error.";
+        } finally {
+          runScanButton.disabled = false;
+        }
+      });
+
+      closeModalButton.addEventListener("click", closeModal);
+      tradeModal.addEventListener("click", (event) => {
+        if (event.target === tradeModal) {
+          closeModal();
+        }
+      });
+
+      saveTradeLogButton.addEventListener("click", () => {
+        latestTradeLog = {
+          actualEntryPrice: document.getElementById("actualEntry").value,
+          quantityOrContracts: document.getElementById("quantity").value,
+          note: document.getElementById("note").value,
+          capturedAt: new Date().toISOString(),
+        };
+
+        console.log("Local trade capture (no persistence):", latestTradeLog);
+        closeModal();
+
+        const holder = document.getElementById("localTradeCapture");
+        if (holder) {
+          holder.innerHTML = `<h4>Local capture</h4><pre>${escapeHtml(JSON.stringify(latestTradeLog, null, 2))}</pre>`;
+        }
+      });
+    </script>
+  </body>
+</html>
