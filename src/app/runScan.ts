@@ -321,6 +321,11 @@ type Stage3Evaluation = {
 
 type FinalistReviewResult = {
   symbol: string;
+  direction: ScanDirection | null;
+  confidence: ScanConfidence | null;
+  reviewStatus: "reviewed";
+  confirmationStatus: "confirmed" | "rejected";
+  confirmationFailureReasons: string[];
   rankingScore: number;
   stage1Inputs: {
     lastPrice: number;
@@ -344,6 +349,14 @@ type FinalistReviewResult = {
   } | null;
   conclusion: ScanResult["conclusion"];
   reason: string;
+};
+
+type SingleSymbolReviewResult = ScanResult & {
+  confirmationDebug?: {
+    reviewStatus: "reviewed";
+    confirmationStatus: "confirmed" | "rejected";
+    confirmationFailureReasons: string[];
+  };
 };
 
 type EarningsCheckResult = {
@@ -617,10 +630,38 @@ function logFinalistReviewDebugSection(finalists: FinalistReviewResult[], select
       stage3: finalist.stage3Inputs,
     };
     const roomDetails = finalist.stage3Inputs?.roomToTargetDecision ?? "n/a";
+    const failureReasons = finalist.confirmationFailureReasons.length > 0 ? finalist.confirmationFailureReasons.join("; ") : "none";
     console.log(
-      `[scanner:debug] ${finalist.symbol}: rankingScore=${finalist.rankingScore.toFixed(2)} | reviewConclusion=${finalist.conclusion} | selected=${selected} | room2R=${roomDetails} | reviewReason=${finalist.reason} | inputs=${JSON.stringify(stageInputs)}`,
+      `[scanner:debug] ${finalist.symbol}: dir=${finalist.direction ?? "n/a"} | status=${finalist.reviewStatus}/${finalist.confirmationStatus} | confidence=${finalist.confidence ?? "n/a"} | failureReasons=${failureReasons} | rankingScore=${finalist.rankingScore.toFixed(2)} | reviewConclusion=${finalist.conclusion} | selected=${selected} | room2R=${roomDetails} | reviewReason=${finalist.reason} | inputs=${JSON.stringify(stageInputs)}`,
     );
   }
+}
+
+function formatFinalistReasonList(reasons: string[]): string {
+  if (reasons.length === 0) {
+    return "unspecified confirmation failure";
+  }
+
+  if (reasons.length === 1) {
+    return reasons[0] ?? "unspecified confirmation failure";
+  }
+
+  return `${reasons.slice(0, -1).join(", ")} and ${reasons[reasons.length - 1]}`;
+}
+
+function buildFinalistNoTradeReasonPath(finalists: FinalistReviewResult[]): string {
+  const reviewed = finalists
+    .map(
+      (item) =>
+        `${item.symbol} (${item.direction ?? "n/a"}, ${item.reviewStatus}/${item.confirmationStatus}, confidence=${item.confidence ?? "n/a"}, reasons: ${formatFinalistReasonList(item.confirmationFailureReasons)})`,
+    )
+    .join("; ");
+
+  const narrative = finalists
+    .map((item) => `${item.symbol} was shortlisted but failed final confirmation due to ${formatFinalistReasonList(item.confirmationFailureReasons)}.`)
+    .join(" ");
+
+  return `Finalists were reviewed but none were confirmed (${finalists.map((item) => item.symbol).join(", ")}). Reason path: ${narrative} Finalist outcomes: ${reviewed}.`;
 }
 
 function getSelectionWhyWonReason(finalists: FinalistReviewResult[], selectedSymbol: string): string {
@@ -2432,6 +2473,11 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
       if (!earningsCheck.pass) {
         finalistReviewResults.push({
           symbol: finalist.symbol,
+          direction: null,
+          confidence: null,
+          reviewStatus: "reviewed",
+          confirmationStatus: "rejected",
+          confirmationFailureReasons: ["earnings risk inside target DTE window"],
           rankingScore: finalist.score,
           stage1Inputs: (() => {
             const item = stage1BySymbol.get(finalist.symbol);
@@ -2467,9 +2513,14 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
       }
     }
 
-    const reviewResult = await runSingleSymbolTradeStationAnalysis(finalist.symbol);
+    const reviewResult: SingleSymbolReviewResult = await runSingleSymbolTradeStationAnalysis(finalist.symbol);
     finalistReviewResults.push({
       symbol: finalist.symbol,
+      direction: reviewResult.direction,
+      confidence: reviewResult.confidence,
+      reviewStatus: reviewResult.confirmationDebug?.reviewStatus ?? "reviewed",
+      confirmationStatus: reviewResult.conclusion === "confirmed" ? "confirmed" : "rejected",
+      confirmationFailureReasons: reviewResult.confirmationDebug?.confirmationFailureReasons ?? ["final confirmation checks did not pass"],
       rankingScore: finalist.score,
       stage1Inputs: (() => {
         const item = stage1BySymbol.get(finalist.symbol);
@@ -2524,7 +2575,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
     direction: null,
     confidence: null,
     conclusion: "no_trade_today",
-    reason: `Finalists were reviewed but none were confirmed (${finalists.map((item) => item.symbol).join(", ")}).`,
+    reason: buildFinalistNoTradeReasonPath(finalistReviewResults),
   };
 }
 
@@ -2846,7 +2897,7 @@ function readNumber(source: Record<string, unknown> | null, keys: string[]): num
   return null;
 }
 
-export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promise<ScanResult> {
+export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promise<SingleSymbolReviewResult> {
   const get = await createTradeStationGetFetcher();
   const targetDte = await resolveTargetDteForSymbol(get, symbol);
   if (targetDte !== null) {
@@ -2859,6 +2910,11 @@ export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promi
         confidence: null,
         conclusion: "rejected",
         reason: `Single-symbol review rejected due to earnings risk inside the target DTE window. ${earningsCheck.reason}`,
+        confirmationDebug: {
+          reviewStatus: "reviewed",
+          confirmationStatus: "rejected",
+          confirmationFailureReasons: ["earnings risk inside target DTE window"],
+        },
       };
     }
   }
@@ -2876,6 +2932,11 @@ export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promi
         confidence: outcome.confidence,
         conclusion: "confirmed",
         reason: reviewNarrative,
+        confirmationDebug: {
+          reviewStatus: "reviewed",
+          confirmationStatus: "confirmed",
+          confirmationFailureReasons: [],
+        },
       };
     }
 
@@ -2885,6 +2946,11 @@ export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promi
       confidence: null,
       conclusion: "rejected",
       reason: reviewNarrative,
+      confirmationDebug: {
+        reviewStatus: "reviewed",
+        confirmationStatus: "rejected",
+        confirmationFailureReasons: getStage3FailReasons(review),
+      },
     };
   }
 
@@ -2894,6 +2960,11 @@ export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promi
     confidence: null,
     conclusion: "no_trade_today",
     reason: "Could not review the full 1D/1W/1M/3M/1Y chart context from TradeStation data, so no_trade_today.",
+    confirmationDebug: {
+      reviewStatus: "reviewed",
+      confirmationStatus: "rejected",
+      confirmationFailureReasons: ["missing multi-timeframe chart context"],
+    },
   };
 }
 
