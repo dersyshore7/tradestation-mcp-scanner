@@ -781,6 +781,28 @@ function describeRoomToTargetDecision(
   return `2R room check -> ref=${diagnostics.referencePrice.toFixed(2)}, dir=${diagnostics.direction}, level=${levelLabel}, room=${roomLabel}, assumption=${diagnostics.targetAssumption}, decision=${diagnostics.decisionMode}, status=${roomStatus}, reason=${diagnostics.insufficientRoomReason}`;
 }
 
+function resolveConfirmationOutcome(review: ChartReviewResult): { conclusion: ScanResult["conclusion"]; confidence: ScanConfidence | null } {
+  if (!review.pass || !review.direction) {
+    return { conclusion: "rejected", confidence: null };
+  }
+
+  const checkByName = new Map(review.diagnostics.checks.map((item) => [item.check, item]));
+  const hasImpulseConsolidationIssue = !checkByName.get("impulse-consolidation")?.pass;
+  const hasDistributionIssue = !checkByName.get("fake-hold-distribution")?.pass;
+  const majorIssueCount = [hasImpulseConsolidationIssue, hasDistributionIssue].filter(Boolean).length;
+
+  if (majorIssueCount >= 2) {
+    return { conclusion: "rejected", confidence: null };
+  }
+
+  if (majorIssueCount === 1) {
+    return { conclusion: "confirmed", confidence: "75-84" };
+  }
+
+  const confidence: ScanConfidence = review.score >= 11 ? "85-92" : review.score >= 9 ? "75-84" : "65-74";
+  return { conclusion: "confirmed", confidence };
+}
+
 async function loadMultiTimeframeBars(
   get: (path: string) => Promise<Response>,
   symbol: string,
@@ -913,7 +935,7 @@ function runStage3ChartReview(
           levelUsed: null,
           roomPct: null,
           targetAssumption: "2R requires roomPct >= 2.00%",
-          decisionMode: "hard_fail",
+          decisionMode: "score_penalty",
           sufficientRoom: true,
           insufficientRoomReason: "No data because directional setup was not available.",
         },
@@ -968,7 +990,7 @@ function runStage3ChartReview(
           levelUsed: null,
           roomPct: null,
           targetAssumption: "2R requires roomPct >= 2.00%",
-          decisionMode: "hard_fail",
+          decisionMode: "score_penalty",
           sufficientRoom: true,
           insufficientRoomReason: "No data because directional setup was not available.",
         },
@@ -1023,7 +1045,7 @@ function runStage3ChartReview(
           levelUsed: null,
           roomPct: null,
           targetAssumption: "2R requires roomPct >= 2.00%",
-          decisionMode: "hard_fail",
+          decisionMode: "score_penalty",
           sufficientRoom: true,
           insufficientRoomReason: "No data because directional setup was not available.",
         },
@@ -1287,7 +1309,7 @@ function runStage3ChartReview(
     levelUsed,
     roomPct,
     targetAssumption: "2R requires roomPct >= 2.00%",
-    decisionMode: "hard_fail",
+    decisionMode: higherTimeframe2RPass ? "score_penalty" : "hard_fail",
     sufficientRoom: higherTimeframe2RPass,
     insufficientRoomReason:
       roomPct === null
@@ -2602,7 +2624,7 @@ export async function runStage3DebugForStarterUniverse(): Promise<
             levelUsed: null,
             roomPct: null,
             targetAssumption: "2R requires roomPct >= 2.00%",
-            decisionMode: "hard_fail",
+            decisionMode: "score_penalty",
             sufficientRoom: true,
             insufficientRoomReason: "No data because bars failed to load.",
           },
@@ -2738,14 +2760,14 @@ export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promi
   const { barsByView: bars, timeframeDiagnostics } = await loadMultiTimeframeBars(get, symbol);
   if (bars) {
     const review = runStage3ChartReview(bars, timeframeDiagnostics);
-    const reviewNarrative = buildSingleSymbolReviewNarrative(review);
+    const outcome = resolveConfirmationOutcome(review);
+    const reviewNarrative = buildSingleSymbolReviewNarrative(review, outcome.conclusion);
 
-    if (review.pass && review.direction) {
-      const confidence: ScanConfidence = review.score >= 5 ? "85-92" : review.score >= 4 ? "75-84" : "65-74";
+    if (outcome.conclusion === "confirmed" && review.direction && outcome.confidence) {
       return {
         ticker: symbol,
         direction: review.direction,
-        confidence,
+        confidence: outcome.confidence,
         conclusion: "confirmed",
         reason: reviewNarrative,
       };
@@ -2769,7 +2791,7 @@ export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promi
   };
 }
 
-function buildSingleSymbolReviewNarrative(review: ChartReviewResult): string {
+function buildSingleSymbolReviewNarrative(review: ChartReviewResult, conclusion: ScanResult["conclusion"]): string {
   const checkByName = new Map(review.diagnostics.checks.map((item) => [item.check, item]));
   const bodyToRange = review.diagnostics.bodyToRange;
   const wickiness = review.diagnostics.wickiness;
@@ -2830,6 +2852,17 @@ function buildSingleSymbolReviewNarrative(review: ChartReviewResult): string {
     supportive.push("the chart supports a clean 2:1-style structure in principle");
   } else {
     problematic.push("a clean 2:1-style structure is not clearly supported yet");
+  }
+
+  if (conclusion === "confirmed" && problematic.length > 0) {
+    const majorCautions = new Set([
+      "impulse plus consolidation structure is not clean enough",
+      "fake-hold/distribution or trap behavior is elevated",
+      "a clean 2:1-style structure is not clearly supported yet",
+    ]);
+    const reframedProblematic = problematic.map((item) => (majorCautions.has(item) ? `caution: ${item}` : item));
+    problematic.length = 0;
+    problematic.push(...reframedProblematic);
   }
 
   const timeframeStatus = (["1D", "1W", "1M", "3M", "1Y"] as MultiTimeframeView[])
