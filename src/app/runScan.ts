@@ -664,6 +664,50 @@ function buildFinalistNoTradeReasonPath(finalists: FinalistReviewResult[]): stri
   return `Finalists were reviewed but none were confirmed (${finalists.map((item) => item.symbol).join(", ")}). Reason path: ${narrative} Finalist outcomes: ${reviewed}.`;
 }
 
+function buildGenericNoTradeReason(stage3PassedCount: number, finalistsReviewedCount: number): string {
+  if (stage3PassedCount === 0 && finalistsReviewedCount === 0) {
+    return "No symbols passed Stage 3 chart/bar review.";
+  }
+
+  if (finalistsReviewedCount === 0) {
+    return "No finalists were available for confirmation review.";
+  }
+
+  return "Finalists were reviewed but none were confirmed.";
+}
+
+function collectMentionedUniverseSymbols(reason: string): string[] {
+  const mentioned = reason.match(/\b[A-Z]{1,5}\b/g) ?? [];
+  const universe = new Set<string>(V1_SCAN_UNIVERSE);
+  return [...new Set(mentioned.filter((symbol) => universe.has(symbol)))];
+}
+
+function getReasonSymbolConsistencyWarnings(reason: string, approvedSymbols: Set<string>): string[] {
+  const mentionedSymbols = collectMentionedUniverseSymbols(reason);
+  return mentionedSymbols
+    .filter((symbol) => !approvedSymbols.has(symbol))
+    .map((symbol) => `scan.reason mentions symbol ${symbol} that is absent from finalistsReviewed/stage3Passed source-of-truth lists.`);
+}
+
+function buildConsistentNoTradeReason(
+  finalists: FinalistReviewResult[],
+  stage3PassedSymbols: string[],
+): { reason: string; symbolConsistencyWarnings: string[] } {
+  const fallbackReason = buildGenericNoTradeReason(stage3PassedSymbols.length, finalists.length);
+  if (finalists.length === 0) {
+    return { reason: fallbackReason, symbolConsistencyWarnings: [] };
+  }
+
+  const detailedReason = buildFinalistNoTradeReasonPath(finalists);
+  const approvedSymbols = new Set([...stage3PassedSymbols, ...finalists.map((item) => item.symbol)]);
+  const symbolConsistencyWarnings = getReasonSymbolConsistencyWarnings(detailedReason, approvedSymbols);
+  if (symbolConsistencyWarnings.length > 0) {
+    return { reason: fallbackReason, symbolConsistencyWarnings };
+  }
+
+  return { reason: detailedReason, symbolConsistencyWarnings: [] };
+}
+
 function getSelectionWhyWonReason(finalists: FinalistReviewResult[], selectedSymbol: string): string {
   const selectedFinalist = finalists.find((item) => item.symbol === selectedSymbol);
   if (!selectedFinalist) {
@@ -2570,12 +2614,19 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
   }
 
   logFinalistReviewDebugSection(finalistReviewResults, null);
+  const noTradeReason = buildConsistentNoTradeReason(
+    finalistReviewResults,
+    stage3Passed.map((candidate) => candidate.symbol),
+  );
+  for (const warning of noTradeReason.symbolConsistencyWarnings) {
+    console.warn(`[scanner:debug] ${warning}`);
+  }
   return {
     ticker: null,
     direction: null,
     confidence: null,
     conclusion: "no_trade_today",
-    reason: buildFinalistNoTradeReasonPath(finalistReviewResults),
+    reason: noTradeReason.reason,
   };
 }
 
@@ -2697,6 +2748,25 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
     })
     .slice(0, 3);
 
+  const telemetryReviewedFinalists: FinalistReviewResult[] = finalistReviewSource.finalists.map((item) => ({
+    symbol: item.symbol,
+    direction: item.chartDirection,
+    confidence: null,
+    reviewStatus: "reviewed",
+    confirmationStatus: "rejected",
+    confirmationFailureReasons: ["final confirmation checks did not pass"],
+    rankingScore: item.score,
+    stage1Inputs: null,
+    stage2Inputs: null,
+    stage3Inputs: null,
+    conclusion: "no_trade_today",
+    reason: "final confirmation checks did not pass",
+  }));
+  const telemetryNoTradeReason = buildConsistentNoTradeReason(
+    telemetryReviewedFinalists,
+    stage3Passed.map((candidate) => candidate.symbol),
+  );
+
   return {
     stageCounts: {
       stage1Entered: stage1Entered.length,
@@ -2729,7 +2799,7 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
       stage3: stage3RejectionSummary,
     },
     nearMisses,
-    consistencyChecks: [...finalistReviewSource.warnings, ...listConsistencyWarnings],
+    consistencyChecks: [...finalistReviewSource.warnings, ...listConsistencyWarnings, ...telemetryNoTradeReason.symbolConsistencyWarnings],
     finalSelectedSymbol: finalistReviewSource.finalists[0]?.symbol ?? null,
   };
 }
