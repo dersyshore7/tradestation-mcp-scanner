@@ -29,6 +29,7 @@ export type TradeConstructionResult = {
   ticker: string;
   direction: ScanDirection;
   confidence: ScanConfidence;
+  expectedTiming: string;
   buy: string;
   invalidationExit: string;
   takeProfitExit: string;
@@ -156,6 +157,33 @@ function computeThursdayBeforeExpiration(expirationDate: string): string | null 
   }
 
   return formatIsoDate(thursdayBefore);
+}
+
+function buildExpectedTiming(
+  direction: ScanDirection,
+  confidence: ScanConfidence,
+  trade: Pick<TradeInputs, "dte" | "underlyingPrice" | "targetUnderlying" | "optionMid" | "optionAtTarget">,
+): string {
+  const targetMovePct = Math.abs((trade.targetUnderlying - trade.underlyingPrice) / trade.underlyingPrice);
+  const optionFollowThroughPct = Math.abs((trade.optionAtTarget - trade.optionMid) / trade.optionMid);
+
+  const momentumStrength = confidence === "93-97" || confidence === "85-92" ? "strong" : confidence === "75-84" ? "moderate" : "mixed";
+  const volumeConfirmation = confidence === "93-97" || confidence === "85-92" ? "confirmed" : "adequate";
+  const continuationStructure = confidence === "93-97" ? "clean" : confidence === "85-92" ? "mostly clean" : "developing";
+  const setupPace = confidence === "93-97" || (confidence === "85-92" && trade.dte <= 21) ? "immediate" : "slower-developing";
+
+  let timingBucket = "Unclear timing";
+  if (confidence === "93-97" && trade.dte <= 21 && targetMovePct <= 0.03) {
+    timingBucket = "Today / next session";
+  } else if ((confidence === "93-97" || confidence === "85-92") && trade.dte <= 28 && targetMovePct <= 0.04) {
+    timingBucket = "Next 1–3 trading days";
+  } else if (confidence === "85-92" || (confidence === "75-84" && trade.dte <= 35)) {
+    timingBucket = "Next 1–2 weeks";
+  } else if (trade.dte > 21 || confidence === "65-74") {
+    timingBucket = "Slower swing / may take most of DTE";
+  }
+
+  return `${timingBucket} (${direction} bias; momentum ${momentumStrength}, volume ${volumeConfirmation}, continuation ${continuationStructure}, target distance ${(targetMovePct * 100).toFixed(1)}%, DTE ${trade.dte}, setup ${setupPace}, est. option follow-through ${(optionFollowThroughPct * 100).toFixed(0)}%).`;
 }
 
 async function resolveDirectionAndConfidence(
@@ -457,6 +485,7 @@ export async function constructTradeCard(input: TradeConstructionInput): Promise
     ticker: symbol,
     direction,
     confidence,
+    expectedTiming: buildExpectedTiming(direction, confidence, trade),
     buy: `${trade.contracts}x ${trade.optionSymbol} @ ${renderMoney(trade.optionMid)} limit (capital used ${renderMoney(trade.notional)} of 33% allocation target ${renderMoney(trade.allocation)} from equity ${renderMoney(trade.equity)})`,
     invalidationExit: `Exit if ${symbol} trades through ${trade.invalidationUnderlying.toFixed(2)} (approx option ${renderMoney(trade.optionAtInvalidation)}).`,
     takeProfitExit: `Take profit near ${symbol} ${trade.targetUnderlying.toFixed(2)} (approx option ${renderMoney(trade.optionAtTarget)}).`,
