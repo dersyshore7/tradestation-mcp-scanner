@@ -267,7 +267,10 @@
           ${renderList((telemetry?.nearMisses || []).map((item) => `${item.symbol} (${item.direction}, score ${item.score.toFixed(2)}): ${item.failReasons.join("; ")}`))}
 
           <div class="row"><strong>Finalist review summary:</strong></div>
-          ${renderList((telemetry?.finalRankingDebug || []).map((item) => `${item.symbol}: ${item.reason}`))}
+          ${renderList((telemetry?.finalistsReviewedDebug || []).map((item) => `${item.symbol}: ${item.eligibleForReviewReason} | source=${item.sourceList}${item.upstreamConsistencyWarning ? ` | WARNING: ${item.upstreamConsistencyWarning}` : ""}`))}
+
+          <div class="row"><strong>Consistency checks:</strong></div>
+          ${renderList(telemetry?.consistencyChecks || [])}
 
           ${renderDebugDetailsPanel()}
         `;
