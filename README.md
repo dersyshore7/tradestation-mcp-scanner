@@ -57,7 +57,7 @@ The script now prints, in this order:
 
 1. Stage pass counts (`stage1Entered`, `stage1Passed`, `stage2Passed`, `stage3Passed`, `finalRanking`)
 2. Concise rejection summaries for Stages 1/2/3
-3. Top 3 Stage 3 near misses (`symbol`, `direction`, `score`, `failReasons`)
+3. Top 3 Stage 3 near misses (`symbol`, `direction`, `score`, `hardFailReasons`, `softIssueReasons`, `infoReasons`)
 4. Concise per-symbol Stage 3 review summary (defaults to first 20 rows; set `STAGE3_DEBUG_MAX_LINES` to adjust)
 
 This telemetry is debug-only. The MCP tool response shape stays unchanged:

@@ -232,6 +232,14 @@ type Stage3CheckDiagnostic = {
   reason: string;
 };
 
+type Stage3IssueSeverity = "hard_veto" | "score_penalty" | "info";
+
+type Stage3IssueBreakdown = {
+  hardVetoes: string[];
+  softIssues: string[];
+  info: string[];
+};
+
 type Stage3Diagnostics = {
   timeframeDiagnostics: Record<MultiTimeframeView, Stage3TimeframeDiagnostic>;
   move1D: number | null;
@@ -287,7 +295,9 @@ type Stage3NearMiss = {
   symbol: string;
   direction: ScanDirection | "none";
   score: number;
-  failReasons: string[];
+  hardFailReasons: string[];
+  softIssueReasons: string[];
+  infoReasons: string[];
   roomToTargetDiagnostics: Stage3Diagnostics["roomToTargetDiagnostics"] | null;
 };
 
@@ -316,6 +326,7 @@ type Stage3Evaluation = {
   reviewScore: number;
   summary: string;
   rejectionReason: string | null;
+  issueBreakdown: Stage3IssueBreakdown;
   roomToTargetDiagnostics: Stage3Diagnostics["roomToTargetDiagnostics"] | null;
 };
 
@@ -743,13 +754,18 @@ async function evaluateStage3Candidates(
         reviewScore: 0,
         summary: "failed to load required multi-timeframe bars",
         rejectionReason: "other",
+        issueBreakdown: { hardVetoes: ["failed to load required multi-timeframe bars"], softIssues: [], info: [] },
         roomToTargetDiagnostics: null,
       });
       continue;
     }
 
     const review = runStage3ChartReview(multiTimeframeBars, timeframeDiagnostics);
-    if (!review.pass || !review.direction) {
+    const issueBreakdown = getStage3IssueBreakdown(review);
+    const hasHardVeto = issueBreakdown.hardVetoes.length > 0;
+    const pass = !!review.direction && !hasHardVeto;
+
+    if (!pass) {
       const failReason = getStage3FailReasons(review)[0] ?? "other";
       evaluations.push({
         symbol: candidate.symbol,
@@ -759,32 +775,35 @@ async function evaluateStage3Candidates(
         reviewScore: review.score,
         summary: review.summary,
         rejectionReason: failReason,
+        issueBreakdown,
         roomToTargetDiagnostics: review.diagnostics.roomToTargetDiagnostics,
       });
       if (process.env.SCANNER_DEBUG === "1") {
         console.log(
-          `[scanner:debug:stage3] ${candidate.symbol}: near-miss detail | ${describeRoomToTargetDecision(review.diagnostics.roomToTargetDiagnostics)}`,
+          `[scanner:debug:stage3] ${candidate.symbol}: near-miss detail | hardVetoes=${issueBreakdown.hardVetoes.length > 0 ? issueBreakdown.hardVetoes.join("; ") : "none"} | softIssues=${issueBreakdown.softIssues.length > 0 ? issueBreakdown.softIssues.join("; ") : "none"} | ${describeRoomToTargetDecision(review.diagnostics.roomToTargetDiagnostics)}`,
         );
       }
       continue;
     }
 
+    const direction = review.direction as ScanDirection;
     evaluations.push({
       symbol: candidate.symbol,
       pass: true,
       candidate: {
         ...candidate,
-        chartDirection: review.direction,
+        chartDirection: direction,
         chartMovePct: review.movePct,
         volumeRatio: review.volumeRatio,
         chartReviewSummary: review.summary,
         chartReviewScore: review.score,
         chartDiagnostics: review.diagnostics,
       },
-      direction: review.direction,
+      direction,
       reviewScore: review.score,
       summary: review.summary,
       rejectionReason: null,
+      issueBreakdown,
       roomToTargetDiagnostics: review.diagnostics.roomToTargetDiagnostics,
     });
   }
@@ -861,37 +880,85 @@ function categorizeStage2Failure(reason: string): string {
   return "other";
 }
 
-function getStage3FailReasons(review: ChartReviewResult): string[] {
-  const failedChecks = review.diagnostics.checks.filter((check) => !check.pass).map((check) => check.check);
-  const reasons: string[] = [];
+function categorizeStage3IssueSeverity(check: string): Stage3IssueSeverity {
+  if (check === "failed-breakout-trap" || check === "higher-timeframe-2r-viability" || check === "alignment") {
+    return "hard_veto";
+  }
 
-  if (failedChecks.includes("alignment")) {
-    reasons.push("alignment");
+  if (check === "volume-data" || check === "higher-timeframe-context") {
+    return "info";
   }
-  if (failedChecks.includes("expansion")) {
-    reasons.push("weak expansion");
+
+  return "score_penalty";
+}
+
+function formatStage3IssueReason(check: string, reason: string, review: ChartReviewResult): string {
+  if (check === "failed-breakout-trap") {
+    return `bull/bear trap risk (${reason})`;
   }
-  if (failedChecks.includes("volume")) {
-    reasons.push("weak volume");
+  if (check === "higher-timeframe-2r-viability") {
+    return `2R room tight (${describeRoomToTargetDecision(review.diagnostics.roomToTargetDiagnostics)})`;
   }
-  if (failedChecks.includes("continuation")) {
-    reasons.push("rejection risk");
+  if (check === "alignment") {
+    return `directional misalignment (${reason})`;
   }
-  if (failedChecks.includes("impulse-consolidation")) {
-    reasons.push("impulse/hold quality");
+  if (check === "expansion") {
+    return `weak expansion (${reason})`;
   }
-  if (failedChecks.includes("fake-hold-distribution")) {
-    reasons.push("distribution risk");
+  if (check === "impulse-consolidation") {
+    return `impulse/hold quality issue (${reason})`;
   }
-  if (failedChecks.includes("failed-breakout-trap")) {
-    reasons.push("bull/bear trap risk");
+  if (check === "fake-hold-distribution") {
+    return `distribution risk (${reason})`;
   }
-  if (failedChecks.includes("higher-timeframe-2r-viability")) {
-    reasons.push(`2R room tight (${describeRoomToTargetDecision(review.diagnostics.roomToTargetDiagnostics)})`);
+  if (check === "continuation") {
+    return `rejection risk (${reason})`;
   }
-  if (reasons.length === 0 && failedChecks.length > 0) {
-    reasons.push(failedChecks[0] ?? "other");
+  if (check === "volume") {
+    return `weak volume (${reason})`;
   }
+  return `${check} (${reason})`;
+}
+
+function getStage3IssueBreakdown(review: ChartReviewResult): Stage3IssueBreakdown {
+  const breakdown: Stage3IssueBreakdown = { hardVetoes: [], softIssues: [], info: [] };
+
+  for (const check of review.diagnostics.checks) {
+    if (check.pass) {
+      continue;
+    }
+
+    const severity = categorizeStage3IssueSeverity(check.check);
+    const reason = formatStage3IssueReason(check.check, check.reason, review);
+
+    if (severity === "hard_veto") {
+      breakdown.hardVetoes.push(reason);
+      continue;
+    }
+
+    if (severity === "score_penalty") {
+      breakdown.softIssues.push(reason);
+      continue;
+    }
+
+    breakdown.info.push(reason);
+  }
+
+  return breakdown;
+}
+
+function getStage3FailReasons(review: ChartReviewResult): string[] {
+  const issueBreakdown = getStage3IssueBreakdown(review);
+  const reasons = [...issueBreakdown.hardVetoes];
+
+  if (reasons.length === 0 && issueBreakdown.softIssues.length > 0) {
+    reasons.push(issueBreakdown.softIssues[0] ?? "other");
+  }
+
+  if (reasons.length === 0 && issueBreakdown.info.length > 0) {
+    reasons.push(issueBreakdown.info[0] ?? "other");
+  }
+
   if (reasons.length === 0) {
     reasons.push("other");
   }
@@ -1563,7 +1630,7 @@ function runStage3ChartReview(
     higherTimeframe2RPass,
   ];
   const passedChecks = checks.filter(Boolean).length;
-  const pass = passedChecks >= 8 && continuationPass && higherTimeframe2RPass && failedBreakoutBullTrapPass;
+  const pass = passedChecks >= 8 && continuationPass;
 
   const detailParts = [
     `expansion ${expansionPass ? "ok" : "weak"}`,
@@ -2697,7 +2764,9 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
       symbol: evaluation.symbol,
       direction: evaluation.direction,
       score: evaluation.reviewScore,
-      failReasons: [evaluation.rejectionReason ?? "other"],
+      hardFailReasons: evaluation.issueBreakdown.hardVetoes,
+      softIssueReasons: evaluation.issueBreakdown.softIssues,
+      infoReasons: evaluation.issueBreakdown.info,
       roomToTargetDiagnostics: evaluation.roomToTargetDiagnostics,
     });
   }
