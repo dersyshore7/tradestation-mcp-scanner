@@ -298,6 +298,7 @@ type Stage3NearMiss = {
   hardFailReasons: string[];
   softIssueReasons: string[];
   infoReasons: string[];
+  failReasons: string[];
   roomToTargetDiagnostics: Stage3Diagnostics["roomToTargetDiagnostics"] | null;
 };
 
@@ -2760,13 +2761,18 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
       incrementSummary(stage3RejectionSummary, evaluation.rejectionReason);
     }
 
+    const hardFailReasons = evaluation.issueBreakdown.hardVetoes ?? [];
+    const softIssueReasons = evaluation.issueBreakdown.softIssues ?? [];
+    const infoReasons = evaluation.issueBreakdown.info ?? [];
+
     stage3NearMissCandidates.push({
       symbol: evaluation.symbol,
       direction: evaluation.direction,
       score: evaluation.reviewScore,
-      hardFailReasons: evaluation.issueBreakdown.hardVetoes,
-      softIssueReasons: evaluation.issueBreakdown.softIssues,
-      infoReasons: evaluation.issueBreakdown.info,
+      hardFailReasons,
+      softIssueReasons,
+      infoReasons,
+      failReasons: [...hardFailReasons, ...softIssueReasons, ...infoReasons],
       roomToTargetDiagnostics: evaluation.roomToTargetDiagnostics,
     });
   }
