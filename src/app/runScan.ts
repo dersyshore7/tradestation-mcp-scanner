@@ -1169,34 +1169,19 @@ function getConfirmationRejectionReasons(review: ChartReviewResult): string[] {
   const hasDistributionIssue = !checkByName.get("fake-hold-distribution")?.pass;
   const majorIssueCount = [hasBodyWickIssue, hasContinuationIssue, hasImpulseConsolidationIssue, hasDistributionIssue].filter(Boolean).length;
   const nonExpansionSoftIssues = issueBreakdown.softIssues.filter((reason) => !reason.startsWith("weak expansion ("));
+  const distinctNonExpansionSoftIssues = [...new Set(nonExpansionSoftIssues)];
+  const topWeaknesses = distinctNonExpansionSoftIssues.slice(0, 4);
 
-  const prioritized: string[] = [];
   if (issueBreakdown.hardVetoes.length > 0) {
-    prioritized.push(`hard veto: ${formatFinalistReasonList(issueBreakdown.hardVetoes)}`);
+    return [`hard veto: ${formatFinalistReasonList(issueBreakdown.hardVetoes)}`];
   }
 
-  if (majorIssueCount >= 2) {
-    const majorIssueReasons = issueBreakdown.softIssues.filter((reason) => {
-      return (
-        reason.startsWith("impulse/hold quality issue (") ||
-        reason.startsWith("distribution risk (") ||
-        reason.startsWith("rejection risk (") ||
-        reason.startsWith("body-wick (")
-      );
-    });
-    prioritized.push(`major structural weakness combination: ${formatFinalistReasonList(majorIssueReasons.length > 0 ? majorIssueReasons : nonExpansionSoftIssues)}`);
-  }
-
-  if (nonExpansionSoftIssues.length >= 2) {
-    prioritized.push(`multiple soft issues: ${formatFinalistReasonList(nonExpansionSoftIssues)}`);
-  }
-
-  if (prioritized.length > 0) {
-    return prioritized;
+  if (majorIssueCount >= 2 || nonExpansionSoftIssues.length >= 2) {
+    return [`multiple confirmation weaknesses: ${formatFinalistReasonList(topWeaknesses.length > 0 ? topWeaknesses : distinctNonExpansionSoftIssues)}`];
   }
 
   if (hasWeakExpansion) {
-    return [issueBreakdown.softIssues.length === 1 ? (issueBreakdown.softIssues[0] ?? "weak expansion") : `weak expansion (${checkByName.get("expansion")?.reason ?? "expansion ratio unavailable"})`];
+    return [`weak expansion only: ${checkByName.get("expansion")?.reason ?? "expansion ratio unavailable"}`];
   }
 
   return getStage3FailReasons(review);
