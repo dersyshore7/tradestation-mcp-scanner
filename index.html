@@ -264,7 +264,13 @@
           ${renderObjectRows(telemetry?.rejectionSummaries?.stage3)}
 
           <div class="row"><strong>Near misses:</strong></div>
-          ${renderList((telemetry?.nearMisses || []).map((item) => `${item.symbol} (${item.direction}, score ${item.score.toFixed(2)}): ${item.failReasons.join("; ")}`))}
+          ${renderList((telemetry?.nearMisses || []).map((item) => {
+            const hardFailReasons = item?.hardFailReasons || [];
+            const softIssueReasons = item?.softIssueReasons || [];
+            const infoReasons = item?.infoReasons || [];
+            const failReasons = item?.failReasons || [...hardFailReasons, ...softIssueReasons, ...infoReasons];
+            return `${item.symbol} (${item.direction}, score ${item.score.toFixed(2)}): ${failReasons.join("; ")}`;
+          }))}
 
           <div class="row"><strong>Finalist review summary:</strong></div>
           ${renderList((telemetry?.finalistsReviewedDebug || []).map((item) => `${item.symbol}: ${item.eligibleForReviewReason} | source=${item.sourceList}${item.upstreamConsistencyWarning ? ` | WARNING: ${item.upstreamConsistencyWarning}` : ""}`))}
