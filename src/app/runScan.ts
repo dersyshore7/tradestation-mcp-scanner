@@ -124,6 +124,7 @@ export type ScanResult = {
   confidence: ScanConfidence | null;
   conclusion: "confirmed" | "rejected" | "no_trade_today";
   reason: string;
+  telemetry?: StarterUniverseTelemetry | null;
 };
 
 type SymbolPromptMatch = {
@@ -429,6 +430,120 @@ type FinalistReviewSource = {
   debug: StarterUniverseTelemetry["finalistsReviewedDebug"];
   warnings: string[];
 };
+
+function buildStarterUniverseTelemetry(params: {
+  stage1Entered: string[];
+  stage1Passed: Stage1Candidate[];
+  stage2Passed: OptionsCandidate[];
+  stage3Evaluations: Stage3Evaluation[];
+  ranked: (ChartCandidate & { score: number })[];
+  finalRankingDebug: FinalRankingEntry[];
+  finalistReviewSource: FinalistReviewSource;
+  finalistReviewResults: FinalistReviewResult[];
+  rejectionSummaries: StarterUniverseTelemetry["rejectionSummaries"];
+  selectedSymbol: string | null;
+}): StarterUniverseTelemetry {
+  const { stage1Entered, stage1Passed, stage2Passed, stage3Evaluations, ranked, finalRankingDebug, finalistReviewSource, finalistReviewResults, rejectionSummaries, selectedSymbol } = params;
+  const stage3Passed = stage3Evaluations.flatMap((item) => (item.candidate ? [item.candidate] : []));
+  const stage3NearMissCandidates: Stage3NearMiss[] = [];
+
+  for (const evaluation of stage3Evaluations) {
+    if (evaluation.pass) {
+      continue;
+    }
+
+    const hardFailReasons = evaluation.issueBreakdown.hardVetoes ?? [];
+    const softIssueReasons = evaluation.issueBreakdown.softIssues ?? [];
+    const infoReasons = evaluation.issueBreakdown.info ?? [];
+
+    stage3NearMissCandidates.push({
+      symbol: evaluation.symbol,
+      direction: evaluation.direction,
+      score: evaluation.reviewScore,
+      hardFailReasons,
+      softIssueReasons,
+      infoReasons,
+      failReasons: [...hardFailReasons, ...softIssueReasons, ...infoReasons],
+      roomToTargetDiagnostics: evaluation.roomToTargetDiagnostics,
+    });
+  }
+
+  const listConsistencyWarnings: string[] = [];
+  const stage1Set = new Set(stage1Passed.map((candidate) => candidate.symbol));
+  const stage2Set = new Set(stage2Passed.map((candidate) => candidate.symbol));
+  const stage3Set = new Set(stage3Passed.map((candidate) => candidate.symbol));
+  const rankingSet = new Set(ranked.map((candidate) => candidate.symbol));
+  const finalistsSet = new Set(finalistReviewSource.finalists.map((candidate) => candidate.symbol));
+
+  for (const symbol of stage2Set) {
+    if (!stage1Set.has(symbol)) {
+      listConsistencyWarnings.push(`Stage 2 passed symbol ${symbol} is missing from Stage 1 passed list.`);
+    }
+  }
+  for (const symbol of stage3Set) {
+    if (!stage2Set.has(symbol)) {
+      listConsistencyWarnings.push(`Stage 3 passed symbol ${symbol} is missing from Stage 2 passed list.`);
+    }
+  }
+  for (const symbol of rankingSet) {
+    if (!stage3Set.has(symbol)) {
+      listConsistencyWarnings.push(`Final ranking symbol ${symbol} is missing from Stage 3 passed list.`);
+    }
+  }
+  for (const symbol of finalistsSet) {
+    if (!rankingSet.has(symbol)) {
+      listConsistencyWarnings.push(`Finalists reviewed symbol ${symbol} is missing from final ranking list.`);
+    }
+  }
+
+  const nearMisses = stage3NearMissCandidates
+    .sort((a, b) => {
+      const scoreDelta = b.score - a.score;
+      if (scoreDelta !== 0) {
+        return scoreDelta;
+      }
+
+      return a.symbol.localeCompare(b.symbol);
+    })
+    .slice(0, 3);
+
+  const noTradeReason = buildConsistentNoTradeReason(
+    finalistReviewResults,
+    stage3Passed.map((candidate) => candidate.symbol),
+  );
+
+  return {
+    stageCounts: {
+      stage1Entered: stage1Entered.length,
+      stage1Passed: stage1Passed.length,
+      stage2Passed: stage2Passed.length,
+      stage3Passed: stage3Passed.length,
+      finalistsReviewed: finalistReviewSource.finalists.length,
+      finalRanking: ranked.length,
+    },
+    stageSymbols: {
+      stage1Entered,
+      stage1Passed: stage1Passed.map((candidate) => candidate.symbol),
+      stage2Passed: stage2Passed.map((candidate) => candidate.symbol),
+      stage3Passed: stage3Passed.map((candidate) => candidate.symbol),
+      finalistsReviewed: finalistReviewSource.finalists.map((candidate) => candidate.symbol),
+      finalRanking: ranked.map((candidate) => candidate.symbol),
+    },
+    finalistsReviewedDebug: finalistReviewSource.debug,
+    stage3PassedDetails: stage3Passed.map((candidate) => ({
+      symbol: candidate.symbol,
+      direction: candidate.chartDirection,
+      score: scoreStage3Candidate(candidate),
+      summary: candidate.chartReviewSummary,
+      whyPassed: summarizePassingChecks(candidate.chartDiagnostics.checks),
+    })),
+    finalRankingDebug,
+    rejectionSummaries,
+    nearMisses,
+    consistencyChecks: [...finalistReviewSource.warnings, ...listConsistencyWarnings, ...noTradeReason.symbolConsistencyWarnings],
+    finalSelectedSymbol: selectedSymbol,
+  };
+}
 
 function buildFinalistReviewSource(
   ranked: (ChartCandidate & { score: number })[],
@@ -2464,6 +2579,9 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
   const get = await createTradeStationGetFetcher();
   const excludedSet = new Set((input.excludedTickers ?? []).map((item) => item.toUpperCase()));
   const stage1Entered = V1_SCAN_UNIVERSE.filter((symbol) => !excludedSet.has(symbol));
+  const stage1RejectionSummary: StageFailureSummary = {};
+  const stage2RejectionSummary: StageFailureSummary = {};
+  const stage3RejectionSummary: StageFailureSummary = {};
   logGeneralScanDebug("Stage 1 entered", stage1Entered);
 
   // Stage 1: basic stock filters
@@ -2475,6 +2593,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
 
     const quoteResponse = await get(`/marketdata/quotes/${encodeURIComponent(symbol)}`);
     if (!quoteResponse.ok) {
+      incrementSummary(stage1RejectionSummary, "quote");
       continue;
     }
 
@@ -2484,16 +2603,52 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
     const averageVolume = readNumber(quote, ["AverageVolume", "AverageDailyVolume", "AvgVolume", "Volume"]);
 
     if (lastPrice === null || lastPrice < 10 || lastPrice > 500) {
+      incrementSummary(stage1RejectionSummary, "price");
       continue;
     }
 
     if (averageVolume !== null && averageVolume <= 1_000_000) {
+      incrementSummary(stage1RejectionSummary, "volume");
       continue;
     }
 
     stage1Passed.push({ symbol, lastPrice, averageVolume });
   }
   const stage1BySymbol = new Map(stage1Passed.map((candidate) => [candidate.symbol, candidate]));
+
+  const buildScanTelemetry = (params: {
+    stage2Passed?: OptionsCandidate[];
+    stage3Evaluations?: Stage3Evaluation[];
+    ranked?: (ChartCandidate & { score: number })[];
+    finalRankingDebug?: FinalRankingEntry[];
+    finalistReviewSource?: FinalistReviewSource;
+    finalistReviewResults?: FinalistReviewResult[];
+    selectedSymbol?: string | null;
+  }): StarterUniverseTelemetry => {
+    const stage2Passed = params.stage2Passed ?? [];
+    const stage3Evaluations = params.stage3Evaluations ?? [];
+    const ranked = params.ranked ?? [];
+    const finalRankingDebug = params.finalRankingDebug ?? [];
+    const finalistReviewSource = params.finalistReviewSource ?? buildFinalistReviewSource([], [], []);
+    const finalistReviewResults = params.finalistReviewResults ?? [];
+
+    return buildStarterUniverseTelemetry({
+      stage1Entered,
+      stage1Passed,
+      stage2Passed,
+      stage3Evaluations,
+      ranked,
+      finalRankingDebug,
+      finalistReviewSource,
+      finalistReviewResults,
+      rejectionSummaries: {
+        stage1: stage1RejectionSummary,
+        stage2: stage2RejectionSummary,
+        stage3: stage3RejectionSummary,
+      },
+      selectedSymbol: params.selectedSymbol ?? null,
+    });
+  };
 
   logGeneralScanDebug(
     "Stage 1 passed",
@@ -2507,12 +2662,18 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
       confidence: null,
       conclusion: "no_trade_today",
       reason: "No symbols passed Stage 1 stock filters in the V1 scan universe.",
+      telemetry: buildScanTelemetry({}),
     };
   }
 
   // Stage 2: options tradability filters
   const { passed: stage2Passed, diagnostics: stage2Diagnostics } = await runStage2OptionsTradability(get, stage1Passed);
   const stage2BySymbol = new Map(stage2Passed.map((candidate) => [candidate.symbol, candidate]));
+  for (const item of stage2Diagnostics) {
+    if (!item.pass) {
+      incrementSummary(stage2RejectionSummary, categorizeStage2Failure(item.reason));
+    }
+  }
   logStage2Diagnostics(stage2Diagnostics);
 
   logGeneralScanDebug(
@@ -2527,12 +2688,18 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
       confidence: null,
       conclusion: "no_trade_today",
       reason: "No symbols passed Stage 2 options tradability filters.",
+      telemetry: buildScanTelemetry({ stage2Passed }),
     };
   }
 
   // Stage 3: multi-timeframe bar/candlestick + volume review
   const stage3Evaluations = await evaluateStage3Candidates(get, stage2Passed);
   const stage3Passed = stage3Evaluations.flatMap((item) => (item.candidate ? [item.candidate] : []));
+  for (const evaluation of stage3Evaluations) {
+    if (!evaluation.pass && evaluation.rejectionReason) {
+      incrementSummary(stage3RejectionSummary, evaluation.rejectionReason);
+    }
+  }
   const stage3BySymbol = new Map(stage3Passed.map((candidate) => [candidate.symbol, candidate]));
 
   logGeneralScanDebug(
@@ -2547,6 +2714,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
       confidence: null,
       conclusion: "no_trade_today",
       reason: "No symbols passed Stage 3 chart/bar review.",
+      telemetry: buildScanTelemetry({ stage2Passed, stage3Evaluations }),
     };
   }
 
@@ -2572,6 +2740,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
       confidence: null,
       conclusion: "no_trade_today",
       reason: "No final candidate was available after scoring.",
+      telemetry: buildScanTelemetry({ stage2Passed, stage3Evaluations, ranked, finalRankingDebug, finalistReviewSource }),
     };
   }
 
@@ -2671,12 +2840,23 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
     if (reviewResult.conclusion === "confirmed" && reviewResult.ticker && reviewResult.direction && reviewResult.confidence) {
       logGeneralScanDebug("Final selected", [reviewResult.ticker]);
       logFinalistReviewDebugSection(finalistReviewResults, reviewResult.ticker);
+      const telemetry = buildScanTelemetry({
+        stage2Passed,
+        stage3Evaluations,
+        ranked,
+        finalRankingDebug,
+        finalistReviewSource,
+        finalistReviewResults,
+        selectedSymbol: reviewResult.ticker,
+      });
+
       return {
         ticker: reviewResult.ticker,
         direction: reviewResult.direction,
         confidence: reviewResult.confidence,
         conclusion: "confirmed",
         reason: `Finalist confirmation passed after Stage 1/2/3 scoring (reviewed: ${finalists.map((item) => item.symbol).join(", ")}; selected: ${reviewResult.ticker}; rank score ${finalist.score.toFixed(2)}). ${getSelectionWhyWonReason(finalistReviewResults, reviewResult.ticker)} ${reviewResult.reason}`,
+        telemetry,
       };
     }
   }
@@ -2689,12 +2869,23 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
   for (const warning of noTradeReason.symbolConsistencyWarnings) {
     console.warn(`[scanner:debug] ${warning}`);
   }
+  const telemetry = buildScanTelemetry({
+    stage2Passed,
+    stage3Evaluations,
+    ranked,
+    finalRankingDebug,
+    finalistReviewSource,
+    finalistReviewResults,
+    selectedSymbol: null,
+  });
+
   return {
     ticker: null,
     direction: null,
     confidence: null,
     conclusion: "no_trade_today",
     reason: noTradeReason.reason,
+    telemetry,
   };
 }
 
@@ -3215,6 +3406,7 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
         confidence: null,
         conclusion: "no_trade_today",
         reason: `General scan mode is limited to the V1 scan universe (${V1_SCAN_UNIVERSE.join(", ")}).`,
+        telemetry: null,
       };
     };
 
@@ -3233,6 +3425,7 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
       confidence: null,
       conclusion: "no_trade_today",
       reason: `${symbolMatch.symbol} is in excludedTickers.`,
+      telemetry: null,
     };
   }
 
