@@ -1110,21 +1110,45 @@ function describeRoomToTargetDecision(
 }
 
 function resolveConfirmationOutcome(review: ChartReviewResult): { conclusion: ScanResult["conclusion"]; confidence: ScanConfidence | null } {
-  if (!review.pass || !review.direction) {
+  if (!review.direction) {
+    return { conclusion: "rejected", confidence: null };
+  }
+
+  const issueBreakdown = getStage3IssueBreakdown(review);
+  if (issueBreakdown.hardVetoes.length > 0) {
     return { conclusion: "rejected", confidence: null };
   }
 
   const checkByName = new Map(review.diagnostics.checks.map((item) => [item.check, item]));
+  const hasWeakExpansion = !checkByName.get("expansion")?.pass;
+  const hasBodyWickIssue = !checkByName.get("body-wick")?.pass;
+  const hasContinuationIssue = !checkByName.get("continuation")?.pass;
   const hasImpulseConsolidationIssue = !checkByName.get("impulse-consolidation")?.pass;
   const hasDistributionIssue = !checkByName.get("fake-hold-distribution")?.pass;
-  const majorIssueCount = [hasImpulseConsolidationIssue, hasDistributionIssue].filter(Boolean).length;
+  const majorIssueCount = [hasBodyWickIssue, hasContinuationIssue, hasImpulseConsolidationIssue, hasDistributionIssue].filter(Boolean).length;
+
+  // Expansion weakness is treated as a confidence drag/caution, not a standalone rejection trigger.
+  const softIssueCount = issueBreakdown.softIssues.length;
+  const nonExpansionSoftIssueCount = softIssueCount - (hasWeakExpansion ? 1 : 0);
+
+  if (nonExpansionSoftIssueCount >= 3 || majorIssueCount >= 3) {
+    return { conclusion: "rejected", confidence: null };
+  }
 
   if (majorIssueCount >= 2) {
     return { conclusion: "rejected", confidence: null };
   }
 
+  if (!review.pass && nonExpansionSoftIssueCount >= 2) {
+    return { conclusion: "rejected", confidence: null };
+  }
+
   if (majorIssueCount === 1) {
     return { conclusion: "confirmed", confidence: "75-84" };
+  }
+
+  if (hasWeakExpansion) {
+    return { conclusion: "confirmed", confidence: "65-74" };
   }
 
   const confidence: ScanConfidence = review.score >= 11 ? "85-92" : review.score >= 9 ? "75-84" : "65-74";
@@ -3322,6 +3346,12 @@ function buildSingleSymbolReviewNarrative(review: ChartReviewResult, conclusion:
     problematic.push(`candle body/wick quality is weaker than preferred (body/range ${bodyToRange?.toFixed(2) ?? "n/a"}, wickiness ${wickiness?.toFixed(2) ?? "n/a"})`);
   }
 
+  if (checkByName.get("expansion")?.pass) {
+    supportive.push("range expansion is acceptable relative to recent bars");
+  } else {
+    problematic.push(`range expansion is weaker than ideal (${checkByName.get("expansion")?.reason ?? "expansion ratio unavailable"})`);
+  }
+
   if (checkByName.get("volume")?.pass) {
     supportive.push(`volume confirms participation (${volumeRatio === null ? "ratio n/a" : `ratio ${volumeRatio.toFixed(2)}x`})`);
   } else {
@@ -3368,12 +3398,7 @@ function buildSingleSymbolReviewNarrative(review: ChartReviewResult, conclusion:
   }
 
   if (conclusion === "confirmed" && problematic.length > 0) {
-    const majorCautions = new Set([
-      "impulse plus consolidation structure is not clean enough",
-      "fake-hold/distribution or trap behavior is elevated",
-      "a clean 2:1-style structure is not clearly supported yet",
-    ]);
-    const reframedProblematic = problematic.map((item) => (majorCautions.has(item) ? `caution: ${item}` : item));
+    const reframedProblematic = problematic.map((item) => `caution: ${item}`);
     problematic.length = 0;
     problematic.push(...reframedProblematic);
   }
