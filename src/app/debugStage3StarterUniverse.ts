@@ -96,8 +96,11 @@ async function runDebug(): Promise<void> {
       const roomDetail = room
         ? ` | 2R ref=${room.referencePrice.toFixed(2)} dir=${room.direction} level=${room.levelUsed === null ? "n/a" : room.levelUsed.toFixed(2)} room=${room.roomPct === null ? "n/a" : `${room.roomPct.toFixed(2)}%`} reason=${room.insufficientRoomReason}`
         : "";
+      const hardFail = miss.hardFailReasons.length > 0 ? miss.hardFailReasons.join(", ") : "none";
+      const softIssues = miss.softIssueReasons.length > 0 ? miss.softIssueReasons.join(", ") : "none";
+      const infoIssues = miss.infoReasons.length > 0 ? miss.infoReasons.join(", ") : "none";
       console.log(
-        `${miss.symbol}: dir=${miss.direction} | score=${miss.score} | fail=${miss.failReasons.join(", ")}${roomDetail}`,
+        `${miss.symbol}: dir=${miss.direction} | score=${miss.score} | hardFail=${hardFail} | softIssues=${softIssues} | info=${infoIssues}${roomDetail}`,
       );
     }
   }
