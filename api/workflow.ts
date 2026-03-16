@@ -1,5 +1,4 @@
 import { runScan, type ScanInput } from "../src/app/runScan.js";
-import { runStarterUniverseTelemetryDebug } from "../src/app/runScan.js";
 import { constructTradeCard } from "../src/app/runTradeConstruction.js";
 import { DEFAULT_SCAN_PROMPT } from "../src/config/defaultScanPrompt.js";
 
@@ -37,8 +36,7 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
   try {
     const scanInput = normalizeInput(req.body);
     const scanResult = await runScan(scanInput);
-    const shouldIncludeStarterUniverseTelemetry = scanResult.conclusion === "no_trade_today";
-    const telemetry = shouldIncludeStarterUniverseTelemetry ? await runStarterUniverseTelemetryDebug().catch(() => null) : null;
+    const telemetry = scanResult.telemetry ?? null;
 
     if (
       scanResult.conclusion !== "confirmed" ||
