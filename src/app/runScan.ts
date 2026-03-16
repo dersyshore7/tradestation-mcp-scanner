@@ -1155,6 +1155,53 @@ function resolveConfirmationOutcome(review: ChartReviewResult): { conclusion: Sc
   return { conclusion: "confirmed", confidence };
 }
 
+function getConfirmationRejectionReasons(review: ChartReviewResult): string[] {
+  if (!review.direction) {
+    return ["hard veto: directional context is unavailable"];
+  }
+
+  const issueBreakdown = getStage3IssueBreakdown(review);
+  const checkByName = new Map(review.diagnostics.checks.map((item) => [item.check, item]));
+  const hasWeakExpansion = !checkByName.get("expansion")?.pass;
+  const hasBodyWickIssue = !checkByName.get("body-wick")?.pass;
+  const hasContinuationIssue = !checkByName.get("continuation")?.pass;
+  const hasImpulseConsolidationIssue = !checkByName.get("impulse-consolidation")?.pass;
+  const hasDistributionIssue = !checkByName.get("fake-hold-distribution")?.pass;
+  const majorIssueCount = [hasBodyWickIssue, hasContinuationIssue, hasImpulseConsolidationIssue, hasDistributionIssue].filter(Boolean).length;
+  const nonExpansionSoftIssues = issueBreakdown.softIssues.filter((reason) => !reason.startsWith("weak expansion ("));
+
+  const prioritized: string[] = [];
+  if (issueBreakdown.hardVetoes.length > 0) {
+    prioritized.push(`hard veto: ${formatFinalistReasonList(issueBreakdown.hardVetoes)}`);
+  }
+
+  if (majorIssueCount >= 2) {
+    const majorIssueReasons = issueBreakdown.softIssues.filter((reason) => {
+      return (
+        reason.startsWith("impulse/hold quality issue (") ||
+        reason.startsWith("distribution risk (") ||
+        reason.startsWith("rejection risk (") ||
+        reason.startsWith("body-wick (")
+      );
+    });
+    prioritized.push(`major structural weakness combination: ${formatFinalistReasonList(majorIssueReasons.length > 0 ? majorIssueReasons : nonExpansionSoftIssues)}`);
+  }
+
+  if (nonExpansionSoftIssues.length >= 2) {
+    prioritized.push(`multiple soft issues: ${formatFinalistReasonList(nonExpansionSoftIssues)}`);
+  }
+
+  if (prioritized.length > 0) {
+    return prioritized;
+  }
+
+  if (hasWeakExpansion) {
+    return [issueBreakdown.softIssues.length === 1 ? (issueBreakdown.softIssues[0] ?? "weak expansion") : `weak expansion (${checkByName.get("expansion")?.reason ?? "expansion ratio unavailable"})`];
+  }
+
+  return getStage3FailReasons(review);
+}
+
 async function loadMultiTimeframeBars(
   get: (path: string) => Promise<Response>,
   symbol: string,
@@ -3309,7 +3356,7 @@ export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promi
       confirmationDebug: {
         reviewStatus: "reviewed",
         confirmationStatus: "rejected",
-        confirmationFailureReasons: getStage3FailReasons(review),
+        confirmationFailureReasons: getConfirmationRejectionReasons(review),
       },
     };
   }
