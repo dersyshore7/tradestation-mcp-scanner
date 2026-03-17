@@ -1,5 +1,6 @@
 import { getFakeConfidence, type ScanConfidence, type ScanDirection } from "../scanner/scoring.js";
 import { createTradeStationGetFetcher } from "../tradestation/client.js";
+import { evaluateChartAnchoredTradability } from "./chartAnchoredTradability.js";
 
 const V1_SCAN_UNIVERSE_CONFIG = {
   symbols: [
@@ -3373,7 +3374,23 @@ export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promi
   if (bars) {
     const review = runStage3ChartReview(bars, timeframeDiagnostics);
     const outcome = resolveConfirmationOutcome(review);
-    const reviewNarrative = buildSingleSymbolReviewNarrative(review, outcome.conclusion);
+    let chartAnchoredFailureReason: string | null = null;
+
+    if (outcome.conclusion === "confirmed" && review.direction) {
+      const chartAnchoredResult = await evaluateChartAnchoredTradability(
+        get,
+        symbol,
+        review.direction,
+        review.diagnostics.roomToTargetDiagnostics.referencePrice,
+      );
+      if (!chartAnchoredResult.pass) {
+        chartAnchoredFailureReason = chartAnchoredResult.reason;
+        outcome.conclusion = "rejected";
+        outcome.confidence = null;
+      }
+    }
+
+    const reviewNarrative = buildSingleSymbolReviewNarrative(review, outcome.conclusion, chartAnchoredFailureReason);
 
     if (outcome.conclusion === "confirmed" && review.direction && outcome.confidence) {
       return {
@@ -3399,7 +3416,9 @@ export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promi
       confirmationDebug: {
         reviewStatus: "reviewed",
         confirmationStatus: "rejected",
-        confirmationFailureReasons: getConfirmationRejectionReasons(review),
+        confirmationFailureReasons: chartAnchoredFailureReason
+          ? [...getConfirmationRejectionReasons(review), chartAnchoredFailureReason]
+          : getConfirmationRejectionReasons(review),
       },
     };
   }
@@ -3418,7 +3437,11 @@ export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promi
   };
 }
 
-function buildSingleSymbolReviewNarrative(review: ChartReviewResult, conclusion: ScanResult["conclusion"]): string {
+function buildSingleSymbolReviewNarrative(
+  review: ChartReviewResult,
+  conclusion: ScanResult["conclusion"],
+  chartAnchoredFailureReason: string | null = null,
+): string {
   const checkByName = new Map(review.diagnostics.checks.map((item) => [item.check, item]));
   const bodyToRange = review.diagnostics.bodyToRange;
   const wickiness = review.diagnostics.wickiness;
@@ -3476,9 +3499,12 @@ function buildSingleSymbolReviewNarrative(review: ChartReviewResult, conclusion:
   const structureInPrinciple =
     !!checkByName.get("continuation")?.pass &&
     !!checkByName.get("higher-timeframe-room")?.pass &&
-    !!checkByName.get("higher-timeframe-2r-viability")?.pass;
+    !!checkByName.get("higher-timeframe-2r-viability")?.pass &&
+    !chartAnchoredFailureReason;
   if (structureInPrinciple) {
     supportive.push("the chart supports a tradable clean 2:1-style structure (continuation + room + 2R viability)");
+  } else if (chartAnchoredFailureReason) {
+    problematic.push(`tradable clean 2:1 structure failed chart-anchored invalidation/target test (${chartAnchoredFailureReason})`);
   } else {
     problematic.push("tradable clean 2:1 structure is not clear yet (needs continuation plus chart-anchored room/2R viability)");
   }
