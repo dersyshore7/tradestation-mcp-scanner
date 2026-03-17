@@ -1130,25 +1130,40 @@ function resolveConfirmationOutcome(review: ChartReviewResult): { conclusion: Sc
   const hasContinuationIssue = !checkByName.get("continuation")?.pass;
   const hasImpulseConsolidationIssue = !checkByName.get("impulse-consolidation")?.pass;
   const hasDistributionIssue = !checkByName.get("fake-hold-distribution")?.pass;
-  const majorIssueCount = [hasBodyWickIssue, hasContinuationIssue, hasImpulseConsolidationIssue, hasDistributionIssue].filter(Boolean).length;
+  const structuralWeaknessCount = [hasBodyWickIssue, hasContinuationIssue, hasImpulseConsolidationIssue, hasDistributionIssue].filter(Boolean).length;
 
   // Expansion weakness is treated as a confidence drag/caution, not a standalone rejection trigger.
-  const softIssueCount = issueBreakdown.softIssues.length;
-  const nonExpansionSoftIssueCount = softIssueCount - (hasWeakExpansion ? 1 : 0);
+  const hasVolumeIssue = !checkByName.get("volume")?.pass;
+  const volumeRatio = review.volumeRatio;
+  const volumeIssueWeight = hasVolumeIssue
+    ? volumeRatio === null
+      ? 0.6
+      : volumeRatio >= 0.75
+        ? 0.5
+        : 1
+    : 0;
+  const structuralWeaknessWeight =
+    structuralWeaknessCount <= 0
+      ? 0
+      : structuralWeaknessCount === 1
+        ? 1
+        : Math.min(2, 1 + (structuralWeaknessCount - 1) * 0.4);
+  const expansionWeight = hasWeakExpansion ? 0.35 : 0;
+  const weightedSoftIssueScore = structuralWeaknessWeight + volumeIssueWeight + expansionWeight;
 
-  if (nonExpansionSoftIssueCount >= 3 || majorIssueCount >= 3) {
+  if (weightedSoftIssueScore >= 2.5) {
     return { conclusion: "rejected", confidence: null };
   }
 
-  if (majorIssueCount >= 2) {
+  if (structuralWeaknessCount >= 2 && volumeIssueWeight >= 1) {
     return { conclusion: "rejected", confidence: null };
   }
 
-  if (!review.pass && nonExpansionSoftIssueCount >= 2) {
+  if (!review.pass && weightedSoftIssueScore >= 2.2) {
     return { conclusion: "rejected", confidence: null };
   }
 
-  if (majorIssueCount === 1) {
+  if (structuralWeaknessCount === 1) {
     return { conclusion: "confirmed", confidence: "75-84" };
   }
 
@@ -1172,7 +1187,23 @@ function getConfirmationRejectionReasons(review: ChartReviewResult): string[] {
   const hasContinuationIssue = !checkByName.get("continuation")?.pass;
   const hasImpulseConsolidationIssue = !checkByName.get("impulse-consolidation")?.pass;
   const hasDistributionIssue = !checkByName.get("fake-hold-distribution")?.pass;
-  const majorIssueCount = [hasBodyWickIssue, hasContinuationIssue, hasImpulseConsolidationIssue, hasDistributionIssue].filter(Boolean).length;
+  const structuralWeaknessCount = [hasBodyWickIssue, hasContinuationIssue, hasImpulseConsolidationIssue, hasDistributionIssue].filter(Boolean).length;
+  const hasVolumeIssue = !checkByName.get("volume")?.pass;
+  const volumeRatio = review.volumeRatio;
+  const volumeIssueWeight = hasVolumeIssue
+    ? volumeRatio === null
+      ? 0.6
+      : volumeRatio >= 0.75
+        ? 0.5
+        : 1
+    : 0;
+  const structuralWeaknessWeight =
+    structuralWeaknessCount <= 0
+      ? 0
+      : structuralWeaknessCount === 1
+        ? 1
+        : Math.min(2, 1 + (structuralWeaknessCount - 1) * 0.4);
+  const weightedSoftIssueScore = structuralWeaknessWeight + volumeIssueWeight + (hasWeakExpansion ? 0.35 : 0);
   const nonExpansionSoftIssues = issueBreakdown.softIssues.filter((reason) => !reason.startsWith("weak expansion ("));
   const distinctNonExpansionSoftIssues = [...new Set(nonExpansionSoftIssues)];
   const topWeaknesses = distinctNonExpansionSoftIssues.slice(0, 4);
@@ -1181,8 +1212,12 @@ function getConfirmationRejectionReasons(review: ChartReviewResult): string[] {
     return [`hard veto: ${formatFinalistReasonList(issueBreakdown.hardVetoes)}`];
   }
 
-  if (majorIssueCount >= 2 || nonExpansionSoftIssues.length >= 2) {
-    return [`multiple confirmation weaknesses: ${formatFinalistReasonList(topWeaknesses.length > 0 ? topWeaknesses : distinctNonExpansionSoftIssues)}`];
+  if (weightedSoftIssueScore >= 2.2 || structuralWeaknessCount >= 2) {
+    const volumeQualifier =
+      hasVolumeIssue && volumeRatio !== null && volumeRatio >= 0.75
+        ? `; mild volume caution (${volumeRatio.toFixed(2)}x) down-weighted`
+        : "";
+    return [`multiple confirmation weaknesses (overlap-aware): ${formatFinalistReasonList(topWeaknesses.length > 0 ? topWeaknesses : distinctNonExpansionSoftIssues)}${volumeQualifier}`];
   }
 
   if (hasWeakExpansion) {
