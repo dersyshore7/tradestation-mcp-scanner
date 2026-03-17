@@ -1163,15 +1163,26 @@ function resolveConfirmationOutcome(review: ChartReviewResult): { conclusion: Sc
     return { conclusion: "rejected", confidence: null };
   }
 
-  if (structuralWeaknessCount === 1) {
-    return { conclusion: "confirmed", confidence: "75-84" };
-  }
+  const supportsClean2RStructure =
+    review.diagnostics.alignmentPass &&
+    !!checkByName.get("body-wick")?.pass &&
+    !!checkByName.get("volume")?.pass &&
+    !!checkByName.get("continuation")?.pass &&
+    !!checkByName.get("impulse-consolidation")?.pass &&
+    !!checkByName.get("fake-hold-distribution")?.pass &&
+    !!checkByName.get("failed-breakout-trap")?.pass &&
+    !!checkByName.get("higher-timeframe-room")?.pass &&
+    !!checkByName.get("higher-timeframe-2r-viability")?.pass;
 
-  if (hasWeakExpansion) {
-    return { conclusion: "confirmed", confidence: "65-74" };
+  if (!supportsClean2RStructure) {
+    return { conclusion: "rejected", confidence: null };
   }
 
   const confidence: ScanConfidence = review.score >= 11 ? "85-92" : review.score >= 9 ? "75-84" : "65-74";
+  if (confidence === "65-74") {
+    return { conclusion: "rejected", confidence: null };
+  }
+
   return { conclusion: "confirmed", confidence };
 }
 
@@ -1956,7 +1967,7 @@ export function runFakeScan(input: ScanInput): ScanResult {
   };
 }
 
-function parseBars(payload: unknown): Record<string, unknown>[] {
+export function parseBars(payload: unknown): Record<string, unknown>[] {
   if (!payload || typeof payload !== "object") {
     return [];
   }
@@ -1984,7 +1995,7 @@ function normalizeFieldName(field: string): string {
   return field.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
 }
 
-function normalizeBar(bar: Record<string, unknown>): Record<string, unknown> {
+export function normalizeBar(bar: Record<string, unknown>): Record<string, unknown> {
   const normalized = { ...bar };
   const fieldAliasMap: Record<string, string[]> = {
     Open: ["open"],
@@ -3461,6 +3472,7 @@ function buildSingleSymbolReviewNarrative(review: ChartReviewResult, conclusion:
   const structureInPrinciple =
     review.diagnostics.alignmentPass &&
     !!checkByName.get("body-wick")?.pass &&
+    !!checkByName.get("volume")?.pass &&
     !!checkByName.get("continuation")?.pass &&
     !!checkByName.get("impulse-consolidation")?.pass &&
     !!checkByName.get("failed-breakout-trap")?.pass &&
