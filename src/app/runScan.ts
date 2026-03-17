@@ -1164,13 +1164,7 @@ function resolveConfirmationOutcome(review: ChartReviewResult): { conclusion: Sc
   }
 
   const supportsClean2RStructure =
-    review.diagnostics.alignmentPass &&
-    !!checkByName.get("body-wick")?.pass &&
-    !!checkByName.get("volume")?.pass &&
     !!checkByName.get("continuation")?.pass &&
-    !!checkByName.get("impulse-consolidation")?.pass &&
-    !!checkByName.get("fake-hold-distribution")?.pass &&
-    !!checkByName.get("failed-breakout-trap")?.pass &&
     !!checkByName.get("higher-timeframe-room")?.pass &&
     !!checkByName.get("higher-timeframe-2r-viability")?.pass;
 
@@ -1233,6 +1227,16 @@ function getConfirmationRejectionReasons(review: ChartReviewResult): string[] {
 
   if (hasWeakExpansion) {
     return [`weak expansion only: ${checkByName.get("expansion")?.reason ?? "expansion ratio unavailable"}`];
+  }
+
+  const lacksTradable2RStructure =
+    !checkByName.get("continuation")?.pass ||
+    !checkByName.get("higher-timeframe-room")?.pass ||
+    !checkByName.get("higher-timeframe-2r-viability")?.pass;
+  if (lacksTradable2RStructure) {
+    return [
+      "clean 2:1 structure missing: requires continuation plus chart-anchored room/2R viability before trade-card confirmation",
+    ];
   }
 
   return getStage3FailReasons(review);
@@ -3470,18 +3474,13 @@ function buildSingleSymbolReviewNarrative(review: ChartReviewResult, conclusion:
   }
 
   const structureInPrinciple =
-    review.diagnostics.alignmentPass &&
-    !!checkByName.get("body-wick")?.pass &&
-    !!checkByName.get("volume")?.pass &&
     !!checkByName.get("continuation")?.pass &&
-    !!checkByName.get("impulse-consolidation")?.pass &&
-    !!checkByName.get("failed-breakout-trap")?.pass &&
     !!checkByName.get("higher-timeframe-room")?.pass &&
     !!checkByName.get("higher-timeframe-2r-viability")?.pass;
   if (structureInPrinciple) {
-    supportive.push("the chart supports a clean 2:1-style structure in principle");
+    supportive.push("the chart supports a tradable clean 2:1-style structure (continuation + room + 2R viability)");
   } else {
-    problematic.push("a clean 2:1-style structure is not clearly supported yet");
+    problematic.push("tradable clean 2:1 structure is not clear yet (needs continuation plus chart-anchored room/2R viability)");
   }
 
   if (conclusion === "confirmed" && problematic.length > 0) {
