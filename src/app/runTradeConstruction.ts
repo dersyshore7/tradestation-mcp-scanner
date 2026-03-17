@@ -1,11 +1,10 @@
 import { createTradeStationGetFetcher } from "../tradestation/client.js";
 import { type ScanConfidence, type ScanDirection } from "../scanner/scoring.js";
+import { evaluateChartAnchoredTradability } from "./chartAnchoredTradability.js";
 import {
   buildDirectOptionSymbols,
   fetchFirstUsableDirectOptionQuote,
   pickTargetExpiration,
-  parseBars,
-  normalizeBar,
   readExpirations,
   readStrikes,
   runSingleSymbolTradeStationAnalysis,
@@ -318,87 +317,6 @@ async function resolveAccountEquity(get: (path: string) => Promise<Response>): P
 }
 
 
-type ChartAnchoredLevels = {
-  invalidationUnderlying: number;
-  targetUnderlying: number;
-  invalidationReason: string;
-  targetReason: string;
-};
-
-async function resolveChartAnchoredLevels(
-  get: (path: string) => Promise<Response>,
-  symbol: string,
-  direction: ScanDirection,
-  referencePrice: number,
-): Promise<ChartAnchoredLevels> {
-  const [dailyResponse, threeMonthResponse, oneYearResponse] = await Promise.all([
-    get(`/marketdata/barcharts/${encodeURIComponent(symbol)}?interval=1&unit=Daily&barsback=30`),
-    get(`/marketdata/barcharts/${encodeURIComponent(symbol)}?interval=1&unit=Daily&barsback=160`),
-    get(`/marketdata/barcharts/${encodeURIComponent(symbol)}?interval=1&unit=Weekly&barsback=60`),
-  ]);
-
-  if (!dailyResponse.ok || !threeMonthResponse.ok || !oneYearResponse.ok) {
-    throw new Error(`Unable to load chart bars to derive chart-anchored exits for ${symbol}.`);
-  }
-
-  const dailyBars = parseBars(await dailyResponse.json()).map((bar) => normalizeBar(bar));
-  const bars3M = parseBars(await threeMonthResponse.json()).map((bar) => normalizeBar(bar));
-  const bars1Y = parseBars(await oneYearResponse.json()).map((bar) => normalizeBar(bar));
-
-  const recentBars = dailyBars.slice(-6);
-  const recentLows = recentBars.map((bar) => readNumber(bar, ["Low"])).filter((value): value is number => value !== null);
-  const recentHighs = recentBars.map((bar) => readNumber(bar, ["High"])).filter((value): value is number => value !== null);
-
-  const highs3M = bars3M.map((bar) => readNumber(bar, ["High"])).filter((value): value is number => value !== null);
-  const highs1Y = bars1Y.map((bar) => readNumber(bar, ["High"])).filter((value): value is number => value !== null);
-  const lows3M = bars3M.map((bar) => readNumber(bar, ["Low"])).filter((value): value is number => value !== null);
-  const lows1Y = bars1Y.map((bar) => readNumber(bar, ["Low"])).filter((value): value is number => value !== null);
-
-  if (direction === "bullish") {
-    const invalidationUnderlying = recentLows.length > 0 ? Math.min(...recentLows) : null;
-    const resistanceCandidates = [...highs3M, ...highs1Y].filter((value) => value > referencePrice);
-    const targetUnderlying = resistanceCandidates.length > 0 ? Math.min(...resistanceCandidates) : null;
-
-    if (invalidationUnderlying === null || targetUnderlying === null || !(invalidationUnderlying < referencePrice && targetUnderlying > referencePrice)) {
-      throw new Error(`Could not derive clean bullish chart-anchored invalidation/target levels for ${symbol}.`);
-    }
-
-    const riskDistance = referencePrice - invalidationUnderlying;
-    const rewardDistance = targetUnderlying - referencePrice;
-    if (riskDistance <= 0 || rewardDistance < riskDistance * 2) {
-      throw new Error(`Chart-anchored levels do not support a clean 2:1 structure for ${symbol}.`);
-    }
-
-    return {
-      invalidationUnderlying,
-      targetUnderlying,
-      invalidationReason: `recent daily support low (${invalidationUnderlying.toFixed(2)})`,
-      targetReason: `nearest overhead resistance from 3M/1Y highs (${targetUnderlying.toFixed(2)})`,
-    };
-  }
-
-  const invalidationUnderlying = recentHighs.length > 0 ? Math.max(...recentHighs) : null;
-  const supportCandidates = [...lows3M, ...lows1Y].filter((value) => value < referencePrice);
-  const targetUnderlying = supportCandidates.length > 0 ? Math.max(...supportCandidates) : null;
-
-  if (invalidationUnderlying === null || targetUnderlying === null || !(invalidationUnderlying > referencePrice && targetUnderlying < referencePrice)) {
-    throw new Error(`Could not derive clean bearish chart-anchored invalidation/target levels for ${symbol}.`);
-  }
-
-  const riskDistance = invalidationUnderlying - referencePrice;
-  const rewardDistance = referencePrice - targetUnderlying;
-  if (riskDistance <= 0 || rewardDistance < riskDistance * 2) {
-    throw new Error(`Chart-anchored levels do not support a clean 2:1 structure for ${symbol}.`);
-  }
-
-  return {
-    invalidationUnderlying,
-    targetUnderlying,
-    invalidationReason: `recent daily resistance high (${invalidationUnderlying.toFixed(2)})`,
-    targetReason: `nearest downside support from 3M/1Y lows (${targetUnderlying.toFixed(2)})`,
-  };
-}
-
 async function buildTradeInputs(
   symbol: string,
   direction: ScanDirection,
@@ -498,7 +416,10 @@ async function buildTradeInputs(
     const { equity, source } = await resolveAccountEquity(get);
     const allocation = equity * TARGET_ALLOCATION_PCT;
 
-    const chartLevels = await resolveChartAnchoredLevels(get, symbol, direction, underlyingPrice);
+    const chartLevels = await evaluateChartAnchoredTradability(get, symbol, direction, underlyingPrice);
+    if (!chartLevels.pass) {
+      throw new Error(chartLevels.reason);
+    }
     const { invalidationUnderlying, targetUnderlying } = chartLevels;
 
     const deltaAssumption = 0.5;

@@ -1,5 +1,6 @@
 import { runScan, type ScanInput } from "../src/app/runScan.js";
 import { constructTradeCard } from "../src/app/runTradeConstruction.js";
+import { CHART_ANCHORED_TWO_TO_ONE_FAILURE } from "../src/app/chartAnchoredTradability.js";
 import { DEFAULT_SCAN_PROMPT } from "../src/config/defaultScanPrompt.js";
 
 type VercelRequestLike = {
@@ -23,7 +24,7 @@ function readErrorMessage(error: unknown): string {
 
 function isChartAnchoredTwoToOneBlocker(error: unknown): boolean {
   const message = readErrorMessage(error);
-  return message.includes("Chart-anchored levels do not support a clean 2:1 structure");
+  return message.includes(CHART_ANCHORED_TWO_TO_ONE_FAILURE);
 }
 
 function normalizeInput(body: unknown): ScanInput {
@@ -77,10 +78,6 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
       });
       return;
     } catch (error) {
-      if (!isChartAnchoredTwoToOneBlocker(error)) {
-        throw error;
-      }
-
       const blockerMessage = readErrorMessage(error);
       const telemetryWithTradeBlock = {
         ...(telemetry ?? {}),
@@ -90,6 +87,10 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
           scanReasoning: scanResult.reason,
         },
       };
+
+      if (isChartAnchoredTwoToOneBlocker(error)) {
+        console.warn("Unexpected trade-card 2:1 blocker after confirmation; returning no_trade_today for safety.");
+      }
 
       res.status(200).json({
         prompt: scanInput.prompt,
