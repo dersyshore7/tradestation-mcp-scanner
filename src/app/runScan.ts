@@ -109,7 +109,6 @@ const V1_SCAN_UNIVERSE_CONFIG = {
 
 const V1_SCAN_UNIVERSE = V1_SCAN_UNIVERSE_CONFIG.symbols;
 const V1_SCAN_UNIVERSE_SET = new Set<string>(V1_SCAN_UNIVERSE);
-const FINALIST_REVIEW_LIMIT = 3;
 const FINAL_SCORE_TIE_TOLERANCE = 0.05;
 const YAHOO_FINANCE_BASE_URL = "https://query1.finance.yahoo.com";
 
@@ -510,6 +509,7 @@ function buildStarterUniverseTelemetry(params: {
   const noTradeReason = buildConsistentNoTradeReason(
     finalistReviewResults,
     stage3Passed.map((candidate) => candidate.symbol),
+    ranked.map((candidate) => candidate.symbol),
   );
 
   return {
@@ -550,7 +550,7 @@ function buildFinalistReviewSource(
   stage2PassedSymbols: string[],
   stage3PassedSymbols: string[],
 ): FinalistReviewSource {
-  const finalists = ranked.slice(0, FINALIST_REVIEW_LIMIT);
+  const finalists = ranked;
   const stage2Set = new Set(stage2PassedSymbols);
   const stage3Set = new Set(stage3PassedSymbols);
   const debug: StarterUniverseTelemetry["finalistsReviewedDebug"] = [];
@@ -575,7 +575,7 @@ function buildFinalistReviewSource(
 
     debug.push({
       symbol: finalist.symbol,
-      eligibleForReviewReason: `Top ${FINALIST_REVIEW_LIMIT} final ranking candidate with finite score (${finalist.score.toFixed(2)}).`,
+      eligibleForReviewReason: `Ranked finalist eligible for deterministic confirmation review (${finalist.score.toFixed(2)}).`,
       sourceList,
       inStage2Passed,
       inStage3Passed,
@@ -788,19 +788,23 @@ function buildFinalistNoTradeReasonPath(finalists: FinalistReviewResult[]): stri
     .map((item) => `${item.symbol} was shortlisted but failed final confirmation due to ${formatFinalistReasonList(item.confirmationFailureReasons)}.`)
     .join(" ");
 
-  return `Finalists were reviewed but none were confirmed (${finalists.map((item) => item.symbol).join(", ")}). Reason path: ${narrative} Finalist outcomes: ${reviewed}.`;
+  return `Ranked finalists were reviewed in deterministic order and all were rejected (${finalists.map((item) => item.symbol).join(", ")}). Reason path: ${narrative} Finalist outcomes: ${reviewed}.`;
 }
 
-function buildGenericNoTradeReason(stage3PassedCount: number, finalistsReviewedCount: number): string {
-  if (stage3PassedCount === 0 && finalistsReviewedCount === 0) {
-    return "No symbols passed Stage 3 chart/bar review.";
+function buildGenericNoTradeReason(stage3PassedCount: number, finalRankingCount: number, finalistsReviewedCount: number): string {
+  if (stage3PassedCount === 0 && finalRankingCount === 0 && finalistsReviewedCount === 0) {
+    return "No ranked finalists existed because no symbols passed Stage 3 chart/bar review.";
+  }
+
+  if (finalRankingCount === 0) {
+    return "No ranked finalists existed after final scoring.";
   }
 
   if (finalistsReviewedCount === 0) {
-    return "No finalists were available for confirmation review.";
+    return "Ranked finalists existed but confirmation review did not run.";
   }
 
-  return "Finalists were reviewed but none were confirmed.";
+  return "Ranked finalists were reviewed in deterministic order and all were rejected.";
 }
 
 function collectMentionedUniverseSymbols(reason: string): string[] {
@@ -819,14 +823,15 @@ function getReasonSymbolConsistencyWarnings(reason: string, approvedSymbols: Set
 function buildConsistentNoTradeReason(
   finalists: FinalistReviewResult[],
   stage3PassedSymbols: string[],
+  finalRankingSymbols: string[],
 ): { reason: string; symbolConsistencyWarnings: string[] } {
-  const fallbackReason = buildGenericNoTradeReason(stage3PassedSymbols.length, finalists.length);
+  const fallbackReason = buildGenericNoTradeReason(stage3PassedSymbols.length, finalRankingSymbols.length, finalists.length);
   if (finalists.length === 0) {
     return { reason: fallbackReason, symbolConsistencyWarnings: [] };
   }
 
   const detailedReason = buildFinalistNoTradeReasonPath(finalists);
-  const approvedSymbols = new Set([...stage3PassedSymbols, ...finalists.map((item) => item.symbol)]);
+  const approvedSymbols = new Set([...stage3PassedSymbols, ...finalRankingSymbols, ...finalists.map((item) => item.symbol)]);
   const symbolConsistencyWarnings = getReasonSymbolConsistencyWarnings(detailedReason, approvedSymbols);
   if (symbolConsistencyWarnings.length > 0) {
     return { reason: fallbackReason, symbolConsistencyWarnings };
@@ -2796,7 +2801,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
       direction: null,
       confidence: null,
       conclusion: "no_trade_today",
-      reason: "No final candidate was available after scoring.",
+      reason: buildGenericNoTradeReason(stage3Passed.length, ranked.length, 0),
       telemetry: buildScanTelemetry({ stage2Passed, stage3Evaluations, ranked, finalRankingDebug, finalistReviewSource }),
     };
   }
@@ -2912,7 +2917,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
         direction: reviewResult.direction,
         confidence: reviewResult.confidence,
         conclusion: "confirmed",
-        reason: `Finalist confirmation passed after Stage 1/2/3 scoring (reviewed: ${finalists.map((item) => item.symbol).join(", ")}; selected: ${reviewResult.ticker}; rank score ${finalist.score.toFixed(2)}). ${getSelectionWhyWonReason(finalistReviewResults, reviewResult.ticker)} ${reviewResult.reason}`,
+        reason: `Finalist confirmation passed after Stage 1/2/3 scoring (reviewed: ${finalistReviewResults.map((item) => item.symbol).join(", ")}; selected: ${reviewResult.ticker}; rank score ${finalist.score.toFixed(2)}). ${getSelectionWhyWonReason(finalistReviewResults, reviewResult.ticker)} ${reviewResult.reason}`,
         telemetry,
       };
     }
@@ -2922,6 +2927,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
   const noTradeReason = buildConsistentNoTradeReason(
     finalistReviewResults,
     stage3Passed.map((candidate) => candidate.symbol),
+    ranked.map((candidate) => candidate.symbol),
   );
   for (const warning of noTradeReason.symbolConsistencyWarnings) {
     console.warn(`[scanner:debug] ${warning}`);
@@ -3088,6 +3094,7 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
   const telemetryNoTradeReason = buildConsistentNoTradeReason(
     telemetryReviewedFinalists,
     stage3Passed.map((candidate) => candidate.symbol),
+    ranked.map((candidate) => candidate.symbol),
   );
 
   return {
