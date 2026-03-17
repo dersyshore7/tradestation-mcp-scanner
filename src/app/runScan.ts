@@ -1271,11 +1271,12 @@ function runStage3ChartReview(
   timeframeDiagnostics: Record<MultiTimeframeView, Stage3TimeframeDiagnostic>,
 ): ChartReviewResult {
   const bars1D = barsByView["1D"];
+  const bars1DForConfirmation = bars1D.length >= 2 ? bars1D.slice(0, -1) : bars1D;
   const bars1W = barsByView["1W"];
   const bars3M = barsByView["3M"];
   const bars1Y = barsByView["1Y"];
 
-  const move1D = getMovePctFromBars(bars1D);
+  const move1D = getMovePctFromBars(bars1DForConfirmation);
   const move1W = getMovePctFromBars(bars1W);
   const dayBias: ScanDirection | "neutral" = move1D === null ? "neutral" : move1D >= 0.5 ? "bullish" : move1D <= -0.5 ? "bearish" : "neutral";
   const weekBias: ScanDirection | "neutral" = move1W === null ? "neutral" : move1W >= 0 ? "bullish" : "bearish";
@@ -1383,8 +1384,8 @@ function runStage3ChartReview(
     };
   }
 
-  const lastBar = bars1D[bars1D.length - 1] ?? null;
-  const priorBars = bars1D.slice(0, -1);
+  const lastBar = bars1DForConfirmation[bars1DForConfirmation.length - 1] ?? null;
+  const priorBars = bars1DForConfirmation.slice(0, -1);
   const open = readNumber(lastBar, ["Open"]);
   const high = readNumber(lastBar, ["High"]);
   const low = readNumber(lastBar, ["Low"]);
@@ -1476,8 +1477,8 @@ function runStage3ChartReview(
       : bodyToRange >= 0.45 && closeLocation <= 0.4 && lowerWick <= body;
   const volumePass = volumeRatio === null || volumeRatio >= 0.9;
 
-  const consolidationBars = bars1D.slice(-6, -1);
-  const impulseBars = bars1D.slice(-12, -6);
+  const consolidationBars = bars1DForConfirmation.slice(-5);
+  const impulseBars = bars1DForConfirmation.slice(-11, -5);
 
   const averageRangeFor = (bars: Record<string, unknown>[]): number | null => {
     let sum = 0;
@@ -1556,8 +1557,8 @@ function runStage3ChartReview(
     (direction === "bearish" && lowerHighCount <= 2);
 
   const keyLevel = direction === "bullish"
-    ? readNumber(bars1D[bars1D.length - 2] ?? null, ["High"])
-    : readNumber(bars1D[bars1D.length - 2] ?? null, ["Low"]);
+    ? readNumber(bars1DForConfirmation[bars1DForConfirmation.length - 2] ?? null, ["High"])
+    : readNumber(bars1DForConfirmation[bars1DForConfirmation.length - 2] ?? null, ["Low"]);
   const failedBreakoutBullTrapPass =
     direction === "bullish"
       ? keyLevel !== null && !(high > keyLevel && close < keyLevel)
@@ -1619,7 +1620,7 @@ function runStage3ChartReview(
       ? true
       : !(averagePullbackVolume > averageNonPullbackVolume * 1.05 && pullbackVolumeTrendUp);
 
-  const closes = bars1D.slice(-7).map((bar) => readNumber(bar, ["Close"]))
+  const closes = bars1DForConfirmation.slice(-7).map((bar) => readNumber(bar, ["Close"]))
     .filter((value): value is number => value !== null);
   let flipCount = 0;
   for (let index = 2; index < closes.length; index += 1) {
@@ -1641,7 +1642,7 @@ function runStage3ChartReview(
   }
   const choppyPass = flipCount <= 3;
 
-  const prevBar = bars1D[bars1D.length - 2] ?? null;
+  const prevBar = bars1DForConfirmation[bars1DForConfirmation.length - 2] ?? null;
   const prevHigh = readNumber(prevBar, ["High"]);
   const prevLow = readNumber(prevBar, ["Low"]);
   const continuationPass =
@@ -1705,7 +1706,7 @@ function runStage3ChartReview(
   const higherTimeframeContextPresent = direction === "bullish" ? max3M !== null && max1Y !== null : min3M !== null && min1Y !== null;
 
   const triggerZoneFlipCount = (() => {
-    const triggerCloses = bars1D.slice(-6).map((bar) => readNumber(bar, ["Close"]));
+    const triggerCloses = bars1DForConfirmation.slice(-6).map((bar) => readNumber(bar, ["Close"]));
     let flips = 0;
     for (let index = 2; index < triggerCloses.length; index += 1) {
       const a = triggerCloses[index - 2];
