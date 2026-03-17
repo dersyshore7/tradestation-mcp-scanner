@@ -17,6 +17,15 @@ type WorkflowRequestBody = {
   excludedTickers?: string[];
 };
 
+function readErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isChartAnchoredTwoToOneBlocker(error: unknown): boolean {
+  const message = readErrorMessage(error);
+  return message.includes("Chart-anchored levels do not support a clean 2:1 structure");
+}
+
 function normalizeInput(body: unknown): ScanInput {
   const payload = (body ?? {}) as WorkflowRequestBody;
   const prompt = typeof payload.prompt === "string" && payload.prompt.trim().length > 0 ? payload.prompt.trim() : DEFAULT_SCAN_PROMPT;
@@ -53,18 +62,47 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
       return;
     }
 
-    const tradeCard = await constructTradeCard({
-      prompt: `build trade ${scanResult.ticker}`,
-      confirmedDirection: scanResult.direction,
-      confirmedConfidence: scanResult.confidence,
-    });
+    try {
+      const tradeCard = await constructTradeCard({
+        prompt: `build trade ${scanResult.ticker}`,
+        confirmedDirection: scanResult.direction,
+        confirmedConfidence: scanResult.confidence,
+      });
 
-    res.status(200).json({
-      prompt: scanInput.prompt,
-      scan: scanResult,
-      tradeCard,
-      telemetry,
-    });
+      res.status(200).json({
+        prompt: scanInput.prompt,
+        scan: scanResult,
+        tradeCard,
+        telemetry,
+      });
+      return;
+    } catch (error) {
+      if (!isChartAnchoredTwoToOneBlocker(error)) {
+        throw error;
+      }
+
+      const blockerMessage = readErrorMessage(error);
+      const telemetryWithTradeBlock = {
+        ...(telemetry ?? {}),
+        tradeCardBlock: {
+          blocked: true,
+          reason: blockerMessage,
+          scanReasoning: scanResult.reason,
+        },
+      };
+
+      res.status(200).json({
+        prompt: scanInput.prompt,
+        scan: {
+          ...scanResult,
+          conclusion: "no_trade_today",
+          reason: blockerMessage,
+        },
+        tradeCard: null,
+        telemetry: telemetryWithTradeBlock,
+      });
+      return;
+    }
   } catch (error) {
     console.error("Failed to run /api/workflow", error);
     res.status(500).json({
