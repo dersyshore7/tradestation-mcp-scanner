@@ -311,6 +311,7 @@ type FinalRankingEntry = {
   topRankedCandidate: boolean;
   confirmedFinalSelection: boolean;
   selected: boolean;
+  selectedFieldMeaning: string;
   reason: string;
   scoreInputs: {
     movePct: number;
@@ -618,6 +619,7 @@ function buildFinalRanking(stage3Passed: ChartCandidate[]): { ranked: (ChartCand
         topRankedCandidate: false,
         confirmedFinalSelection: false,
         selected: false,
+        selectedFieldMeaning: "legacy_top_ranked_candidate_not_confirmed_trade",
         reason: "missing final score",
         scoreInputs,
       };
@@ -631,6 +633,7 @@ function buildFinalRanking(stage3Passed: ChartCandidate[]): { ranked: (ChartCand
       topRankedCandidate: false,
       confirmedFinalSelection: false,
       selected: false,
+      selectedFieldMeaning: "legacy_top_ranked_candidate_not_confirmed_trade",
       reason: "entered final ranking",
       scoreInputs,
     };
@@ -1884,7 +1887,7 @@ function runStage3ChartReview(
     `trap-risk ${failedBreakoutBullTrapPass ? "low" : "present"}`,
     `pullback-body ${pullbackBodyControlPass ? "controlled" : "heavy"}`,
     `pullback-volume ${pullbackSellingVolumePass ? "controlled" : "expanding sell"}`,
-    `trigger-zone ${messyTriggerZonePass ? "clean" : "messy"}`,
+    `trigger-zone-flips ${messyTriggerZonePass ? "low" : "elevated"}`,
     `continuation ${continuationPass ? "yes" : "rejection risk"}`,
     `HTF room ${higherTimeframeRoomPass ? "adequate" : "limited"}`,
     `HTF 2R ${higherTimeframe2RPass ? "viable" : "tight"}`,
