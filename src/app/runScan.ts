@@ -376,12 +376,21 @@ type FinalistReviewResult = {
   reason: string;
 };
 
+type ConfirmationDebug = {
+  reviewStatus: "reviewed";
+  confirmationStatus: "confirmed" | "rejected";
+  confirmationFailureReasons: string[];
+  continuationPass: boolean;
+  higherTimeframeRoomPass: boolean;
+  higherTimeframe2RPass: boolean;
+  supportsTradable2RStructure: boolean;
+  rejectedBecauseConfidenceBelow75: boolean;
+  weightedSoftIssueScore: number;
+  topBlockingReasons: string[];
+};
+
 type SingleSymbolReviewResult = ScanResult & {
-  confirmationDebug?: {
-    reviewStatus: "reviewed";
-    confirmationStatus: "confirmed" | "rejected";
-    confirmationFailureReasons: string[];
-  };
+  confirmationDebug?: ConfirmationDebug;
 };
 
 type EarningsCheckResult = {
@@ -1272,6 +1281,87 @@ function resolveConfirmationOutcome(review: ChartReviewResult): { conclusion: Sc
   return { conclusion: "confirmed", confidence };
 }
 
+function getConfirmationStructureDebug(review: ChartReviewResult): {
+  continuationPass: boolean;
+  higherTimeframeRoomPass: boolean;
+  higherTimeframe2RPass: boolean;
+  supportsTradable2RStructure: boolean;
+  topBlockingReasons: string[];
+} {
+  const checkByName = new Map(review.diagnostics.checks.map((item) => [item.check, item]));
+  const continuationPass = !!checkByName.get("continuation")?.pass;
+  const higherTimeframeRoomPass = !!checkByName.get("higher-timeframe-room")?.pass;
+  const higherTimeframe2RPass = !!checkByName.get("higher-timeframe-2r-viability")?.pass;
+  const topBlockingReasons: string[] = [];
+
+  if (!continuationPass) {
+    topBlockingReasons.push("continuation failed");
+  }
+  if (!higherTimeframeRoomPass) {
+    topBlockingReasons.push("higher-timeframe room failed");
+  }
+  if (!higherTimeframe2RPass) {
+    topBlockingReasons.push("higher-timeframe 2R viability failed");
+  }
+
+  return {
+    continuationPass,
+    higherTimeframeRoomPass,
+    higherTimeframe2RPass,
+    supportsTradable2RStructure: continuationPass && higherTimeframeRoomPass && higherTimeframe2RPass,
+    topBlockingReasons,
+  };
+}
+
+function buildConfirmationDebug(
+  review: ChartReviewResult | null,
+  confirmationStatus: "confirmed" | "rejected",
+  confirmationFailureReasons: string[],
+  overrides?: Partial<Pick<ConfirmationDebug, "reviewStatus" | "topBlockingReasons">>,
+): ConfirmationDebug {
+  const defaultStructure = {
+    continuationPass: false,
+    higherTimeframeRoomPass: false,
+    higherTimeframe2RPass: false,
+    supportsTradable2RStructure: false,
+    topBlockingReasons: confirmationFailureReasons.length > 0 ? [...confirmationFailureReasons] : [],
+    weightedSoftIssueScore: 0,
+    rejectedBecauseConfidenceBelow75: false,
+  };
+
+  if (!review) {
+    return {
+      reviewStatus: overrides?.reviewStatus ?? "reviewed",
+      confirmationStatus,
+      confirmationFailureReasons,
+      continuationPass: defaultStructure.continuationPass,
+      higherTimeframeRoomPass: defaultStructure.higherTimeframeRoomPass,
+      higherTimeframe2RPass: defaultStructure.higherTimeframe2RPass,
+      supportsTradable2RStructure: defaultStructure.supportsTradable2RStructure,
+      rejectedBecauseConfidenceBelow75: defaultStructure.rejectedBecauseConfidenceBelow75,
+      weightedSoftIssueScore: defaultStructure.weightedSoftIssueScore,
+      topBlockingReasons: overrides?.topBlockingReasons ?? defaultStructure.topBlockingReasons,
+    };
+  }
+
+  const { weightedSoftIssueScore } = getConfirmationSoftIssueMetrics(review);
+  const structureDebug = getConfirmationStructureDebug(review);
+  const confidence: ScanConfidence = review.score >= 11 ? "85-92" : review.score >= 9 ? "75-84" : "65-74";
+
+  return {
+    reviewStatus: overrides?.reviewStatus ?? "reviewed",
+    confirmationStatus,
+    confirmationFailureReasons,
+    continuationPass: structureDebug.continuationPass,
+    higherTimeframeRoomPass: structureDebug.higherTimeframeRoomPass,
+    higherTimeframe2RPass: structureDebug.higherTimeframe2RPass,
+    supportsTradable2RStructure: structureDebug.supportsTradable2RStructure,
+    rejectedBecauseConfidenceBelow75: confirmationStatus === "rejected" && confidence === "65-74",
+    weightedSoftIssueScore,
+    topBlockingReasons: overrides?.topBlockingReasons ?? (structureDebug.topBlockingReasons.length > 0 ? structureDebug.topBlockingReasons : [...confirmationFailureReasons]),
+  };
+}
+
 function getConfirmationRejectionReasons(review: ChartReviewResult): string[] {
   if (!review.direction) {
     return ["hard veto: directional context is unavailable"];
@@ -1314,13 +1404,14 @@ function getConfirmationRejectionReasons(review: ChartReviewResult): string[] {
     return [`confirmation score stayed below the 75 minimum (score=${review.score.toFixed(2)}, weightedSoftIssueScore=${weightedSoftIssueScore.toFixed(2)})${expansionNarrative}`];
   }
 
-  const lacksTradable2RStructure =
-    !checkByName.get("continuation")?.pass ||
-    !checkByName.get("higher-timeframe-room")?.pass ||
-    !checkByName.get("higher-timeframe-2r-viability")?.pass;
-  if (lacksTradable2RStructure) {
+  const structureDebug = getConfirmationStructureDebug(review);
+  if (!structureDebug.supportsTradable2RStructure) {
+    if (structureDebug.topBlockingReasons.length === 1) {
+      return [`clean 2:1 structure missing: ${structureDebug.topBlockingReasons[0]} before trade-card confirmation`];
+    }
+
     return [
-      "clean 2:1 structure missing: requires continuation plus chart-anchored room/2R viability before trade-card confirmation",
+      `clean 2:1 structure missing: ${formatFinalistReasonList(structureDebug.topBlockingReasons)} before trade-card confirmation`,
     ];
   }
 
@@ -3502,11 +3593,9 @@ export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promi
         confidence: null,
         conclusion: "rejected",
         reason: `Single-symbol review rejected due to earnings risk inside the target DTE window. ${earningsCheck.reason}`,
-        confirmationDebug: {
-          reviewStatus: "reviewed",
-          confirmationStatus: "rejected",
-          confirmationFailureReasons: ["earnings risk inside target DTE window"],
-        },
+        confirmationDebug: buildConfirmationDebug(null, "rejected", ["earnings risk inside target DTE window"], {
+          topBlockingReasons: ["earnings risk inside target DTE window"],
+        }),
       };
     }
   }
@@ -3540,11 +3629,7 @@ export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promi
         confidence: outcome.confidence,
         conclusion: "confirmed",
         reason: reviewNarrative,
-        confirmationDebug: {
-          reviewStatus: "reviewed",
-          confirmationStatus: "confirmed",
-          confirmationFailureReasons: [],
-        },
+        confirmationDebug: buildConfirmationDebug(review, "confirmed", []),
       };
     }
 
@@ -3554,13 +3639,18 @@ export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promi
       confidence: null,
       conclusion: "rejected",
       reason: reviewNarrative,
-      confirmationDebug: {
-        reviewStatus: "reviewed",
-        confirmationStatus: "rejected",
-        confirmationFailureReasons: chartAnchoredFailureReason
+      confirmationDebug: buildConfirmationDebug(
+        review,
+        "rejected",
+        chartAnchoredFailureReason
           ? [...getConfirmationRejectionReasons(review), chartAnchoredFailureReason]
           : getConfirmationRejectionReasons(review),
-      },
+        chartAnchoredFailureReason
+          ? {
+              topBlockingReasons: [...getConfirmationStructureDebug(review).topBlockingReasons, chartAnchoredFailureReason],
+            }
+          : undefined,
+      ),
     };
   }
 
@@ -3570,11 +3660,9 @@ export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promi
     confidence: null,
     conclusion: "no_trade_today",
     reason: "Could not review the full 1D/1W/1M/3M/1Y chart context from TradeStation data, so no_trade_today.",
-    confirmationDebug: {
-      reviewStatus: "reviewed",
-      confirmationStatus: "rejected",
-      confirmationFailureReasons: ["missing multi-timeframe chart context"],
-    },
+    confirmationDebug: buildConfirmationDebug(null, "rejected", ["missing multi-timeframe chart context"], {
+      topBlockingReasons: ["missing multi-timeframe chart context"],
+    }),
   };
 }
 
@@ -3637,17 +3725,16 @@ function buildSingleSymbolReviewNarrative(
     problematic.push(`higher-timeframe room/resistance looks tight (${roomPct === null ? "room n/a" : `${roomPct.toFixed(2)}% room`}; ${roomDecision})`);
   }
 
-  const structureInPrinciple =
-    !!checkByName.get("continuation")?.pass &&
-    !!checkByName.get("higher-timeframe-room")?.pass &&
-    !!checkByName.get("higher-timeframe-2r-viability")?.pass &&
-    !chartAnchoredFailureReason;
+  const structureDebug = getConfirmationStructureDebug(review);
+  const structureInPrinciple = structureDebug.supportsTradable2RStructure && !chartAnchoredFailureReason;
   if (structureInPrinciple) {
     supportive.push("the chart supports a tradable clean 2:1-style structure (continuation + room + 2R viability)");
   } else if (chartAnchoredFailureReason) {
     problematic.push(`tradable clean 2:1 structure failed chart-anchored invalidation/target test (${chartAnchoredFailureReason})`);
+  } else if (structureDebug.topBlockingReasons.length === 1) {
+    problematic.push(`tradable clean 2:1 structure is not clear yet (${structureDebug.topBlockingReasons[0]})`);
   } else {
-    problematic.push("tradable clean 2:1 structure is not clear yet (needs continuation plus chart-anchored room/2R viability)");
+    problematic.push(`tradable clean 2:1 structure is not clear yet (${formatFinalistReasonList(structureDebug.topBlockingReasons)})`);
   }
 
   if (conclusion === "confirmed" && problematic.length > 0) {
