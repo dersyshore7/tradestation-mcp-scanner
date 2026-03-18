@@ -329,6 +329,8 @@ type FinalRankingEntry = {
     optionMid: number;
     volumeRatio: number | null;
     chartReviewScore: number;
+    continuationPass: boolean;
+    continuationPenalty: number;
   };
 };
 
@@ -619,6 +621,7 @@ function buildFinalRanking(stage3Passed: ChartCandidate[]): { ranked: (ChartCand
   const debug = stage3Passed.map((candidate) => {
     const computedScore = scoreStage3Candidate(candidate);
     const score = Number.isFinite(computedScore) ? computedScore : null;
+    const continuationPenalty = getStage3ContinuationPenalty(candidate);
     const scoreInputs = {
       movePct: candidate.chartMovePct,
       optionOpenInterest: candidate.optionOpenInterest,
@@ -626,6 +629,8 @@ function buildFinalRanking(stage3Passed: ChartCandidate[]): { ranked: (ChartCand
       optionMid: candidate.optionMid,
       volumeRatio: candidate.volumeRatio,
       chartReviewScore: candidate.chartReviewScore,
+      continuationPass: getStage3CheckPass(candidate, "continuation"),
+      continuationPenalty,
     };
 
     if (score === null) {
@@ -1127,7 +1132,31 @@ function scoreStage3Candidate(candidate: ChartCandidate): number {
   const oiScore = Math.min(candidate.optionOpenInterest / 500, 6);
   const spreadScore = Math.max(0, 3 - (candidate.optionSpread / Math.max(candidate.optionMid, 0.01)) * 10);
   const volumeScore = candidate.volumeRatio === null ? 1 : Math.min(candidate.volumeRatio, 2);
-  return moveScore + oiScore + spreadScore + volumeScore + candidate.chartReviewScore;
+  const continuationPenalty = getStage3ContinuationPenalty(candidate);
+  return moveScore + oiScore + spreadScore + volumeScore + candidate.chartReviewScore - continuationPenalty;
+}
+
+function getStage3CheckPass(candidate: ChartCandidate, check: string): boolean {
+  return !!candidate.chartDiagnostics.checks.find((item) => item.check === check)?.pass;
+}
+
+function getStage3ContinuationPenalty(candidate: ChartCandidate): number {
+  if (getStage3CheckPass(candidate, "continuation")) {
+    return 0;
+  }
+
+  let penalty = 2.5;
+  if (!getStage3CheckPass(candidate, "impulse-consolidation")) {
+    penalty += 0.5;
+  }
+  if (!getStage3CheckPass(candidate, "fake-hold-distribution")) {
+    penalty += 0.5;
+  }
+  if (!getStage3CheckPass(candidate, "volume")) {
+    penalty += 0.5;
+  }
+
+  return penalty;
 }
 
 function summarizePassingChecks(checks: Stage3CheckDiagnostic[]): string {
