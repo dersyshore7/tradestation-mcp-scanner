@@ -1919,10 +1919,41 @@ function runStage3ChartReview(
   const prevBar = bars1DForConfirmation[bars1DForConfirmation.length - 2] ?? null;
   const prevHigh = readNumber(prevBar, ["High"]);
   const prevLow = readNumber(prevBar, ["Low"]);
-  const continuationPass =
+  const directionalClosePass = direction === "bullish" ? close >= open : close <= open;
+  const triggerReference = direction === "bullish" ? prevHigh : prevLow;
+  const triggerZoneBuffer = triggerReference === null ? null : Math.max(range * 0.2, close * 0.0025);
+  const triggerZoneHoldPass =
+    triggerReference === null || triggerZoneBuffer === null
+      ? directionalClosePass
+      : direction === "bullish"
+        ? close >= triggerReference - triggerZoneBuffer
+        : close <= triggerReference + triggerZoneBuffer;
+  const decisiveBreakoutContinuationPass =
     direction === "bullish"
-      ? prevHigh !== null && close > prevHigh && close >= open
-      : prevLow !== null && close < prevLow && close <= open;
+      ? prevHigh !== null && close > prevHigh && directionalClosePass
+      : prevLow !== null && close < prevLow && directionalClosePass;
+  const triggerZoneRejectionPass =
+    direction === "bullish"
+      ? closeLocation >= 0.5
+      : closeLocation <= 0.5;
+  const continuationFailureReasons: string[] = [];
+  if (!directionalClosePass) {
+    continuationFailureReasons.push("closed against the setup direction");
+  }
+  if (!triggerZoneHoldPass) {
+    continuationFailureReasons.push(
+      direction === "bullish"
+        ? `gave back below prior high buffer (${close.toFixed(2)} < ${(prevHigh !== null && triggerZoneBuffer !== null ? prevHigh - triggerZoneBuffer : NaN).toFixed(2)})`
+        : `reclaimed above prior low buffer (${close.toFixed(2)} > ${(prevLow !== null && triggerZoneBuffer !== null ? prevLow + triggerZoneBuffer : NaN).toFixed(2)})`,
+    );
+  }
+  if (!triggerZoneRejectionPass) {
+    continuationFailureReasons.push(
+      direction === "bullish"
+        ? `closed in lower half of the bar (closeLocation=${closeLocation.toFixed(2)})`
+        : `closed in upper half of the bar (closeLocation=${closeLocation.toFixed(2)})`,
+    );
+  }
 
   const highs3M = bars3M.map((bar) => readNumber(bar, ["High"]))
     .filter((value): value is number => value !== null);
@@ -2002,6 +2033,25 @@ function runStage3ChartReview(
     return flips;
   })();
   const messyTriggerZonePass = triggerZoneFlipCount <= 2 || (triggerZoneFlipCount <= 3 && choppyPass);
+  const weakContinuationStack = !pullbackBodyControlPass && !pullbackSellingVolumePass;
+  if (weakContinuationStack) {
+    continuationFailureReasons.push("pullback body and pullback volume both show give-back pressure");
+  }
+  const severeDistributionStack = !fakeHoldDistributionPass && (!messyTriggerZonePass || !impulseConsolidationPass);
+  if (severeDistributionStack) {
+    continuationFailureReasons.push("distribution plus weak hold structure is severe");
+  }
+  const continuationPass =
+    decisiveBreakoutContinuationPass ||
+    (failedBreakoutBullTrapPass &&
+      directionalClosePass &&
+      triggerZoneHoldPass &&
+      triggerZoneRejectionPass &&
+      !weakContinuationStack &&
+      !severeDistributionStack);
+  const continuationReason = continuationPass
+    ? `decisiveBreakout=${decisiveBreakoutContinuationPass ? "yes" : "no"}, triggerHold=${triggerZoneHoldPass ? "ok" : "weak"}, directionalClose=${directionalClosePass ? "ok" : "against"}, rejection=${triggerZoneRejectionPass ? "limited" : "present"}, pullbackBody=${pullbackBodyControlPass ? "controlled" : "heavy"}, pullbackVolume=${pullbackSellingVolumePass ? "controlled" : "expanding"}, distribution=${fakeHoldDistributionPass ? "limited" : "elevated"}, triggerFlips=${messyTriggerZonePass ? "contained" : "messy"}, impulseHold=${impulseConsolidationPass ? "acceptable" : "weak"}`
+    : continuationFailureReasons.join("; ");
 
   const checkDiagnostics: Stage3CheckDiagnostic[] = [
     { check: "alignment", pass: alignmentPass, reason: alignmentReason, impact: getCheckImpactLabel("alignment", volumeRatio) },
@@ -2059,7 +2109,7 @@ function runStage3ChartReview(
       reason: `triggerZoneFlipCount=${triggerZoneFlipCount}`,
       impact: getCheckImpactLabel("trigger-zone-flips", volumeRatio),
     },
-    { check: "continuation", pass: continuationPass, reason: direction === "bullish" ? `close=${close.toFixed(2)} vs prevHigh=${prevHigh?.toFixed(2) ?? "n/a"}` : `close=${close.toFixed(2)} vs prevLow=${prevLow?.toFixed(2) ?? "n/a"}`, impact: getCheckImpactLabel("continuation", volumeRatio) },
+    { check: "continuation", pass: continuationPass, reason: continuationReason, impact: getCheckImpactLabel("continuation", volumeRatio) },
     {
       check: "higher-timeframe-context",
       pass: higherTimeframeContextPresent,
