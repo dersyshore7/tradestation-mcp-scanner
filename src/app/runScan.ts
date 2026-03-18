@@ -410,6 +410,7 @@ export type StarterUniverseTelemetry = {
     stage1Passed: number;
     stage2Passed: number;
     stage3Passed: number;
+    continuationEligibleFinalists: number;
     finalistsReviewed: number;
     finalRanking: number;
   };
@@ -418,6 +419,7 @@ export type StarterUniverseTelemetry = {
     stage1Passed: string[];
     stage2Passed: string[];
     stage3Passed: string[];
+    continuationEligibleFinalists: string[];
     finalistsReviewed: string[];
     finalRanking: string[];
   };
@@ -450,6 +452,7 @@ export type StarterUniverseTelemetry = {
 };
 
 type FinalistReviewSource = {
+  continuationEligibleFinalists: (ChartCandidate & { score: number })[];
   finalists: (ChartCandidate & { score: number })[];
   debug: StarterUniverseTelemetry["finalistsReviewedDebug"];
   warnings: string[];
@@ -501,6 +504,7 @@ function buildStarterUniverseTelemetry(params: {
   const stage2Set = new Set(stage2Passed.map((candidate) => candidate.symbol));
   const stage3Set = new Set(stage3Passed.map((candidate) => candidate.symbol));
   const rankingSet = new Set(ranked.map((candidate) => candidate.symbol));
+  const continuationEligibleSet = new Set(finalistReviewSource.continuationEligibleFinalists.map((candidate) => candidate.symbol));
   const finalistsSet = new Set(finalistReviewSource.finalists.map((candidate) => candidate.symbol));
 
   for (const symbol of stage2Set) {
@@ -516,6 +520,11 @@ function buildStarterUniverseTelemetry(params: {
   for (const symbol of rankingSet) {
     if (!stage3Set.has(symbol)) {
       listConsistencyWarnings.push(`Final ranking symbol ${symbol} is missing from Stage 3 passed list.`);
+    }
+  }
+  for (const symbol of continuationEligibleSet) {
+    if (!rankingSet.has(symbol)) {
+      listConsistencyWarnings.push(`Continuation-eligible finalist ${symbol} is missing from final ranking list.`);
     }
   }
   for (const symbol of finalistsSet) {
@@ -547,7 +556,8 @@ function buildStarterUniverseTelemetry(params: {
       stage1Passed: stage1Passed.length,
       stage2Passed: stage2Passed.length,
       stage3Passed: stage3Passed.length,
-      finalistsReviewed: finalistReviewSource.finalists.length,
+      continuationEligibleFinalists: finalistReviewSource.continuationEligibleFinalists.length,
+      finalistsReviewed: finalistReviewResults.length > 0 ? finalistReviewResults.length : finalistReviewSource.finalists.length,
       finalRanking: ranked.length,
     },
     stageSymbols: {
@@ -555,7 +565,8 @@ function buildStarterUniverseTelemetry(params: {
       stage1Passed: stage1Passed.map((candidate) => candidate.symbol),
       stage2Passed: stage2Passed.map((candidate) => candidate.symbol),
       stage3Passed: stage3Passed.map((candidate) => candidate.symbol),
-      finalistsReviewed: finalistReviewSource.finalists.map((candidate) => candidate.symbol),
+      continuationEligibleFinalists: finalistReviewSource.continuationEligibleFinalists.map((candidate) => candidate.symbol),
+      finalistsReviewed: finalistReviewResults.length > 0 ? finalistReviewResults.map((item) => item.symbol) : finalistReviewSource.finalists.map((candidate) => candidate.symbol),
       finalRanking: ranked.map((candidate) => candidate.symbol),
     },
     finalistsReviewedDebug: finalistReviewSource.debug,
@@ -580,13 +591,14 @@ function buildFinalistReviewSource(
   stage2PassedSymbols: string[],
   stage3PassedSymbols: string[],
 ): FinalistReviewSource {
-  const finalists = ranked;
+  const continuationEligibleFinalists = ranked.filter((candidate) => getStage3CheckPass(candidate, "continuation"));
+  const finalists = continuationEligibleFinalists;
   const stage2Set = new Set(stage2PassedSymbols);
   const stage3Set = new Set(stage3PassedSymbols);
   const debug: StarterUniverseTelemetry["finalistsReviewedDebug"] = [];
   const warnings: string[] = [];
 
-  for (const finalist of finalists) {
+  for (const finalist of ranked) {
     const inStage2Passed = stage2Set.has(finalist.symbol);
     const inStage3Passed = stage3Set.has(finalist.symbol);
     const sourceList: "stage3Passed" | "stage2PassedOnly" | "missingUpstream" = inStage3Passed
@@ -605,7 +617,9 @@ function buildFinalistReviewSource(
 
     debug.push({
       symbol: finalist.symbol,
-      eligibleForReviewReason: `Ranked finalist eligible for deterministic confirmation review (${finalist.score.toFixed(2)}).`,
+      eligibleForReviewReason: getStage3CheckPass(finalist, "continuation")
+        ? `Stage 3 continuation-pass finalist eligible for deterministic confirmation review (${finalist.score.toFixed(2)}).`
+        : `Stage 3 pass-through candidate excluded from deterministic confirmation review because continuationPass=false (${finalist.score.toFixed(2)}).`,
       sourceList,
       inStage2Passed,
       inStage3Passed,
@@ -614,7 +628,7 @@ function buildFinalistReviewSource(
     });
   }
 
-  return { finalists, debug, warnings };
+  return { continuationEligibleFinalists, finalists, debug, warnings };
 }
 
 function buildFinalRanking(stage3Passed: ChartCandidate[]): { ranked: (ChartCandidate & { score: number })[]; debug: FinalRankingEntry[] } {
@@ -841,7 +855,7 @@ function buildGenericNoTradeReason(stage3PassedCount: number, finalRankingCount:
   }
 
   if (finalistsReviewedCount === 0) {
-    return "Ranked finalists existed but confirmation review did not run.";
+    return "No continuation-pass Stage 3 finalists remained for immediate-entry confirmation review.";
   }
 
   return "Ranked finalists were reviewed in deterministic order and all were rejected.";
@@ -3102,6 +3116,10 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
     stage3Passed.map((candidate) => candidate.symbol),
   );
   const finalists = finalistReviewSource.finalists;
+  logGeneralScanDebug(
+    "Continuation-eligible finalists",
+    finalistReviewSource.continuationEligibleFinalists.map((candidate) => candidate.symbol),
+  );
   for (const warning of finalistReviewSource.warnings) {
     console.warn(`[scanner:debug] ${warning}`);
   }
@@ -3112,7 +3130,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
       direction: null,
       confidence: null,
       conclusion: "no_trade_today",
-      reason: buildGenericNoTradeReason(stage3Passed.length, ranked.length, 0),
+      reason: "No continuation-pass Stage 3 finalists remained for immediate-entry confirmation review.",
       telemetry: buildScanTelemetry({ stage2Passed, stage3Evaluations, ranked, finalRankingDebug, finalistReviewSource }),
     };
   }
@@ -3354,6 +3372,7 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
   const stage2Set = new Set(stage2Passed.map((candidate) => candidate.symbol));
   const stage3Set = new Set(stage3Passed.map((candidate) => candidate.symbol));
   const rankingSet = new Set(ranked.map((candidate) => candidate.symbol));
+  const continuationEligibleSet = new Set(finalistReviewSource.continuationEligibleFinalists.map((candidate) => candidate.symbol));
   const finalistsSet = new Set(finalistReviewSource.finalists.map((candidate) => candidate.symbol));
 
   for (const symbol of stage2Set) {
@@ -3369,6 +3388,11 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
   for (const symbol of rankingSet) {
     if (!stage3Set.has(symbol)) {
       listConsistencyWarnings.push(`Final ranking symbol ${symbol} is missing from Stage 3 passed list.`);
+    }
+  }
+  for (const symbol of continuationEligibleSet) {
+    if (!rankingSet.has(symbol)) {
+      listConsistencyWarnings.push(`Continuation-eligible finalist ${symbol} is missing from final ranking list.`);
     }
   }
   for (const symbol of finalistsSet) {
@@ -3414,6 +3438,7 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
       stage1Passed: stage1Passed.length,
       stage2Passed: stage2Passed.length,
       stage3Passed: stage3Passed.length,
+      continuationEligibleFinalists: finalistReviewSource.continuationEligibleFinalists.length,
       finalistsReviewed: finalistReviewSource.finalists.length,
       finalRanking: ranked.length,
     },
@@ -3422,6 +3447,7 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
       stage1Passed: stage1Passed.map((candidate) => candidate.symbol),
       stage2Passed: stage2Passed.map((candidate) => candidate.symbol),
       stage3Passed: stage3Passed.map((candidate) => candidate.symbol),
+      continuationEligibleFinalists: finalistReviewSource.continuationEligibleFinalists.map((candidate) => candidate.symbol),
       finalistsReviewed: finalistReviewSource.finalists.map((candidate) => candidate.symbol),
       finalRanking: ranked.map((candidate) => candidate.symbol),
     },
