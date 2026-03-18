@@ -204,6 +204,14 @@ export type DirectOptionQuoteData = {
   ask: number;
 };
 
+type Stage2ContractEvaluation = {
+  strike: OptionStrikeCandidate;
+  quote: DirectOptionQuoteData | null;
+  attempts: DirectOptionQuoteAttempt[];
+  reason: string;
+  spreadPercent: number | null;
+};
+
 type ChartCandidate = OptionsCandidate & {
   chartDirection: ScanDirection;
   chartMovePct: number;
@@ -2573,6 +2581,55 @@ export async function fetchFirstUsableDirectOptionQuote(
   return { quote: null, attempts };
 }
 
+async function evaluateStage2Strike(
+  get: (path: string) => Promise<Response>,
+  symbol: string,
+  expirationDate: string,
+  strike: OptionStrikeCandidate,
+): Promise<Stage2ContractEvaluation> {
+  const symbolsToTry = buildDirectOptionSymbols(symbol, expirationDate, strike);
+  const { quote, attempts } = await fetchFirstUsableDirectOptionQuote(get, symbolsToTry);
+
+  if (!quote) {
+    return {
+      strike,
+      quote: null,
+      attempts,
+      reason: "No usable direct option quote found for strike.",
+      spreadPercent: null,
+    };
+  }
+
+  const spreadPercent = quote.mid > 0 ? quote.spread / quote.mid : Number.POSITIVE_INFINITY;
+  if (quote.openInterest <= 500) {
+    return {
+      strike,
+      quote,
+      attempts,
+      reason: "Candidate contract failed OI threshold (requires > 500).",
+      spreadPercent,
+    };
+  }
+
+  if (quote.spread > 1.5 || spreadPercent > 0.12) {
+    return {
+      strike,
+      quote,
+      attempts,
+      reason: "Candidate contract failed spread threshold (requires <= 1.5 and <= 12% of mid).",
+      spreadPercent,
+    };
+  }
+
+  return {
+    strike,
+    quote,
+    attempts,
+    reason: "Passed Stage 2 filters.",
+    spreadPercent,
+  };
+}
+
 async function runStage2OptionsTradability(
   get: (path: string) => Promise<Response>,
   stage1Passed: Stage1Candidate[],
@@ -2701,9 +2758,10 @@ async function runStage2OptionsTradability(
       continue;
     }
 
-    const selectedStrike = [...strikes].sort(
-      (a, b) => Math.abs(a.strike - underlyingPriceForStrikeSelection) - Math.abs(b.strike - underlyingPriceForStrikeSelection),
-    )[0];
+    const nearbyStrikes = [...strikes]
+      .sort((a, b) => Math.abs(a.strike - underlyingPriceForStrikeSelection) - Math.abs(b.strike - underlyingPriceForStrikeSelection))
+      .slice(0, 3);
+    const selectedStrike = nearbyStrikes[0];
 
     if (!selectedStrike) {
       diagnostic.reason = "Unable to select strike near underlying price.";
@@ -2711,61 +2769,58 @@ async function runStage2OptionsTradability(
       continue;
     }
 
-    diagnostic.selectedStrike = selectedStrike.strike;
+    let passingEvaluation: Stage2ContractEvaluation | null = null;
+    let fallbackEvaluation: Stage2ContractEvaluation | null = null;
 
-    const symbolsToTry = buildDirectOptionSymbols(candidate.symbol, targetExpiration.date, selectedStrike);
+    for (const strikeCandidate of nearbyStrikes) {
+      const evaluation = await evaluateStage2Strike(get, candidate.symbol, targetExpiration.date, strikeCandidate);
+      diagnostic.optionQuoteAttempts.push(...evaluation.attempts);
 
-    const { quote: quoteData, attempts } = await fetchFirstUsableDirectOptionQuote(get, symbolsToTry);
-    diagnostic.optionQuoteAttempts.push(...attempts);
+      if (fallbackEvaluation === null) {
+        fallbackEvaluation = evaluation;
+      }
 
-    if (!quoteData) {
-      diagnostic.reason = "No usable direct option quote found for selected strike.";
+      if (evaluation.quote) {
+        fallbackEvaluation = evaluation;
+      }
+
+      if (evaluation.reason === "Passed Stage 2 filters.") {
+        passingEvaluation = evaluation;
+        break;
+      }
+    }
+
+    const finalEvaluation = passingEvaluation ?? fallbackEvaluation;
+    diagnostic.selectedStrike = finalEvaluation?.strike.strike ?? selectedStrike.strike;
+
+    if (!finalEvaluation || !finalEvaluation.quote) {
+      diagnostic.reason = "No usable direct option quote found for selected or nearby strikes.";
       diagnostics.push(diagnostic);
       continue;
     }
 
-    const spreadPct = quoteData.mid > 0 ? quoteData.spread / quoteData.mid : Number.POSITIVE_INFINITY;
-    const hasTightSpread = quoteData.spread <= 1.5 && spreadPct <= 0.12;
-    if (quoteData.openInterest <= 500) {
-      diagnostic.evaluatedContract = quoteData.optionSymbol;
-      diagnostic.bid = quoteData.bid;
-      diagnostic.ask = quoteData.ask;
-      diagnostic.spreadWidth = quoteData.spread;
-      diagnostic.spreadPercent = spreadPct;
-      diagnostic.openInterest = quoteData.openInterest;
-      diagnostic.reason = "Candidate contract failed OI threshold (requires > 500).";
+    diagnostic.evaluatedContract = finalEvaluation.quote.optionSymbol;
+    diagnostic.bid = finalEvaluation.quote.bid;
+    diagnostic.ask = finalEvaluation.quote.ask;
+    diagnostic.spreadWidth = finalEvaluation.quote.spread;
+    diagnostic.spreadPercent = finalEvaluation.spreadPercent;
+    diagnostic.openInterest = finalEvaluation.quote.openInterest;
+    diagnostic.reason = finalEvaluation.reason;
+
+    if (finalEvaluation.reason !== "Passed Stage 2 filters.") {
       diagnostics.push(diagnostic);
       continue;
     }
 
-    if (!hasTightSpread) {
-      diagnostic.evaluatedContract = quoteData.optionSymbol;
-      diagnostic.bid = quoteData.bid;
-      diagnostic.ask = quoteData.ask;
-      diagnostic.spreadWidth = quoteData.spread;
-      diagnostic.spreadPercent = spreadPct;
-      diagnostic.openInterest = quoteData.openInterest;
-      diagnostic.reason = "Candidate contract failed spread threshold (requires <= 1.5 and <= 12% of mid).";
-      diagnostics.push(diagnostic);
-      continue;
-    }
-
-    diagnostic.evaluatedContract = quoteData.optionSymbol;
-    diagnostic.bid = quoteData.bid;
-    diagnostic.ask = quoteData.ask;
-    diagnostic.spreadWidth = quoteData.spread;
-    diagnostic.spreadPercent = spreadPct;
-    diagnostic.openInterest = quoteData.openInterest;
     diagnostic.pass = true;
-    diagnostic.reason = "Passed Stage 2 filters.";
 
     stage2Passed.push({
       ...candidate,
       targetExpiration: targetExpiration.date,
       targetDte: targetExpiration.dte,
-      optionOpenInterest: quoteData.openInterest,
-      optionSpread: quoteData.spread,
-      optionMid: quoteData.mid,
+      optionOpenInterest: finalEvaluation.quote.openInterest,
+      optionSpread: finalEvaluation.quote.spread,
+      optionMid: finalEvaluation.quote.mid,
     });
     diagnostics.push(diagnostic);
   }
