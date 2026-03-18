@@ -130,13 +130,13 @@ async function runDebug(): Promise<void> {
     for (const item of telemetry.finalRankingDebug) {
       const score = item.score === null ? "n/a" : item.score.toFixed(2);
       console.log(
-        `${item.symbol}: dir=${item.direction} | score=${score} | enteredFinalRanking=${item.enteredFinalRanking} | selected=${item.selected} | reason=${item.reason} | inputs=${JSON.stringify(item.scoreInputs)}`,
+        `${item.symbol}: dir=${item.direction} | score=${score} | enteredFinalRanking=${item.enteredFinalRanking} | topRankedCandidate=${item.topRankedCandidate} | confirmedFinalSelection=${item.confirmedFinalSelection} | reason=${item.reason} | inputs=${JSON.stringify(item.scoreInputs)}`,
       );
     }
   }
 
-  console.log("Stage 3 passed but not final selected:");
-  const notSelected = telemetry.finalRankingDebug.filter((item) => !item.selected);
+  console.log("Stage 3 passed but not top ranked:");
+  const notSelected = telemetry.finalRankingDebug.filter((item) => !item.topRankedCandidate);
   if (notSelected.length === 0) {
     console.log("(none)");
   } else {
