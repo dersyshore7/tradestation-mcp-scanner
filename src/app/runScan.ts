@@ -308,6 +308,8 @@ type FinalRankingEntry = {
   direction: ScanDirection;
   score: number | null;
   enteredFinalRanking: boolean;
+  topRankedCandidate: boolean;
+  confirmedFinalSelection: boolean;
   selected: boolean;
   reason: string;
   scoreInputs: {
@@ -423,6 +425,7 @@ export type StarterUniverseTelemetry = {
   nearMisses: Stage3NearMiss[];
   consistencyChecks: string[];
   finalSelectedSymbol: string | null;
+  topRankedSymbol: string | null;
 };
 
 type FinalistReviewSource = {
@@ -444,6 +447,10 @@ function buildStarterUniverseTelemetry(params: {
   selectedSymbol: string | null;
 }): StarterUniverseTelemetry {
   const { stage1Entered, stage1Passed, stage2Passed, stage3Evaluations, ranked, finalRankingDebug, finalistReviewSource, finalistReviewResults, rejectionSummaries, selectedSymbol } = params;
+  const finalRankingDebugWithOutcome = finalRankingDebug.map((item) => ({
+    ...item,
+    confirmedFinalSelection: selectedSymbol !== null && item.symbol === selectedSymbol,
+  }));
   const stage3Passed = stage3Evaluations.flatMap((item) => (item.candidate ? [item.candidate] : []));
   const stage3NearMissCandidates: Stage3NearMiss[] = [];
 
@@ -538,11 +545,12 @@ function buildStarterUniverseTelemetry(params: {
       summary: candidate.chartReviewSummary,
       whyPassed: summarizePassingChecks(candidate.chartDiagnostics.checks),
     })),
-    finalRankingDebug,
+    finalRankingDebug: finalRankingDebugWithOutcome,
     rejectionSummaries,
     nearMisses,
     consistencyChecks: [...finalistReviewSource.warnings, ...listConsistencyWarnings, ...noTradeReason.symbolConsistencyWarnings],
     finalSelectedSymbol: selectedSymbol,
+    topRankedSymbol: ranked[0]?.symbol ?? null,
   };
 }
 
@@ -607,6 +615,8 @@ function buildFinalRanking(stage3Passed: ChartCandidate[]): { ranked: (ChartCand
         direction: candidate.chartDirection,
         score,
         enteredFinalRanking: false,
+        topRankedCandidate: false,
+        confirmedFinalSelection: false,
         selected: false,
         reason: "missing final score",
         scoreInputs,
@@ -618,6 +628,8 @@ function buildFinalRanking(stage3Passed: ChartCandidate[]): { ranked: (ChartCand
       direction: candidate.chartDirection,
       score,
       enteredFinalRanking: true,
+      topRankedCandidate: false,
+      confirmedFinalSelection: false,
       selected: false,
       reason: "entered final ranking",
       scoreInputs,
@@ -637,8 +649,9 @@ function buildFinalRanking(stage3Passed: ChartCandidate[]): { ranked: (ChartCand
     }
 
     if (item.symbol === ranked[0]?.symbol) {
+      item.topRankedCandidate = true;
       item.selected = true;
-      item.reason = "selected as top final score (with deterministic tie-breaks)";
+      item.reason = "top-ranked candidate after deterministic tie-breaks";
       continue;
     }
 
@@ -703,7 +716,7 @@ function logFinalRankingDebugSection(entries: FinalRankingEntry[]): void {
   for (const item of entries) {
     const score = item.score === null ? "n/a" : item.score.toFixed(2);
     console.log(
-      `[scanner:debug] ${item.symbol}: dir=${item.direction} | score=${score} | enteredFinalRanking=${item.enteredFinalRanking ? "yes" : "no"} | selected=${item.selected ? "yes" : "no"} | reason=${item.reason} | inputs=${JSON.stringify(item.scoreInputs)}`,
+      `[scanner:debug] ${item.symbol}: dir=${item.direction} | score=${score} | enteredFinalRanking=${item.enteredFinalRanking ? "yes" : "no"} | topRankedCandidate=${item.topRankedCandidate ? "yes" : "no"} | confirmedFinalSelection=${item.confirmedFinalSelection ? "yes" : "no"} | reason=${item.reason} | inputs=${JSON.stringify(item.scoreInputs)}`,
     );
   }
 }
@@ -717,7 +730,7 @@ function logStage3PassThroughDebugSection(
     return;
   }
 
-  console.log("[scanner:debug] Stage 3 pass-through and final selection:");
+  console.log("[scanner:debug] Stage 3 pass-through and top-ranked candidate:");
   const passCandidates = stage3Evaluations.filter((item) => item.pass);
   if (passCandidates.length === 0) {
     console.log("[scanner:debug] (no Stage 3 pass candidates)");
@@ -729,12 +742,12 @@ function logStage3PassThroughDebugSection(
   for (const candidate of passCandidates) {
     const rankingEntry = finalRankingBySymbol.get(candidate.symbol);
     const enteredFinalRanking = rankingEntry?.enteredFinalRanking ?? false;
-    const selected = rankingEntry?.selected ?? false;
+    const topRankedCandidate = rankingEntry?.topRankedCandidate ?? rankingEntry?.selected ?? false;
     const rankingScore = rankingEntry?.score === null || rankingEntry?.score === undefined ? "n/a" : rankingEntry.score.toFixed(2);
     const reason = rankingEntry?.reason ?? "not evaluated in final ranking";
 
     console.log(
-      `[scanner:debug] ${candidate.symbol}: stage3Pass=yes | enteredFinalRanking=${enteredFinalRanking ? "yes" : "no"} | rankingScore=${rankingScore} | rankingThreshold=${thresholdLabel} | selected=${selected ? "yes" : "no"} | reason=${reason}`,
+      `[scanner:debug] ${candidate.symbol}: stage3Pass=yes | enteredFinalRanking=${enteredFinalRanking ? "yes" : "no"} | rankingScore=${rankingScore} | rankingThreshold=${thresholdLabel} | topRankedCandidate=${topRankedCandidate ? "yes" : "no"} | reason=${reason}`,
     );
   }
 }
@@ -1829,7 +1842,7 @@ function runStage3ChartReview(
       reason: `pullbackAvgVol=${averagePullbackVolume?.toFixed(0) ?? "n/a"}, nonPullbackAvgVol=${averageNonPullbackVolume?.toFixed(0) ?? "n/a"}, trendUp=${pullbackVolumeTrendUp ? "yes" : "no"}`,
     },
     {
-      check: "trigger-zone-clean",
+      check: "trigger-zone-flips",
       pass: messyTriggerZonePass,
       reason: `triggerZoneFlipCount=${triggerZoneFlipCount}`,
     },
@@ -3181,7 +3194,8 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
     },
     nearMisses,
     consistencyChecks: [...finalistReviewSource.warnings, ...listConsistencyWarnings, ...telemetryNoTradeReason.symbolConsistencyWarnings],
-    finalSelectedSymbol: finalistReviewSource.finalists[0]?.symbol ?? null,
+    finalSelectedSymbol: null,
+    topRankedSymbol: ranked[0]?.symbol ?? null,
   };
 }
 
