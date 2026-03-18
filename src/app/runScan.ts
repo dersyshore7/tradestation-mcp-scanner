@@ -281,6 +281,7 @@ type Stage3Diagnostics = {
     roomPct: number | null;
     targetAssumption: string;
     decisionMode: "hard_fail" | "score_penalty";
+    roomTier: "obvious_no_room" | "borderline_tight" | "workable" | "unknown";
     sufficientRoom: boolean;
     insufficientRoomReason: string;
   };
@@ -1055,9 +1056,13 @@ function categorizeStage2Failure(reason: string): string {
   return "other";
 }
 
-function categorizeStage3IssueSeverity(check: string): Stage3IssueSeverity {
-  if (check === "failed-breakout-trap" || check === "higher-timeframe-2r-viability" || check === "alignment") {
+function categorizeStage3IssueSeverity(check: string, review?: ChartReviewResult): Stage3IssueSeverity {
+  if (check === "failed-breakout-trap" || check === "alignment") {
     return "hard_veto";
+  }
+
+  if (check === "higher-timeframe-2r-viability") {
+    return review?.diagnostics.roomToTargetDiagnostics.decisionMode === "hard_fail" ? "hard_veto" : "score_penalty";
   }
 
   if (check === "volume-data" || check === "higher-timeframe-context") {
@@ -1103,7 +1108,7 @@ function getStage3IssueBreakdown(review: ChartReviewResult): Stage3IssueBreakdow
       continue;
     }
 
-    const severity = categorizeStage3IssueSeverity(check.check);
+    const severity = categorizeStage3IssueSeverity(check.check, review);
     const reason = formatStage3IssueReason(check.check, check.reason, review);
 
     if (severity === "hard_veto") {
@@ -1198,7 +1203,7 @@ function describeRoomToTargetDecision(
   const roomLabel = diagnostics.roomPct === null ? "n/a" : `${diagnostics.roomPct.toFixed(2)}%`;
   const roomStatus = diagnostics.sufficientRoom ? "sufficient" : "insufficient";
 
-  return `2R room check -> ref=${diagnostics.referencePrice.toFixed(2)}, dir=${diagnostics.direction}, level=${levelLabel}, room=${roomLabel}, assumption=${diagnostics.targetAssumption}, decision=${diagnostics.decisionMode}, status=${roomStatus}, reason=${diagnostics.insufficientRoomReason}`;
+  return `2R room check -> ref=${diagnostics.referencePrice.toFixed(2)}, dir=${diagnostics.direction}, level=${levelLabel}, room=${roomLabel}, tier=${diagnostics.roomTier}, assumption=${diagnostics.targetAssumption}, decision=${diagnostics.decisionMode}, status=${roomStatus}, reason=${diagnostics.insufficientRoomReason}`;
 }
 
 function getCheckImpactLabel(
@@ -1595,6 +1600,7 @@ function runStage3ChartReview(
           roomPct: null,
           targetAssumption: "2R requires roomPct >= 2.00%",
           decisionMode: "score_penalty",
+          roomTier: "unknown",
           sufficientRoom: true,
           insufficientRoomReason: "No data because directional setup was not available.",
         },
@@ -1650,6 +1656,7 @@ function runStage3ChartReview(
           roomPct: null,
           targetAssumption: "2R requires roomPct >= 2.00%",
           decisionMode: "score_penalty",
+          roomTier: "unknown",
           sufficientRoom: true,
           insufficientRoomReason: "No data because directional setup was not available.",
         },
@@ -1705,6 +1712,7 @@ function runStage3ChartReview(
           roomPct: null,
           targetAssumption: "2R requires roomPct >= 2.00%",
           decisionMode: "score_penalty",
+          roomTier: "unknown",
           sufficientRoom: true,
           insufficientRoomReason: "No data because directional setup was not available.",
         },
@@ -1985,6 +1993,15 @@ function runStage3ChartReview(
         : null;
   const higherTimeframeRoomPass = roomPct === null || roomPct >= 0.85;
   const higherTimeframe2RPass = roomPct === null || roomPct >= 2;
+  const roomTier: Stage3Diagnostics["roomToTargetDiagnostics"]["roomTier"] =
+    roomPct === null
+      ? "unknown"
+      : roomPct < 0.85
+        ? "obvious_no_room"
+        : roomPct < 2
+          ? "borderline_tight"
+          : "workable";
+  const roomDecisionMode: Stage3Diagnostics["roomToTargetDiagnostics"]["decisionMode"] = roomPct !== null && roomPct < 0.85 ? "hard_fail" : "score_penalty";
   const roomToTargetDiagnostics: Stage3Diagnostics["roomToTargetDiagnostics"] = {
     referencePrice: close,
     direction,
@@ -1999,14 +2016,17 @@ function runStage3ChartReview(
     levelUsed,
     roomPct,
     targetAssumption: "2R requires roomPct >= 2.00%",
-    decisionMode: higherTimeframe2RPass ? "score_penalty" : "hard_fail",
+    decisionMode: roomDecisionMode,
+    roomTier,
     sufficientRoom: higherTimeframe2RPass,
     insufficientRoomReason:
       roomPct === null
         ? "No finite higher-timeframe level available, treated as pass by current rule."
-        : higherTimeframe2RPass
+        : roomTier === "workable"
           ? `Room ${roomPct.toFixed(2)}% meets/exceeds 2.00% threshold.`
-          : `Room ${roomPct.toFixed(2)}% is below the 2.00% threshold, so 2R viability fails.`,
+          : roomTier === "borderline_tight"
+            ? `Room ${roomPct.toFixed(2)}% is below 2.00%, so Prompt 1 should downgrade it as tight overhead room while leaving Prompt 2 to decide whether chart-anchored levels truly support 2R.`
+            : `Room ${roomPct.toFixed(2)}% sits inside the immediate 0.85% wall threshold, so Stage 3 treats it as obvious no-room for 2R planning.`,
   };
   const higherTimeframeContextPresent = direction === "bullish" ? max3M !== null && max1Y !== null : min3M !== null && min1Y !== null;
 
@@ -3570,6 +3590,7 @@ export async function runStage3DebugForStarterUniverse(): Promise<
             roomPct: null,
             targetAssumption: "2R requires roomPct >= 2.00%",
             decisionMode: "score_penalty",
+            roomTier: "unknown",
             sufficientRoom: true,
             insufficientRoomReason: "No data because bars failed to load.",
           },
