@@ -231,6 +231,7 @@ type Stage3CheckDiagnostic = {
   check: string;
   pass: boolean;
   reason: string;
+  impact: "blocker" | "downgrader" | "mild_caution";
 };
 
 type Stage3IssueSeverity = "hard_veto" | "score_penalty" | "info";
@@ -544,7 +545,7 @@ function buildStarterUniverseTelemetry(params: {
       direction: candidate.chartDirection,
       score: scoreStage3Candidate(candidate),
       summary: candidate.chartReviewSummary,
-      whyPassed: summarizePassingChecks(candidate.chartDiagnostics.checks),
+      whyPassed: `${summarizePassingChecks(candidate.chartDiagnostics.checks)} | failed=${summarizeFailedChecksByImpact(candidate.chartDiagnostics.checks)}`,
     })),
     finalRankingDebug: finalRankingDebugWithOutcome,
     rejectionSummaries,
@@ -918,7 +919,7 @@ async function evaluateStage3Candidates(
       });
       if (process.env.SCANNER_DEBUG === "1") {
         console.log(
-          `[scanner:debug:stage3] ${candidate.symbol}: near-miss detail | hardVetoes=${issueBreakdown.hardVetoes.length > 0 ? issueBreakdown.hardVetoes.join("; ") : "none"} | softIssues=${issueBreakdown.softIssues.length > 0 ? issueBreakdown.softIssues.join("; ") : "none"} | ${describeRoomToTargetDecision(review.diagnostics.roomToTargetDiagnostics)}`,
+          `[scanner:debug:stage3] ${candidate.symbol}: near-miss detail | hardVetoes=${issueBreakdown.hardVetoes.length > 0 ? issueBreakdown.hardVetoes.join("; ") : "none"} | softIssues=${issueBreakdown.softIssues.length > 0 ? issueBreakdown.softIssues.join("; ") : "none"} | ${describeRoomToTargetDecision(review.diagnostics.roomToTargetDiagnostics)} | failedChecks=${summarizeFailedChecksByImpact(review.diagnostics.checks)}`,
         );
       }
       continue;
@@ -1117,8 +1118,17 @@ function summarizePassingChecks(checks: Stage3CheckDiagnostic[]): string {
   return passingChecks.length > 0 ? passingChecks.join(", ") : "no failed checks";
 }
 
+function summarizeFailedChecksByImpact(checks: Stage3CheckDiagnostic[]): string {
+  const failedChecks = checks.filter((check) => !check.pass);
+  if (failedChecks.length === 0) {
+    return "no failed checks";
+  }
+
+  return failedChecks.map((check) => `${check.check}:${check.impact}`).join(", ");
+}
+
 function summarizeCheckOutcomes(checks: Stage3CheckDiagnostic[]): string {
-  return checks.map((check) => `${check.check}:${check.pass ? "pass" : "fail"}`).join(", ");
+  return checks.map((check) => `${check.check}:${check.pass ? "pass" : `fail/${check.impact}`}`).join(", ");
 }
 
 function describeRoomToTargetDecision(
@@ -1129,6 +1139,25 @@ function describeRoomToTargetDecision(
   const roomStatus = diagnostics.sufficientRoom ? "sufficient" : "insufficient";
 
   return `2R room check -> ref=${diagnostics.referencePrice.toFixed(2)}, dir=${diagnostics.direction}, level=${levelLabel}, room=${roomLabel}, assumption=${diagnostics.targetAssumption}, decision=${diagnostics.decisionMode}, status=${roomStatus}, reason=${diagnostics.insufficientRoomReason}`;
+}
+
+function getCheckImpactLabel(
+  check: string,
+  volumeRatio: number | null,
+): Stage3CheckDiagnostic["impact"] {
+  if (check === "alignment" || check === "failed-breakout-trap" || check === "higher-timeframe-2r-viability") {
+    return "blocker";
+  }
+
+  if (check === "volume") {
+    return volumeRatio !== null && volumeRatio >= 0.8 ? "mild_caution" : "downgrader";
+  }
+
+  if (check === "volume-data" || check === "higher-timeframe-context") {
+    return "mild_caution";
+  }
+
+  return "downgrader";
 }
 
 function resolveConfirmationOutcome(review: ChartReviewResult): { conclusion: ScanResult["conclusion"]; confidence: ScanConfidence | null } {
@@ -1147,36 +1176,41 @@ function resolveConfirmationOutcome(review: ChartReviewResult): { conclusion: Sc
   const hasContinuationIssue = !checkByName.get("continuation")?.pass;
   const hasImpulseConsolidationIssue = !checkByName.get("impulse-consolidation")?.pass;
   const hasDistributionIssue = !checkByName.get("fake-hold-distribution")?.pass;
-  const structuralWeaknessCount = [hasBodyWickIssue, hasContinuationIssue, hasImpulseConsolidationIssue, hasDistributionIssue].filter(Boolean).length;
+  const hasTriggerZoneIssue = !checkByName.get("trigger-zone-flips")?.pass;
+  const hasChoppyIssue = !checkByName.get("choppy")?.pass;
 
   // Expansion weakness is treated as a confidence drag/caution, not a standalone rejection trigger.
   const hasVolumeIssue = !checkByName.get("volume")?.pass;
   const volumeRatio = review.volumeRatio;
   const volumeIssueWeight = hasVolumeIssue
     ? volumeRatio === null
-      ? 0.6
-      : volumeRatio >= 0.75
-        ? 0.5
-        : 1
+      ? 0.45
+      : volumeRatio >= 0.8
+        ? 0.35
+        : volumeRatio >= 0.7
+          ? 0.65
+          : 1
     : 0;
   const structuralWeaknessWeight =
-    structuralWeaknessCount <= 0
-      ? 0
-      : structuralWeaknessCount === 1
-        ? 1
-        : Math.min(2, 1 + (structuralWeaknessCount - 1) * 0.4);
-  const expansionWeight = hasWeakExpansion ? 0.35 : 0;
-  const weightedSoftIssueScore = structuralWeaknessWeight + volumeIssueWeight + expansionWeight;
+    (hasBodyWickIssue ? 0.75 : 0) +
+    (hasContinuationIssue ? 1.1 : 0) +
+    (hasImpulseConsolidationIssue ? 0.75 : 0) +
+    (hasDistributionIssue ? 0.9 : 0) +
+    (hasTriggerZoneIssue ? 0.45 : 0) +
+    (hasChoppyIssue && !hasTriggerZoneIssue ? 0.25 : 0);
+  const expansionWeight = hasWeakExpansion ? 0.25 : 0;
+  const overlappingPriceActionDrag = hasTriggerZoneIssue && hasChoppyIssue ? -0.2 : 0;
+  const weightedSoftIssueScore = structuralWeaknessWeight + volumeIssueWeight + expansionWeight + overlappingPriceActionDrag;
 
-  if (weightedSoftIssueScore >= 2.5) {
+  if (weightedSoftIssueScore >= 3) {
     return { conclusion: "rejected", confidence: null };
   }
 
-  if (structuralWeaknessCount >= 2 && volumeIssueWeight >= 1) {
+  if (structuralWeaknessWeight >= 2.4 && volumeIssueWeight >= 1) {
     return { conclusion: "rejected", confidence: null };
   }
 
-  if (!review.pass && weightedSoftIssueScore >= 2.2) {
+  if (!review.pass && weightedSoftIssueScore >= 2.35) {
     return { conclusion: "rejected", confidence: null };
   }
 
@@ -1209,23 +1243,28 @@ function getConfirmationRejectionReasons(review: ChartReviewResult): string[] {
   const hasContinuationIssue = !checkByName.get("continuation")?.pass;
   const hasImpulseConsolidationIssue = !checkByName.get("impulse-consolidation")?.pass;
   const hasDistributionIssue = !checkByName.get("fake-hold-distribution")?.pass;
-  const structuralWeaknessCount = [hasBodyWickIssue, hasContinuationIssue, hasImpulseConsolidationIssue, hasDistributionIssue].filter(Boolean).length;
+  const hasTriggerZoneIssue = !checkByName.get("trigger-zone-flips")?.pass;
+  const hasChoppyIssue = !checkByName.get("choppy")?.pass;
   const hasVolumeIssue = !checkByName.get("volume")?.pass;
   const volumeRatio = review.volumeRatio;
   const volumeIssueWeight = hasVolumeIssue
     ? volumeRatio === null
-      ? 0.6
-      : volumeRatio >= 0.75
-        ? 0.5
-        : 1
+      ? 0.45
+      : volumeRatio >= 0.8
+        ? 0.35
+        : volumeRatio >= 0.7
+          ? 0.65
+          : 1
     : 0;
   const structuralWeaknessWeight =
-    structuralWeaknessCount <= 0
-      ? 0
-      : structuralWeaknessCount === 1
-        ? 1
-        : Math.min(2, 1 + (structuralWeaknessCount - 1) * 0.4);
-  const weightedSoftIssueScore = structuralWeaknessWeight + volumeIssueWeight + (hasWeakExpansion ? 0.35 : 0);
+    (hasBodyWickIssue ? 0.75 : 0) +
+    (hasContinuationIssue ? 1.1 : 0) +
+    (hasImpulseConsolidationIssue ? 0.75 : 0) +
+    (hasDistributionIssue ? 0.9 : 0) +
+    (hasTriggerZoneIssue ? 0.45 : 0) +
+    (hasChoppyIssue && !hasTriggerZoneIssue ? 0.25 : 0);
+  const weightedSoftIssueScore =
+    structuralWeaknessWeight + volumeIssueWeight + (hasWeakExpansion ? 0.25 : 0) + (hasTriggerZoneIssue && hasChoppyIssue ? -0.2 : 0);
   const nonExpansionSoftIssues = issueBreakdown.softIssues.filter((reason) => !reason.startsWith("weak expansion ("));
   const distinctNonExpansionSoftIssues = [...new Set(nonExpansionSoftIssues)];
   const topWeaknesses = distinctNonExpansionSoftIssues.slice(0, 4);
@@ -1234,12 +1273,13 @@ function getConfirmationRejectionReasons(review: ChartReviewResult): string[] {
     return [`hard veto: ${formatFinalistReasonList(issueBreakdown.hardVetoes)}`];
   }
 
-  if (weightedSoftIssueScore >= 2.2 || structuralWeaknessCount >= 2) {
+  if (weightedSoftIssueScore >= 2.35 || structuralWeaknessWeight >= 2.4) {
     const volumeQualifier =
-      hasVolumeIssue && volumeRatio !== null && volumeRatio >= 0.75
+      hasVolumeIssue && volumeRatio !== null && volumeRatio >= 0.8
         ? `; mild volume caution (${volumeRatio.toFixed(2)}x) down-weighted`
         : "";
-    return [`multiple confirmation weaknesses (overlap-aware): ${formatFinalistReasonList(topWeaknesses.length > 0 ? topWeaknesses : distinctNonExpansionSoftIssues)}${volumeQualifier}`];
+    const overlapQualifier = hasTriggerZoneIssue && hasChoppyIssue ? "; trigger-zone/chop overlap de-stacked" : "";
+    return [`multiple confirmation weaknesses (overlap-aware): ${formatFinalistReasonList(topWeaknesses.length > 0 ? topWeaknesses : distinctNonExpansionSoftIssues)}${volumeQualifier}${overlapQualifier}`];
   }
 
   if (hasWeakExpansion) {
@@ -1396,7 +1436,7 @@ function runStage3ChartReview(
           sufficientRoom: true,
           insufficientRoomReason: "No data because directional setup was not available.",
         },
-        checks: [{ check: "data-integrity", pass: false, reason: "missing/incomplete bar data (1D or 1W close unavailable)" }],
+        checks: [{ check: "data-integrity", pass: false, reason: "missing/incomplete bar data (1D or 1W close unavailable)", impact: "blocker" }],
       },
     };
   }
@@ -1451,7 +1491,7 @@ function runStage3ChartReview(
           sufficientRoom: true,
           insufficientRoomReason: "No data because directional setup was not available.",
         },
-        checks: [{ check: "alignment", pass: false, reason: alignmentReason }],
+        checks: [{ check: "alignment", pass: false, reason: alignmentReason, impact: "blocker" }],
       },
     };
   }
@@ -1506,7 +1546,7 @@ function runStage3ChartReview(
           sufficientRoom: true,
           insufficientRoomReason: "No data because directional setup was not available.",
         },
-        checks: [{ check: "data-integrity", pass: false, reason: "missing/incomplete bar data (latest 1D candle OHLC unavailable)" }],
+        checks: [{ check: "data-integrity", pass: false, reason: "missing/incomplete bar data (latest 1D candle OHLC unavailable)", impact: "blocker" }],
       },
     };
   }
@@ -1542,12 +1582,12 @@ function runStage3ChartReview(
   const volumeRatio = averageVolume !== null && lastVolume !== null && averageVolume > 0 ? lastVolume / averageVolume : null;
   const volumeDataPresent = lastVolume !== null || priorVolumeCount > 0;
 
-  const expansionPass = expansionRatio === null || expansionRatio >= 1.15;
+  const expansionPass = expansionRatio === null || expansionRatio >= 1.1;
   const bodyQualityPass =
     direction === "bullish"
-      ? bodyToRange >= 0.45 && closeLocation >= 0.6 && upperWick <= body
-      : bodyToRange >= 0.45 && closeLocation <= 0.4 && lowerWick <= body;
-  const volumePass = volumeRatio === null || volumeRatio >= 0.9;
+      ? bodyToRange >= 0.4 && closeLocation >= 0.58 && upperWick <= body * 1.15
+      : bodyToRange >= 0.4 && closeLocation <= 0.42 && lowerWick <= body * 1.15;
+  const volumePass = volumeRatio === null || volumeRatio >= 0.85;
 
   const consolidationBars = bars1DForConfirmation.slice(-5);
   const impulseBars = bars1DForConfirmation.slice(-11, -5);
@@ -1579,11 +1619,11 @@ function runStage3ChartReview(
     impulseMovePct === null
       ? false
       : direction === "bullish"
-        ? impulseMovePct >= 1.2
-        : impulseMovePct <= -1.2;
+        ? impulseMovePct >= 1
+        : impulseMovePct <= -1;
   const consolidationTightPass =
     impulseAverageRange !== null && consolidationAverageRange !== null && impulseAverageRange > 0
-      ? consolidationAverageRange <= impulseAverageRange * 0.9
+      ? consolidationAverageRange <= impulseAverageRange * 0.95
       : false;
   const impulseConsolidationPass = impulseMoveDirectionalPass && consolidationTightPass;
 
@@ -1750,7 +1790,7 @@ function runStage3ChartReview(
       : direction === "bearish" && levelUsed !== null
         ? ((close - levelUsed) / close) * 100
         : null;
-  const higherTimeframeRoomPass = roomPct === null || roomPct >= 1;
+  const higherTimeframeRoomPass = roomPct === null || roomPct >= 0.85;
   const higherTimeframe2RPass = roomPct === null || roomPct >= 2;
   const roomToTargetDiagnostics: Stage3Diagnostics["roomToTargetDiagnostics"] = {
     referencePrice: close,
@@ -1799,12 +1839,12 @@ function runStage3ChartReview(
     }
     return flips;
   })();
-  const messyTriggerZonePass = triggerZoneFlipCount <= 2 && choppyPass;
+  const messyTriggerZonePass = triggerZoneFlipCount <= 2 || (triggerZoneFlipCount <= 3 && choppyPass);
 
   const checkDiagnostics: Stage3CheckDiagnostic[] = [
-    { check: "alignment", pass: alignmentPass, reason: alignmentReason },
-    { check: "expansion", pass: expansionPass, reason: `expansionRatio=${expansionRatio === null ? "n/a" : expansionRatio.toFixed(2)}` },
-    { check: "body-wick", pass: bodyQualityPass, reason: `bodyToRange=${bodyToRange.toFixed(2)}, closeLocation=${closeLocation.toFixed(2)}, wickiness=${wickiness === null ? "n/a" : wickiness.toFixed(2)}` },
+    { check: "alignment", pass: alignmentPass, reason: alignmentReason, impact: getCheckImpactLabel("alignment", volumeRatio) },
+    { check: "expansion", pass: expansionPass, reason: `expansionRatio=${expansionRatio === null ? "n/a" : expansionRatio.toFixed(2)}`, impact: getCheckImpactLabel("expansion", volumeRatio) },
+    { check: "body-wick", pass: bodyQualityPass, reason: `bodyToRange=${bodyToRange.toFixed(2)}, closeLocation=${closeLocation.toFixed(2)}, wickiness=${wickiness === null ? "n/a" : wickiness.toFixed(2)}`, impact: getCheckImpactLabel("body-wick", volumeRatio) },
     {
       check: "volume",
       pass: volumePass,
@@ -1812,51 +1852,60 @@ function runStage3ChartReview(
         volumeRatio === null
           ? `volume ratio unavailable (lastVolume=${lastVolume ?? "n/a"}, priorVolumeBarsWithData=${priorVolumeCount})`
           : `volumeRatio=${volumeRatio.toFixed(2)} using lastVolume=${lastVolume} / avgVolume=${averageVolume?.toFixed(2)}`,
+      impact: getCheckImpactLabel("volume", volumeRatio),
     },
     {
       check: "volume-data",
       pass: volumeDataPresent,
       reason: volumeDataPresent ? "volume values parsed from at least one 1D bar" : "missing volume data in 1D bars",
+      impact: getCheckImpactLabel("volume-data", volumeRatio),
     },
-    { check: "choppy", pass: choppyPass, reason: `flipCount=${flipCount}` },
+    { check: "choppy", pass: choppyPass, reason: `flipCount=${flipCount}`, impact: getCheckImpactLabel("choppy", volumeRatio) },
     {
       check: "impulse-consolidation",
       pass: impulseConsolidationPass,
       reason: `impulseMovePct=${impulseMovePct === null ? "n/a" : `${impulseMovePct.toFixed(2)}%`}, impulseAvgRange=${impulseAverageRange?.toFixed(2) ?? "n/a"}, consolidationAvgRange=${consolidationAverageRange?.toFixed(2) ?? "n/a"}`,
+      impact: getCheckImpactLabel("impulse-consolidation", volumeRatio),
     },
     {
       check: "fake-hold-distribution",
       pass: fakeHoldDistributionPass,
       reason: `lowerHighCount=${lowerHighCount}, lowerZoneCloseCount=${lowerZoneCloseCount}`,
+      impact: getCheckImpactLabel("fake-hold-distribution", volumeRatio),
     },
     {
       check: "failed-breakout-trap",
       pass: failedBreakoutBullTrapPass,
       reason: direction === "bullish" ? `high=${high.toFixed(2)}, close=${close.toFixed(2)}, keyLevel=${keyLevel?.toFixed(2) ?? "n/a"}` : `low=${low.toFixed(2)}, close=${close.toFixed(2)}, keyLevel=${keyLevel?.toFixed(2) ?? "n/a"}`,
+      impact: getCheckImpactLabel("failed-breakout-trap", volumeRatio),
     },
     {
       check: "pullback-body-control",
       pass: pullbackBodyControlPass,
       reason: `pullbackAvgBody=${pullbackAverageBody?.toFixed(2) ?? "n/a"}, consolidationAvgBody=${consolidationAverageBody?.toFixed(2) ?? "n/a"}`,
+      impact: getCheckImpactLabel("pullback-body-control", volumeRatio),
     },
     {
       check: "pullback-volume-control",
       pass: pullbackSellingVolumePass,
       reason: `pullbackAvgVol=${averagePullbackVolume?.toFixed(0) ?? "n/a"}, nonPullbackAvgVol=${averageNonPullbackVolume?.toFixed(0) ?? "n/a"}, trendUp=${pullbackVolumeTrendUp ? "yes" : "no"}`,
+      impact: getCheckImpactLabel("pullback-volume-control", volumeRatio),
     },
     {
       check: "trigger-zone-flips",
       pass: messyTriggerZonePass,
       reason: `triggerZoneFlipCount=${triggerZoneFlipCount}`,
+      impact: getCheckImpactLabel("trigger-zone-flips", volumeRatio),
     },
-    { check: "continuation", pass: continuationPass, reason: direction === "bullish" ? `close=${close.toFixed(2)} vs prevHigh=${prevHigh?.toFixed(2) ?? "n/a"}` : `close=${close.toFixed(2)} vs prevLow=${prevLow?.toFixed(2) ?? "n/a"}` },
+    { check: "continuation", pass: continuationPass, reason: direction === "bullish" ? `close=${close.toFixed(2)} vs prevHigh=${prevHigh?.toFixed(2) ?? "n/a"}` : `close=${close.toFixed(2)} vs prevLow=${prevLow?.toFixed(2) ?? "n/a"}`, impact: getCheckImpactLabel("continuation", volumeRatio) },
     {
       check: "higher-timeframe-context",
       pass: higherTimeframeContextPresent,
       reason: higherTimeframeContextPresent ? "3M/1Y highs/lows available" : "missing higher-timeframe context (3M/1Y high/low data)",
+      impact: getCheckImpactLabel("higher-timeframe-context", volumeRatio),
     },
-    { check: "higher-timeframe-room", pass: higherTimeframeRoomPass, reason: `roomPct=${roomPct === null ? "n/a" : roomPct.toFixed(2)}%; ${describeRoomToTargetDecision(roomToTargetDiagnostics)}` },
-    { check: "higher-timeframe-2r-viability", pass: higherTimeframe2RPass, reason: `${describeRoomToTargetDecision(roomToTargetDiagnostics)}` },
+    { check: "higher-timeframe-room", pass: higherTimeframeRoomPass, reason: `roomPct=${roomPct === null ? "n/a" : roomPct.toFixed(2)}%; ${describeRoomToTargetDecision(roomToTargetDiagnostics)}`, impact: getCheckImpactLabel("higher-timeframe-room", volumeRatio) },
+    { check: "higher-timeframe-2r-viability", pass: higherTimeframe2RPass, reason: `${describeRoomToTargetDecision(roomToTargetDiagnostics)}`, impact: getCheckImpactLabel("higher-timeframe-2r-viability", volumeRatio) },
   ];
 
   const checks = [
@@ -3253,7 +3302,7 @@ export async function runStage3DebugForStarterUniverse(): Promise<
             sufficientRoom: true,
             insufficientRoomReason: "No data because bars failed to load.",
           },
-          checks: [{ check: "bars-load", pass: false, reason: "failed to load required multi-timeframe bars" }],
+          checks: [{ check: "bars-load", pass: false, reason: "failed to load required multi-timeframe bars", impact: "blocker" }],
         },
       });
       continue;
