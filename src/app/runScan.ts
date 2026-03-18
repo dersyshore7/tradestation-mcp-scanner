@@ -1160,16 +1160,19 @@ function getCheckImpactLabel(
   return "downgrader";
 }
 
-function resolveConfirmationOutcome(review: ChartReviewResult): { conclusion: ScanResult["conclusion"]; confidence: ScanConfidence | null } {
-  if (!review.direction) {
-    return { conclusion: "rejected", confidence: null };
-  }
-
-  const issueBreakdown = getStage3IssueBreakdown(review);
-  if (issueBreakdown.hardVetoes.length > 0) {
-    return { conclusion: "rejected", confidence: null };
-  }
-
+function getConfirmationSoftIssueMetrics(review: ChartReviewResult): {
+  checkByName: Map<string, Stage3CheckDiagnostic>;
+  hasWeakExpansion: boolean;
+  hasVolumeIssue: boolean;
+  hasTriggerZoneIssue: boolean;
+  hasChoppyIssue: boolean;
+  volumeRatio: number | null;
+  volumeIssueWeight: number;
+  structuralWeaknessWeight: number;
+  expansionWeight: number;
+  overlappingPriceActionDrag: number;
+  weightedSoftIssueScore: number;
+} {
   const checkByName = new Map(review.diagnostics.checks.map((item) => [item.check, item]));
   const hasWeakExpansion = !checkByName.get("expansion")?.pass;
   const hasBodyWickIssue = !checkByName.get("body-wick")?.pass;
@@ -1178,8 +1181,6 @@ function resolveConfirmationOutcome(review: ChartReviewResult): { conclusion: Sc
   const hasDistributionIssue = !checkByName.get("fake-hold-distribution")?.pass;
   const hasTriggerZoneIssue = !checkByName.get("trigger-zone-flips")?.pass;
   const hasChoppyIssue = !checkByName.get("choppy")?.pass;
-
-  // Expansion weakness is treated as a confidence drag/caution, not a standalone rejection trigger.
   const hasVolumeIssue = !checkByName.get("volume")?.pass;
   const volumeRatio = review.volumeRatio;
   const volumeIssueWeight = hasVolumeIssue
@@ -1201,6 +1202,38 @@ function resolveConfirmationOutcome(review: ChartReviewResult): { conclusion: Sc
   const expansionWeight = hasWeakExpansion ? 0.25 : 0;
   const overlappingPriceActionDrag = hasTriggerZoneIssue && hasChoppyIssue ? -0.2 : 0;
   const weightedSoftIssueScore = structuralWeaknessWeight + volumeIssueWeight + expansionWeight + overlappingPriceActionDrag;
+
+  return {
+    checkByName,
+    hasWeakExpansion,
+    hasVolumeIssue,
+    hasTriggerZoneIssue,
+    hasChoppyIssue,
+    volumeRatio,
+    volumeIssueWeight,
+    structuralWeaknessWeight,
+    expansionWeight,
+    overlappingPriceActionDrag,
+    weightedSoftIssueScore,
+  };
+}
+
+function resolveConfirmationOutcome(review: ChartReviewResult): { conclusion: ScanResult["conclusion"]; confidence: ScanConfidence | null } {
+  if (!review.direction) {
+    return { conclusion: "rejected", confidence: null };
+  }
+
+  const issueBreakdown = getStage3IssueBreakdown(review);
+  if (issueBreakdown.hardVetoes.length > 0) {
+    return { conclusion: "rejected", confidence: null };
+  }
+
+  const {
+    checkByName,
+    volumeIssueWeight,
+    structuralWeaknessWeight,
+    weightedSoftIssueScore,
+  } = getConfirmationSoftIssueMetrics(review);
 
   if (weightedSoftIssueScore >= 3) {
     return { conclusion: "rejected", confidence: null };
@@ -1237,34 +1270,19 @@ function getConfirmationRejectionReasons(review: ChartReviewResult): string[] {
   }
 
   const issueBreakdown = getStage3IssueBreakdown(review);
-  const checkByName = new Map(review.diagnostics.checks.map((item) => [item.check, item]));
-  const hasWeakExpansion = !checkByName.get("expansion")?.pass;
-  const hasBodyWickIssue = !checkByName.get("body-wick")?.pass;
-  const hasContinuationIssue = !checkByName.get("continuation")?.pass;
-  const hasImpulseConsolidationIssue = !checkByName.get("impulse-consolidation")?.pass;
-  const hasDistributionIssue = !checkByName.get("fake-hold-distribution")?.pass;
-  const hasTriggerZoneIssue = !checkByName.get("trigger-zone-flips")?.pass;
-  const hasChoppyIssue = !checkByName.get("choppy")?.pass;
-  const hasVolumeIssue = !checkByName.get("volume")?.pass;
-  const volumeRatio = review.volumeRatio;
-  const volumeIssueWeight = hasVolumeIssue
-    ? volumeRatio === null
-      ? 0.45
-      : volumeRatio >= 0.8
-        ? 0.35
-        : volumeRatio >= 0.7
-          ? 0.65
-          : 1
-    : 0;
-  const structuralWeaknessWeight =
-    (hasBodyWickIssue ? 0.75 : 0) +
-    (hasContinuationIssue ? 1.1 : 0) +
-    (hasImpulseConsolidationIssue ? 0.75 : 0) +
-    (hasDistributionIssue ? 0.9 : 0) +
-    (hasTriggerZoneIssue ? 0.45 : 0) +
-    (hasChoppyIssue && !hasTriggerZoneIssue ? 0.25 : 0);
-  const weightedSoftIssueScore =
-    structuralWeaknessWeight + volumeIssueWeight + (hasWeakExpansion ? 0.25 : 0) + (hasTriggerZoneIssue && hasChoppyIssue ? -0.2 : 0);
+  const {
+    checkByName,
+    hasWeakExpansion,
+    hasVolumeIssue,
+    hasTriggerZoneIssue,
+    hasChoppyIssue,
+    volumeRatio,
+    volumeIssueWeight,
+    structuralWeaknessWeight,
+    expansionWeight,
+    overlappingPriceActionDrag,
+    weightedSoftIssueScore,
+  } = getConfirmationSoftIssueMetrics(review);
   const nonExpansionSoftIssues = issueBreakdown.softIssues.filter((reason) => !reason.startsWith("weak expansion ("));
   const distinctNonExpansionSoftIssues = [...new Set(nonExpansionSoftIssues)];
   const topWeaknesses = distinctNonExpansionSoftIssues.slice(0, 4);
@@ -1278,12 +1296,14 @@ function getConfirmationRejectionReasons(review: ChartReviewResult): string[] {
       hasVolumeIssue && volumeRatio !== null && volumeRatio >= 0.8
         ? `; mild volume caution (${volumeRatio.toFixed(2)}x) down-weighted`
         : "";
-    const overlapQualifier = hasTriggerZoneIssue && hasChoppyIssue ? "; trigger-zone/chop overlap de-stacked" : "";
+    const overlapQualifier = overlappingPriceActionDrag < 0 ? "; trigger-zone/chop overlap de-stacked" : "";
     return [`multiple confirmation weaknesses (overlap-aware): ${formatFinalistReasonList(topWeaknesses.length > 0 ? topWeaknesses : distinctNonExpansionSoftIssues)}${volumeQualifier}${overlapQualifier}`];
   }
 
-  if (hasWeakExpansion) {
-    return [`weak expansion only: ${checkByName.get("expansion")?.reason ?? "expansion ratio unavailable"}`];
+  const confidence: ScanConfidence = review.score >= 11 ? "85-92" : review.score >= 9 ? "75-84" : "65-74";
+  if (confidence === "65-74") {
+    const expansionNarrative = hasWeakExpansion ? `; weak expansion remained only a soft drag (${checkByName.get("expansion")?.reason ?? "expansion ratio unavailable"}, weight=${expansionWeight.toFixed(2)})` : "";
+    return [`confirmation score stayed below the 75 minimum (score=${review.score.toFixed(2)}, weightedSoftIssueScore=${weightedSoftIssueScore.toFixed(2)})${expansionNarrative}`];
   }
 
   const lacksTradable2RStructure =
