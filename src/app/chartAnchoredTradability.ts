@@ -1,6 +1,11 @@
 import { type ScanDirection } from "../scanner/scoring.js";
 
-export const CHART_ANCHORED_TWO_TO_ONE_FAILURE = "Chart-anchored levels do not support a clean 2:1 structure";
+export const PREFERRED_RISK_REWARD_RATIO = 2;
+export const MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO = 1.5;
+export const MINIMUM_TRADABLE_RISK_REWARD_RATIO = 1.25;
+export type RiskRewardTier = "preferred_2r_or_better" | "acceptable_sub2r" | "borderline_tight" | "obvious_no_room";
+
+export const CHART_ANCHORED_TWO_TO_ONE_FAILURE = "Chart-anchored levels do not support minimum tradable asymmetry";
 
 export type ChartAnchoredTradabilitySuccess = {
   pass: true;
@@ -11,14 +16,37 @@ export type ChartAnchoredTradabilitySuccess = {
   riskDistance: number;
   rewardDistance: number;
   rewardRiskRatio: number;
+  rrTier: RiskRewardTier;
+  preferred2R: boolean;
+  minimumConfirmableRR: number;
 };
 
 export type ChartAnchoredTradabilityFailure = {
   pass: false;
   reason: string;
+  rewardRiskRatio: number | null;
+  rrTier: RiskRewardTier | "unknown";
+  preferred2R: boolean;
+  minimumConfirmableRR: number;
 };
 
 export type ChartAnchoredTradabilityResult = ChartAnchoredTradabilitySuccess | ChartAnchoredTradabilityFailure;
+
+export function getRiskRewardTier(rewardRiskRatio: number | null): RiskRewardTier | "unknown" {
+  if (rewardRiskRatio === null || !Number.isFinite(rewardRiskRatio)) {
+    return "unknown";
+  }
+  if (rewardRiskRatio >= PREFERRED_RISK_REWARD_RATIO) {
+    return "preferred_2r_or_better";
+  }
+  if (rewardRiskRatio >= MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO) {
+    return "acceptable_sub2r";
+  }
+  if (rewardRiskRatio >= MINIMUM_TRADABLE_RISK_REWARD_RATIO) {
+    return "borderline_tight";
+  }
+  return "obvious_no_room";
+}
 
 function parseBars(payload: unknown): Record<string, unknown>[] {
   if (!payload || typeof payload !== "object") {
@@ -68,7 +96,7 @@ export async function evaluateChartAnchoredTradability(
   ]);
 
   if (!dailyResponse.ok || !threeMonthResponse.ok || !oneYearResponse.ok) {
-    return { pass: false, reason: `Unable to load chart bars to derive chart-anchored exits for ${symbol}.` };
+    return { pass: false, reason: `Unable to load chart bars to derive chart-anchored exits for ${symbol}.`, rewardRiskRatio: null, rrTier: "unknown", preferred2R: false, minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO };
   }
 
   const dailyBars = parseBars(await dailyResponse.json());
@@ -90,14 +118,15 @@ export async function evaluateChartAnchoredTradability(
     const targetUnderlying = resistanceCandidates.length > 0 ? Math.min(...resistanceCandidates) : null;
 
     if (invalidationUnderlying === null || targetUnderlying === null || !(invalidationUnderlying < referencePrice && targetUnderlying > referencePrice)) {
-      return { pass: false, reason: `Could not derive clean bullish chart-anchored invalidation/target levels for ${symbol}.` };
+      return { pass: false, reason: `Could not derive clean bullish chart-anchored invalidation/target levels for ${symbol}.`, rewardRiskRatio: null, rrTier: "unknown", preferred2R: false, minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO };
     }
 
     const riskDistance = referencePrice - invalidationUnderlying;
     const rewardDistance = targetUnderlying - referencePrice;
     const rewardRiskRatio = riskDistance > 0 ? rewardDistance / riskDistance : 0;
-    if (riskDistance <= 0 || rewardRiskRatio < 2) {
-      return { pass: false, reason: `${CHART_ANCHORED_TWO_TO_ONE_FAILURE} for ${symbol}.` };
+    const rrTier = getRiskRewardTier(rewardRiskRatio) as RiskRewardTier;
+    if (riskDistance <= 0 || rewardRiskRatio < MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO) {
+      return { pass: false, reason: `${CHART_ANCHORED_TWO_TO_ONE_FAILURE} for ${symbol} (actual R:R ${rewardRiskRatio.toFixed(2)}; tier=${rrTier}; minimum confirmable ${MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO.toFixed(2)}).`, rewardRiskRatio, rrTier, preferred2R: rewardRiskRatio >= PREFERRED_RISK_REWARD_RATIO, minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO };
     }
 
     return {
@@ -109,6 +138,9 @@ export async function evaluateChartAnchoredTradability(
       riskDistance,
       rewardDistance,
       rewardRiskRatio,
+      rrTier,
+      preferred2R: rewardRiskRatio >= PREFERRED_RISK_REWARD_RATIO,
+      minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
     };
   }
 
@@ -117,14 +149,15 @@ export async function evaluateChartAnchoredTradability(
   const targetUnderlying = supportCandidates.length > 0 ? Math.max(...supportCandidates) : null;
 
   if (invalidationUnderlying === null || targetUnderlying === null || !(invalidationUnderlying > referencePrice && targetUnderlying < referencePrice)) {
-    return { pass: false, reason: `Could not derive clean bearish chart-anchored invalidation/target levels for ${symbol}.` };
+    return { pass: false, reason: `Could not derive clean bearish chart-anchored invalidation/target levels for ${symbol}.`, rewardRiskRatio: null, rrTier: "unknown", preferred2R: false, minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO };
   }
 
   const riskDistance = invalidationUnderlying - referencePrice;
   const rewardDistance = referencePrice - targetUnderlying;
   const rewardRiskRatio = riskDistance > 0 ? rewardDistance / riskDistance : 0;
-  if (riskDistance <= 0 || rewardRiskRatio < 2) {
-    return { pass: false, reason: `${CHART_ANCHORED_TWO_TO_ONE_FAILURE} for ${symbol}.` };
+  const rrTier = getRiskRewardTier(rewardRiskRatio) as RiskRewardTier;
+  if (riskDistance <= 0 || rewardRiskRatio < MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO) {
+    return { pass: false, reason: `${CHART_ANCHORED_TWO_TO_ONE_FAILURE} for ${symbol} (actual R:R ${rewardRiskRatio.toFixed(2)}; tier=${rrTier}; minimum confirmable ${MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO.toFixed(2)}).`, rewardRiskRatio, rrTier, preferred2R: rewardRiskRatio >= PREFERRED_RISK_REWARD_RATIO, minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO };
   }
 
   return {
@@ -136,5 +169,8 @@ export async function evaluateChartAnchoredTradability(
     riskDistance,
     rewardDistance,
     rewardRiskRatio,
+    rrTier,
+    preferred2R: rewardRiskRatio >= PREFERRED_RISK_REWARD_RATIO,
+    minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
   };
 }
