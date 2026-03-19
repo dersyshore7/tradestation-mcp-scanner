@@ -412,6 +412,7 @@ export type StarterUniverseTelemetry = {
     stage2Passed: number;
     stage3Passed: number;
     continuationEligibleFinalists: number;
+    confirmationEligibleFinalists: number;
     finalistsReviewed: number;
     finalRanking: number;
   };
@@ -421,6 +422,7 @@ export type StarterUniverseTelemetry = {
     stage2Passed: string[];
     stage3Passed: string[];
     continuationEligibleFinalists: string[];
+    confirmationEligibleFinalists: string[];
     finalistsReviewed: string[];
     finalRanking: string[];
   };
@@ -454,6 +456,7 @@ export type StarterUniverseTelemetry = {
 
 type FinalistReviewSource = {
   continuationEligibleFinalists: (ChartCandidate & { score: number })[];
+  confirmationEligibleFinalists: (ChartCandidate & { score: number })[];
   finalists: (ChartCandidate & { score: number })[];
   debug: StarterUniverseTelemetry["finalistsReviewedDebug"];
   warnings: string[];
@@ -506,6 +509,7 @@ function buildStarterUniverseTelemetry(params: {
   const stage3Set = new Set(stage3Passed.map((candidate) => candidate.symbol));
   const rankingSet = new Set(ranked.map((candidate) => candidate.symbol));
   const continuationEligibleSet = new Set(finalistReviewSource.continuationEligibleFinalists.map((candidate) => candidate.symbol));
+  const confirmationEligibleSet = new Set(finalistReviewSource.confirmationEligibleFinalists.map((candidate) => candidate.symbol));
   const finalistsSet = new Set(finalistReviewSource.finalists.map((candidate) => candidate.symbol));
 
   for (const symbol of stage2Set) {
@@ -526,6 +530,11 @@ function buildStarterUniverseTelemetry(params: {
   for (const symbol of continuationEligibleSet) {
     if (!rankingSet.has(symbol)) {
       listConsistencyWarnings.push(`Continuation-eligible finalist ${symbol} is missing from final ranking list.`);
+    }
+  }
+  for (const symbol of confirmationEligibleSet) {
+    if (!rankingSet.has(symbol)) {
+      listConsistencyWarnings.push(`Confirmation-eligible finalist ${symbol} is missing from final ranking list.`);
     }
   }
   for (const symbol of finalistsSet) {
@@ -558,6 +567,7 @@ function buildStarterUniverseTelemetry(params: {
       stage2Passed: stage2Passed.length,
       stage3Passed: stage3Passed.length,
       continuationEligibleFinalists: finalistReviewSource.continuationEligibleFinalists.length,
+      confirmationEligibleFinalists: finalistReviewSource.confirmationEligibleFinalists.length,
       finalistsReviewed: finalistReviewResults.length > 0 ? finalistReviewResults.length : finalistReviewSource.finalists.length,
       finalRanking: ranked.length,
     },
@@ -567,6 +577,7 @@ function buildStarterUniverseTelemetry(params: {
       stage2Passed: stage2Passed.map((candidate) => candidate.symbol),
       stage3Passed: stage3Passed.map((candidate) => candidate.symbol),
       continuationEligibleFinalists: finalistReviewSource.continuationEligibleFinalists.map((candidate) => candidate.symbol),
+      confirmationEligibleFinalists: finalistReviewSource.confirmationEligibleFinalists.map((candidate) => candidate.symbol),
       finalistsReviewed: finalistReviewResults.length > 0 ? finalistReviewResults.map((item) => item.symbol) : finalistReviewSource.finalists.map((candidate) => candidate.symbol),
       finalRanking: ranked.map((candidate) => candidate.symbol),
     },
@@ -593,7 +604,8 @@ function buildFinalistReviewSource(
   stage3PassedSymbols: string[],
 ): FinalistReviewSource {
   const continuationEligibleFinalists = ranked.filter((candidate) => getStage3CheckPass(candidate, "continuation"));
-  const finalists = continuationEligibleFinalists;
+  const confirmationEligibleFinalists = continuationEligibleFinalists.filter((candidate) => getStage3CheckPass(candidate, "higher-timeframe-2r-viability"));
+  const finalists = confirmationEligibleFinalists;
   const stage2Set = new Set(stage2PassedSymbols);
   const stage3Set = new Set(stage3PassedSymbols);
   const debug: StarterUniverseTelemetry["finalistsReviewedDebug"] = [];
@@ -618,9 +630,11 @@ function buildFinalistReviewSource(
 
     debug.push({
       symbol: finalist.symbol,
-      eligibleForReviewReason: getStage3CheckPass(finalist, "continuation")
-        ? `Stage 3 continuation-pass finalist eligible for deterministic confirmation review (${finalist.score.toFixed(2)}).`
-        : `Stage 3 pass-through candidate excluded from deterministic confirmation review because continuationPass=false (${finalist.score.toFixed(2)}).`,
+      eligibleForReviewReason: !getStage3CheckPass(finalist, "continuation")
+        ? `Stage 3 pass-through candidate excluded from deterministic confirmation review because continuationPass=false (${finalist.score.toFixed(2)}).`
+        : getStage3CheckPass(finalist, "higher-timeframe-2r-viability")
+        ? `Stage 3 continuation-pass finalist eligible for deterministic confirmation review because higher-timeframe-2r-viability=true (${finalist.score.toFixed(2)}).`
+        : `Stage 3 continuation-pass finalist excluded from deterministic confirmation review because higher-timeframe-2r-viability=false (${finalist.score.toFixed(2)}).`,
       sourceList,
       inStage2Passed,
       inStage3Passed,
@@ -629,7 +643,7 @@ function buildFinalistReviewSource(
     });
   }
 
-  return { continuationEligibleFinalists, finalists, debug, warnings };
+  return { continuationEligibleFinalists, confirmationEligibleFinalists, finalists, debug, warnings };
 }
 
 function buildFinalRanking(stage3Passed: ChartCandidate[]): { ranked: (ChartCandidate & { score: number })[]; debug: FinalRankingEntry[] } {
@@ -856,7 +870,7 @@ function buildGenericNoTradeReason(stage3PassedCount: number, finalRankingCount:
   }
 
   if (finalistsReviewedCount === 0) {
-    return "No continuation-pass Stage 3 finalists remained for immediate-entry confirmation review.";
+    return "No continuation-pass Stage 3 finalists with higher-timeframe 2R viability remained for immediate-entry confirmation review.";
   }
 
   return "Ranked finalists were reviewed in deterministic order and all were rejected.";
@@ -3190,6 +3204,10 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
     "Continuation-eligible finalists",
     finalistReviewSource.continuationEligibleFinalists.map((candidate) => candidate.symbol),
   );
+  logGeneralScanDebug(
+    "Confirmation-eligible finalists",
+    finalistReviewSource.confirmationEligibleFinalists.map((candidate) => candidate.symbol),
+  );
   for (const warning of finalistReviewSource.warnings) {
     console.warn(`[scanner:debug] ${warning}`);
   }
@@ -3200,7 +3218,7 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
       direction: null,
       confidence: null,
       conclusion: "no_trade_today",
-      reason: "No continuation-pass Stage 3 finalists remained for immediate-entry confirmation review.",
+      reason: "No continuation-pass Stage 3 finalists with higher-timeframe 2R viability remained for immediate-entry confirmation review.",
       telemetry: buildScanTelemetry({ stage2Passed, stage3Evaluations, ranked, finalRankingDebug, finalistReviewSource }),
     };
   }
@@ -3443,6 +3461,7 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
   const stage3Set = new Set(stage3Passed.map((candidate) => candidate.symbol));
   const rankingSet = new Set(ranked.map((candidate) => candidate.symbol));
   const continuationEligibleSet = new Set(finalistReviewSource.continuationEligibleFinalists.map((candidate) => candidate.symbol));
+  const confirmationEligibleSet = new Set(finalistReviewSource.confirmationEligibleFinalists.map((candidate) => candidate.symbol));
   const finalistsSet = new Set(finalistReviewSource.finalists.map((candidate) => candidate.symbol));
 
   for (const symbol of stage2Set) {
@@ -3463,6 +3482,11 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
   for (const symbol of continuationEligibleSet) {
     if (!rankingSet.has(symbol)) {
       listConsistencyWarnings.push(`Continuation-eligible finalist ${symbol} is missing from final ranking list.`);
+    }
+  }
+  for (const symbol of confirmationEligibleSet) {
+    if (!rankingSet.has(symbol)) {
+      listConsistencyWarnings.push(`Confirmation-eligible finalist ${symbol} is missing from final ranking list.`);
     }
   }
   for (const symbol of finalistsSet) {
@@ -3509,6 +3533,7 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
       stage2Passed: stage2Passed.length,
       stage3Passed: stage3Passed.length,
       continuationEligibleFinalists: finalistReviewSource.continuationEligibleFinalists.length,
+      confirmationEligibleFinalists: finalistReviewSource.confirmationEligibleFinalists.length,
       finalistsReviewed: finalistReviewSource.finalists.length,
       finalRanking: ranked.length,
     },
@@ -3518,6 +3543,7 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
       stage2Passed: stage2Passed.map((candidate) => candidate.symbol),
       stage3Passed: stage3Passed.map((candidate) => candidate.symbol),
       continuationEligibleFinalists: finalistReviewSource.continuationEligibleFinalists.map((candidate) => candidate.symbol),
+      confirmationEligibleFinalists: finalistReviewSource.confirmationEligibleFinalists.map((candidate) => candidate.symbol),
       finalistsReviewed: finalistReviewSource.finalists.map((candidate) => candidate.symbol),
       finalRanking: ranked.map((candidate) => candidate.symbol),
     },
