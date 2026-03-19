@@ -300,6 +300,14 @@ type ReviewedFinalistOutcome = {
   reason: string;
 };
 
+type NormalizedRejectionFamily =
+  | "chart_anchored_2r_failure"
+  | "weak_expansion"
+  | "weak_volume"
+  | "impulse_hold_quality_issue"
+  | "distribution_risk"
+  | "other";
+
 
 type EarningsCheckResult = {
   symbol: string;
@@ -536,11 +544,12 @@ function buildStarterUniverseTelemetry(params: {
     finalistsReviewed: finalistReviewResults.length > 0 ? finalistReviewResults.map((item) => item.symbol) : finalistReviewSource.finalists.map((candidate) => candidate.symbol),
     finalRanking: ranked.map((candidate) => candidate.symbol),
   };
+  const fallbackTier = scannedTiers[0] ?? "tier1";
   const resolvedTierSummaries: TierSummary[] = tierSummaries.length > 0
     ? tierSummaries
     : [{
-        tier: scannedTiers[0] ?? "tier1",
-        label: "Tier 1",
+        tier: fallbackTier,
+        label: getTierLabelForKey(fallbackTier),
         description: "Current core universe of liquid optionable leaders and key ETFs.",
         counts: stageCounts,
         symbols: stageSymbols,
@@ -849,6 +858,10 @@ function formatFinalistReasonList(reasons: string[]): string {
   return `${reasons.slice(0, -1).join(", ")} and ${reasons[reasons.length - 1]}`;
 }
 
+function getTierLabelForKey(tierKey: ScanUniverseTierKey): string {
+  return SCAN_UNIVERSE_TIERS.find((tier) => tier.key === tierKey)?.label ?? tierKey;
+}
+
 function buildFinalistNoTradeReasonPath(finalists: FinalistReviewResult[]): string {
   const reviewed = finalists
     .map(
@@ -864,16 +877,74 @@ function buildFinalistNoTradeReasonPath(finalists: FinalistReviewResult[]): stri
   return `Ranked finalists were reviewed in deterministic order and all were rejected (${finalists.map((item) => item.symbol).join(", ")}). Reason path: ${narrative} Finalist outcomes: ${reviewed}.`;
 }
 
+function normalizeConfirmationFailureReason(reason: string): NormalizedRejectionFamily {
+  const normalized = reason.toLowerCase();
+
+  if (normalized.includes("clean 2:1 structure missing") || normalized.includes("chart-anchored levels do not support a clean 2:1 structure")) {
+    return "chart_anchored_2r_failure";
+  }
+  if (normalized.includes("weak expansion")) {
+    return "weak_expansion";
+  }
+  if (normalized.includes("weak volume") || normalized.includes("volume caution") || normalized.includes("volume /")) {
+    return "weak_volume";
+  }
+  if (normalized.includes("impulse/hold quality issue") || normalized.includes("impulse plus consolidation structure is not clean enough") || normalized.includes("impulse")) {
+    return "impulse_hold_quality_issue";
+  }
+  if (normalized.includes("distribution risk") || normalized.includes("distribution weakness") || normalized.includes("distribution")) {
+    return "distribution_risk";
+  }
+
+  return "other";
+}
+
+function describeNormalizedRejectionFamily(family: NormalizedRejectionFamily): string {
+  switch (family) {
+    case "chart_anchored_2r_failure":
+      return "failure to support a clean chart-anchored 2:1 structure";
+    case "weak_expansion":
+      return "weak expansion";
+    case "weak_volume":
+      return "volume weakness";
+    case "impulse_hold_quality_issue":
+      return "impulse-hold quality issues";
+    case "distribution_risk":
+      return "distribution risk";
+    default:
+      return "other confirmation issues";
+  }
+}
+
+function joinWithAnd(parts: string[]): string {
+  if (parts.length <= 1) {
+    return parts[0] ?? "";
+  }
+  if (parts.length === 2) {
+    return `${parts[0]} and ${parts[1]}`;
+  }
+  return `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}`;
+}
+
 function summarizeCrossTierRejectionReasons(finalists: ReviewedFinalistOutcome[]): string {
-  const counts = new Map<string, number>();
+  const familyCounts = new Map<NormalizedRejectionFamily, number>();
+  const familySymbols = new Map<NormalizedRejectionFamily, Set<string>>();
 
   for (const finalist of finalists) {
-    for (const reason of finalist.confirmationFailureReasons) {
-      counts.set(reason, (counts.get(reason) ?? 0) + 1);
+    const families = new Set<NormalizedRejectionFamily>(
+      finalist.confirmationFailureReasons.map((reason) => normalizeConfirmationFailureReason(reason)),
+    );
+
+    for (const family of families) {
+      familyCounts.set(family, (familyCounts.get(family) ?? 0) + 1);
+      const symbols = familySymbols.get(family) ?? new Set<string>();
+      symbols.add(finalist.symbol);
+      familySymbols.set(family, symbols);
     }
   }
 
-  const rankedReasons = [...counts.entries()]
+  const rankedFamilies = [...familyCounts.entries()]
+    .filter(([family]) => family !== "other")
     .sort((a, b) => {
       const countDelta = b[1] - a[1];
       if (countDelta !== 0) {
@@ -881,11 +952,33 @@ function summarizeCrossTierRejectionReasons(finalists: ReviewedFinalistOutcome[]
       }
 
       return a[0].localeCompare(b[0]);
-    })
-    .slice(0, 3)
-    .map(([reason, count]) => `${reason} (${count})`);
+    });
 
-  return rankedReasons.length > 0 ? rankedReasons.join(", ") : "unspecified confirmation failure";
+  if (rankedFamilies.length === 0) {
+    return "Confirmation issues were too mixed to summarize beyond symbol-specific blockers.";
+  }
+
+  const [primaryFamily] = rankedFamilies;
+  const primaryClause = primaryFamily
+    ? `The main shared blocker was ${describeNormalizedRejectionFamily(primaryFamily[0])}.`
+    : null;
+
+  const secondaryFamilies = rankedFamilies.slice(1).filter(([, count]) => count >= Math.max(2, finalists.length - 1));
+  const secondaryClause = secondaryFamilies.length > 0
+    ? `${joinWithAnd(secondaryFamilies.map(([family]) => describeNormalizedRejectionFamily(family)))} ${secondaryFamilies.length === 1 ? "was" : "were"} also common across most reviewed candidates.`
+    : null;
+
+  const uniqueOutliers = finalists
+    .map((finalist) => {
+      const families = [...new Set(finalist.confirmationFailureReasons.map((reason) => normalizeConfirmationFailureReason(reason)))].filter((family) => family !== "other");
+      const uniqueFamilies = families.filter((family) => (familySymbols.get(family)?.size ?? 0) === 1);
+      return uniqueFamilies.length > 0
+        ? `${finalist.symbol} additionally showed ${joinWithAnd(uniqueFamilies.map((family) => describeNormalizedRejectionFamily(family)))}.`
+        : null;
+    })
+    .filter((value): value is string => value !== null);
+
+  return [primaryClause, secondaryClause, ...uniqueOutliers].filter((value): value is string => !!value).join(" ");
 }
 
 function selectBestReviewedFinalistsAcrossTiers(finalists: ReviewedFinalistOutcome[]): ReviewedFinalistOutcome[] {
@@ -959,7 +1052,7 @@ function buildCrossTierNoTradeSummary(executions: TierScanExecution[]): {
   const terminalTierSuffix = terminalTierReason && !bestReviewedFinalists.some((item) => terminalTierReason.includes(item.symbol))
     ? ` ${executions.at(-1)?.tier.label} also ended with: ${terminalTierReason}`
     : "";
-  const crossTierFinalistSummary = `The closest reviewed candidates were ${bestReviewedFinalists.map((item) => `${item.symbol} (${item.tierLabel})`).join(", ")}, but each failed final confirmation due to ${reviewedReasons}.`;
+  const crossTierFinalistSummary = `The closest reviewed candidates were ${bestReviewedFinalists.map((item) => `${item.symbol} (${item.tierLabel})`).join(", ")}. ${reviewedReasons}`;
 
   return {
     finalNoTradeExplanation: `No confirmed setup survived across scanned tiers (${tierLabels}). ${crossTierFinalistSummary}${terminalTierSuffix}`,
