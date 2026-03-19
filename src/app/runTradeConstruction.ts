@@ -506,6 +506,6 @@ export async function constructTradeCard(input: TradeConstructionInput): Promise
     takeProfitExit: `Take profit near ${symbol} ${trade.targetUnderlying.toFixed(2)} (${trade.targetReason}; approx option ${renderMoney(trade.optionAtTarget)}).`,
     timeExit: `Exit on Thursday before expiration (${timeExitDate}), or sooner if option value decays by more than 25% from entry premium (${renderMoney(trade.optionMid)}).`,
     rrMath: `Risk/contract ${renderMoney(trade.riskPerContract)}, reward/contract ${renderMoney(trade.rewardPerContract)}; total risk ${renderMoney(trade.totalRisk)} vs total reward ${renderMoney(trade.totalReward)} (~${rrRatio.toFixed(2)}:1 reward:risk).`,
-    rationale: `${directionLabel} setup follows confirmed review bias and uses nearest practical ATM ${trade.expirationDate} (${trade.dte} DTE) option with chart-anchored invalidation/target levels that satisfy minimum 2:1 structure. Pricing uses current premium plus a delta-based approximation; equity source: ${trade.equitySource}.`,
+    rationale: `${directionLabel} setup follows confirmed review bias and uses nearest practical ATM ${trade.expirationDate} (${trade.dte} DTE) option with chart-anchored invalidation/target levels that keep the realized reward:risk at ~${rrRatio.toFixed(2)}:1. Pricing uses current premium plus a delta-based approximation; equity source: ${trade.equitySource}.`,
   };
 }

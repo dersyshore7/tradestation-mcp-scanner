@@ -1,7 +1,13 @@
 import { ALL_SCAN_UNIVERSE_SET, CORE_SCAN_UNIVERSE, SCAN_UNIVERSE_TIERS, type ScanUniverseTier, type ScanUniverseTierKey } from "../config/scanUniverseTiers.js";
 import { getFakeConfidence, type ScanConfidence, type ScanDirection } from "../scanner/scoring.js";
 import { createTradeStationGetFetcher } from "../tradestation/client.js";
-import { evaluateChartAnchoredTradability } from "./chartAnchoredTradability.js";
+import {
+  evaluateChartAnchoredTradability,
+  MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
+  MINIMUM_TRADABLE_RISK_REWARD_RATIO,
+  PREFERRED_RISK_REWARD_RATIO,
+  type RiskRewardTier,
+} from "./chartAnchoredTradability.js";
 const FINAL_SCORE_TIE_TOLERANCE = 0.05;
 const YAHOO_FINANCE_BASE_URL = "https://query1.finance.yahoo.com";
 
@@ -173,9 +179,11 @@ type Stage3Diagnostics = {
     roomPct: number | null;
     targetAssumption: string;
     decisionMode: "hard_fail" | "score_penalty";
-    roomTier: "obvious_no_room" | "borderline_tight" | "workable" | "unknown";
+    roomTier: RiskRewardTier | "unknown";
     sufficientRoom: boolean;
     insufficientRoomReason: string;
+    preferred2R: boolean;
+    minimumConfirmableRR: number;
   };
   checks: Stage3CheckDiagnostic[];
 };
@@ -282,6 +290,9 @@ type ConfirmationDebug = {
   rejectedBecauseConfidenceBelow75: boolean;
   weightedSoftIssueScore: number;
   topBlockingReasons: string[];
+  rrTier: RiskRewardTier | "unknown";
+  preferred2R: boolean;
+  minimumConfirmableRR: number;
 };
 
 type SingleSymbolReviewResult = ScanResult & {
@@ -1606,6 +1617,9 @@ function buildConfirmationDebug(
       rejectedBecauseConfidenceBelow75: defaultStructure.rejectedBecauseConfidenceBelow75,
       weightedSoftIssueScore: defaultStructure.weightedSoftIssueScore,
       topBlockingReasons: overrides?.topBlockingReasons ?? defaultStructure.topBlockingReasons,
+      rrTier: "unknown",
+      preferred2R: false,
+      minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
     };
   }
 
@@ -1624,6 +1638,9 @@ function buildConfirmationDebug(
     rejectedBecauseConfidenceBelow75: confirmationStatus === "rejected" && confidence === "65-74",
     weightedSoftIssueScore,
     topBlockingReasons: overrides?.topBlockingReasons ?? (structureDebug.topBlockingReasons.length > 0 ? structureDebug.topBlockingReasons : [...confirmationFailureReasons]),
+    rrTier: review.diagnostics.roomToTargetDiagnostics.roomTier,
+    preferred2R: review.diagnostics.roomToTargetDiagnostics.preferred2R,
+    minimumConfirmableRR: review.diagnostics.roomToTargetDiagnostics.minimumConfirmableRR,
   };
 }
 
@@ -1672,11 +1689,11 @@ function getConfirmationRejectionReasons(review: ChartReviewResult): string[] {
   const structureDebug = getConfirmationStructureDebug(review);
   if (!structureDebug.supportsTradable2RStructure) {
     if (structureDebug.topBlockingReasons.length === 1) {
-      return [`clean 2:1 structure missing: ${structureDebug.topBlockingReasons[0]} before trade-card confirmation`];
+      return [`minimum tradable asymmetry missing: ${structureDebug.topBlockingReasons[0]} before trade-card confirmation`];
     }
 
     return [
-      `clean 2:1 structure missing: ${formatFinalistReasonList(structureDebug.topBlockingReasons)} before trade-card confirmation`,
+      `minimum tradable asymmetry missing: ${formatFinalistReasonList(structureDebug.topBlockingReasons)} before trade-card confirmation`,
     ];
   }
 
@@ -1815,11 +1832,13 @@ function runStage3ChartReview(
           levelStrength: "n/a",
           levelUsed: null,
           roomPct: null,
-          targetAssumption: "2R requires roomPct >= 2.00%",
+          targetAssumption: "Preferred 2.00R+, confirmable >= 1.50R, hard fail < 1.25R",
           decisionMode: "score_penalty",
           roomTier: "unknown",
           sufficientRoom: true,
           insufficientRoomReason: "No data because directional setup was not available.",
+          preferred2R: false,
+          minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
         },
         checks: [{ check: "data-integrity", pass: false, reason: "missing/incomplete bar data (1D or 1W close unavailable)", impact: "blocker" }],
       },
@@ -1871,11 +1890,13 @@ function runStage3ChartReview(
           levelStrength: "n/a",
           levelUsed: null,
           roomPct: null,
-          targetAssumption: "2R requires roomPct >= 2.00%",
+          targetAssumption: "Preferred 2.00R+, confirmable >= 1.50R, hard fail < 1.25R",
           decisionMode: "score_penalty",
           roomTier: "unknown",
           sufficientRoom: true,
           insufficientRoomReason: "No data because directional setup was not available.",
+          preferred2R: false,
+          minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
         },
         checks: [{ check: "alignment", pass: false, reason: alignmentReason, impact: "blocker" }],
       },
@@ -1927,11 +1948,13 @@ function runStage3ChartReview(
           levelStrength: "n/a",
           levelUsed: null,
           roomPct: null,
-          targetAssumption: "2R requires roomPct >= 2.00%",
+          targetAssumption: "Preferred 2.00R+, confirmable >= 1.50R, hard fail < 1.25R",
           decisionMode: "score_penalty",
           roomTier: "unknown",
           sufficientRoom: true,
           insufficientRoomReason: "No data because directional setup was not available.",
+          preferred2R: false,
+          minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
         },
         checks: [{ check: "data-integrity", pass: false, reason: "missing/incomplete bar data (latest 1D candle OHLC unavailable)", impact: "blocker" }],
       },
@@ -2208,17 +2231,20 @@ function runStage3ChartReview(
       : direction === "bearish" && levelUsed !== null
         ? ((close - levelUsed) / close) * 100
         : null;
-  const higherTimeframeRoomPass = roomPct === null || roomPct >= 0.85;
-  const higherTimeframe2RPass = roomPct === null || roomPct >= 2;
+  const higherTimeframeRoomPass = roomPct === null || roomPct >= MINIMUM_TRADABLE_RISK_REWARD_RATIO;
+  const higherTimeframe2RPass = roomPct === null || roomPct >= MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO;
   const roomTier: Stage3Diagnostics["roomToTargetDiagnostics"]["roomTier"] =
     roomPct === null
       ? "unknown"
-      : roomPct < 0.85
+      : roomPct < MINIMUM_TRADABLE_RISK_REWARD_RATIO
         ? "obvious_no_room"
-        : roomPct < 2
+        : roomPct < MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO
           ? "borderline_tight"
-          : "workable";
-  const roomDecisionMode: Stage3Diagnostics["roomToTargetDiagnostics"]["decisionMode"] = roomPct !== null && roomPct < 0.85 ? "hard_fail" : "score_penalty";
+          : roomPct < PREFERRED_RISK_REWARD_RATIO
+            ? "acceptable_sub2r"
+            : "preferred_2r_or_better";
+  const roomDecisionMode: Stage3Diagnostics["roomToTargetDiagnostics"]["decisionMode"] =
+    roomPct !== null && roomPct < MINIMUM_TRADABLE_RISK_REWARD_RATIO ? "hard_fail" : "score_penalty";
   const roomToTargetDiagnostics: Stage3Diagnostics["roomToTargetDiagnostics"] = {
     referencePrice: close,
     direction,
@@ -2232,18 +2258,22 @@ function runStage3ChartReview(
         : `3M low=${min3M?.toFixed(2) ?? "n/a"}, 1Y low=${min1Y?.toFixed(2) ?? "n/a"}`,
     levelUsed,
     roomPct,
-    targetAssumption: "2R requires roomPct >= 2.00%",
+    targetAssumption: `Preferred ${PREFERRED_RISK_REWARD_RATIO.toFixed(2)}R+, confirmable >= ${MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO.toFixed(2)}R, hard fail < ${MINIMUM_TRADABLE_RISK_REWARD_RATIO.toFixed(2)}R`,
     decisionMode: roomDecisionMode,
     roomTier,
     sufficientRoom: higherTimeframe2RPass,
+    preferred2R: roomPct !== null && roomPct >= PREFERRED_RISK_REWARD_RATIO,
+    minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
     insufficientRoomReason:
       roomPct === null
         ? "No finite higher-timeframe level available, treated as pass by current rule."
-        : roomTier === "workable"
-          ? `Room ${roomPct.toFixed(2)}% meets/exceeds 2.00% threshold.`
-          : roomTier === "borderline_tight"
-            ? `Room ${roomPct.toFixed(2)}% is below 2.00%, so Prompt 1 should downgrade it as tight overhead room while leaving Prompt 2 to decide whether chart-anchored levels truly support 2R.`
-            : `Room ${roomPct.toFixed(2)}% sits inside the immediate 0.85% wall threshold, so Stage 3 treats it as obvious no-room for 2R planning.`,
+        : roomTier === "preferred_2r_or_better"
+          ? `Room ${roomPct.toFixed(2)}% meets/exceeds the preferred 2.00R threshold.`
+          : roomTier === "acceptable_sub2r"
+            ? `Room ${roomPct.toFixed(2)}% is below the preferred 2.00R threshold but still meets the minimum confirmable 1.50R threshold, so Prompt 1 should keep it with a confidence drag.`
+            : roomTier === "borderline_tight"
+              ? `Room ${roomPct.toFixed(2)}% is between 1.25R and 1.50R, so Prompt 1 should penalize it heavily and Prompt 2 should usually reject it.`
+              : `Room ${roomPct.toFixed(2)}% is below 1.25R, so Stage 3 treats it as obvious no-room for immediate trade planning.`,
   };
   const higherTimeframeContextPresent = direction === "bullish" ? max3M !== null && max1Y !== null : min3M !== null && min1Y !== null;
 
@@ -3798,11 +3828,13 @@ export async function runStage3DebugForStarterUniverse(): Promise<
             levelStrength: "n/a",
             levelUsed: null,
             roomPct: null,
-            targetAssumption: "2R requires roomPct >= 2.00%",
+            targetAssumption: "Preferred 2.00R+, confirmable >= 1.50R, hard fail < 1.25R",
             decisionMode: "score_penalty",
             roomTier: "unknown",
             sufficientRoom: true,
             insufficientRoomReason: "No data because bars failed to load.",
+            preferred2R: false,
+            minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
           },
           checks: [{ check: "bars-load", pass: false, reason: "failed to load required multi-timeframe bars", impact: "blocker" }],
         },
@@ -4064,13 +4096,13 @@ function buildSingleSymbolReviewNarrative(
   const structureDebug = getConfirmationStructureDebug(review);
   const structureInPrinciple = structureDebug.supportsTradable2RStructure && !chartAnchoredFailureReason;
   if (structureInPrinciple) {
-    supportive.push("the chart supports a tradable clean 2:1-style structure (continuation + room + 2R viability)");
+    supportive.push("the chart supports tradable positive asymmetry (continuation + room + confirmable reward:risk)");
   } else if (chartAnchoredFailureReason) {
-    problematic.push(`tradable clean 2:1 structure failed chart-anchored invalidation/target test (${chartAnchoredFailureReason})`);
+    problematic.push(`tradable asymmetry failed chart-anchored invalidation/target test (${chartAnchoredFailureReason})`);
   } else if (structureDebug.topBlockingReasons.length === 1) {
-    problematic.push(`tradable clean 2:1 structure is not clear yet (${structureDebug.topBlockingReasons[0]})`);
+    problematic.push(`tradable asymmetry is not clear yet (${structureDebug.topBlockingReasons[0]})`);
   } else {
-    problematic.push(`tradable clean 2:1 structure is not clear yet (${formatFinalistReasonList(structureDebug.topBlockingReasons)})`);
+    problematic.push(`tradable asymmetry is not clear yet (${formatFinalistReasonList(structureDebug.topBlockingReasons)})`);
   }
 
   if (conclusion === "confirmed" && problematic.length > 0) {

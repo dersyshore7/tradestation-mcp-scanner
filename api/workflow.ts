@@ -89,7 +89,7 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
       };
 
       if (isChartAnchoredTwoToOneBlocker(error)) {
-        console.warn("Unexpected trade-card 2:1 blocker after confirmation; returning no_trade_today for safety.");
+        console.warn("Unexpected trade-card reward:risk blocker after confirmation; returning no_trade_today for safety.");
       }
 
       res.status(200).json({
