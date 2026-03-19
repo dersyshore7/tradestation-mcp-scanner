@@ -288,6 +288,19 @@ type SingleSymbolReviewResult = ScanResult & {
   confirmationDebug?: ConfirmationDebug;
 };
 
+type ReviewedFinalistOutcome = {
+  symbol: string;
+  tier: ScanUniverseTierKey;
+  tierLabel: string;
+  direction: ScanDirection | null;
+  confidence: ScanConfidence | null;
+  confirmationFailureReasons: string[];
+  rankingScore: number;
+  conclusion: ScanResult["conclusion"];
+  reason: string;
+};
+
+
 type EarningsCheckResult = {
   symbol: string;
   earningsDate: string | null;
@@ -367,6 +380,15 @@ export type StarterUniverseTelemetry = {
   tierFinalistsReviewed: Partial<Record<ScanUniverseTierKey, string[]>>;
   cumulativeStageCounts: StarterUniverseStageCounts;
   finalNoTradeExplanation: string | null;
+  reviewedFinalistOutcomes: ReviewedFinalistOutcome[];
+  bestReviewedFinalistsAcrossTiers: string[];
+  bestRejectedCandidates: {
+    symbol: string;
+    tier: ScanUniverseTierKey;
+    tierLabel: string;
+    rejectionReasons: string[];
+  }[];
+  crossTierFinalistSummary: string | null;
 };
 
 type FinalistReviewSource = {
@@ -529,6 +551,18 @@ function buildStarterUniverseTelemetry(params: {
       }];
   const tierStageCounts = Object.fromEntries(resolvedTierSummaries.map((summary) => [summary.tier, summary.counts]));
   const tierFinalistsReviewed = Object.fromEntries(resolvedTierSummaries.map((summary) => [summary.tier, summary.finalistsReviewed]));
+  const tierSummary = resolvedTierSummaries[0];
+  const reviewedFinalistOutcomes: ReviewedFinalistOutcome[] = finalistReviewResults.map((item) => ({
+    symbol: item.symbol,
+    tier: tierSummary?.tier ?? scannedTiers[0] ?? "tier1",
+    tierLabel: tierSummary?.label ?? "Tier 1",
+    direction: item.direction,
+    confidence: item.confidence,
+    confirmationFailureReasons: item.confirmationFailureReasons,
+    rankingScore: item.rankingScore,
+    conclusion: item.conclusion,
+    reason: item.reason,
+  }));
 
   return {
     stageCounts,
@@ -554,6 +588,17 @@ function buildStarterUniverseTelemetry(params: {
     tierFinalistsReviewed,
     cumulativeStageCounts: stageCounts,
     finalNoTradeExplanation,
+    reviewedFinalistOutcomes,
+    bestReviewedFinalistsAcrossTiers: reviewedFinalistOutcomes.map((item) => item.symbol),
+    bestRejectedCandidates: reviewedFinalistOutcomes.map((item) => ({
+      symbol: item.symbol,
+      tier: item.tier,
+      tierLabel: item.tierLabel,
+      rejectionReasons: item.confirmationFailureReasons,
+    })),
+    crossTierFinalistSummary: reviewedFinalistOutcomes.length > 0
+      ? buildFinalistNoTradeReasonPath(finalistReviewResults)
+      : null,
   };
 }
 
@@ -817,6 +862,112 @@ function buildFinalistNoTradeReasonPath(finalists: FinalistReviewResult[]): stri
     .join(" ");
 
   return `Ranked finalists were reviewed in deterministic order and all were rejected (${finalists.map((item) => item.symbol).join(", ")}). Reason path: ${narrative} Finalist outcomes: ${reviewed}.`;
+}
+
+function summarizeCrossTierRejectionReasons(finalists: ReviewedFinalistOutcome[]): string {
+  const counts = new Map<string, number>();
+
+  for (const finalist of finalists) {
+    for (const reason of finalist.confirmationFailureReasons) {
+      counts.set(reason, (counts.get(reason) ?? 0) + 1);
+    }
+  }
+
+  const rankedReasons = [...counts.entries()]
+    .sort((a, b) => {
+      const countDelta = b[1] - a[1];
+      if (countDelta !== 0) {
+        return countDelta;
+      }
+
+      return a[0].localeCompare(b[0]);
+    })
+    .slice(0, 3)
+    .map(([reason, count]) => `${reason} (${count})`);
+
+  return rankedReasons.length > 0 ? rankedReasons.join(", ") : "unspecified confirmation failure";
+}
+
+function selectBestReviewedFinalistsAcrossTiers(finalists: ReviewedFinalistOutcome[]): ReviewedFinalistOutcome[] {
+  const bestBySymbol = new Map<string, ReviewedFinalistOutcome>();
+
+  for (const finalist of finalists) {
+    const existing = bestBySymbol.get(finalist.symbol);
+    if (!existing || finalist.rankingScore > existing.rankingScore) {
+      bestBySymbol.set(finalist.symbol, finalist);
+    }
+  }
+
+  return [...bestBySymbol.values()]
+    .sort((a, b) => {
+      const tierDelta = SCAN_UNIVERSE_TIERS.findIndex((tier) => tier.key === a.tier) - SCAN_UNIVERSE_TIERS.findIndex((tier) => tier.key === b.tier);
+      if (tierDelta !== 0) {
+        return tierDelta;
+      }
+
+      const scoreDelta = b.rankingScore - a.rankingScore;
+      if (scoreDelta !== 0) {
+        return scoreDelta;
+      }
+
+      return a.symbol.localeCompare(b.symbol);
+    })
+    .slice(0, 5);
+}
+
+function buildCrossTierNoTradeSummary(executions: TierScanExecution[]): {
+  finalNoTradeExplanation: string;
+  reviewedFinalistOutcomes: ReviewedFinalistOutcome[];
+  bestReviewedFinalistsAcrossTiers: string[];
+  bestRejectedCandidates: StarterUniverseTelemetry["bestRejectedCandidates"];
+  crossTierFinalistSummary: string | null;
+} {
+  if (executions.length === 0) {
+    return {
+      finalNoTradeExplanation: "No tiers were scanned.",
+      reviewedFinalistOutcomes: [],
+      bestReviewedFinalistsAcrossTiers: [],
+      bestRejectedCandidates: [],
+      crossTierFinalistSummary: null,
+    };
+  }
+
+  const reviewedFinalistOutcomes = executions.flatMap((item) => item.telemetry.reviewedFinalistOutcomes);
+  const tierLabels = executions.map((item) => item.tier.label).join(", ");
+
+  if (reviewedFinalistOutcomes.length === 0) {
+    const finalTierReason = executions.at(-1)?.result.reason ?? "no_trade_today";
+    return {
+      finalNoTradeExplanation: `No confirmed setup survived across scanned tiers (${tierLabels}). ${finalTierReason}`,
+      reviewedFinalistOutcomes,
+      bestReviewedFinalistsAcrossTiers: [],
+      bestRejectedCandidates: [],
+      crossTierFinalistSummary: null,
+    };
+  }
+
+  const bestReviewedFinalists = selectBestReviewedFinalistsAcrossTiers(reviewedFinalistOutcomes);
+  const bestRejectedCandidates = bestReviewedFinalists.map((item) => ({
+    symbol: item.symbol,
+    tier: item.tier,
+    tierLabel: item.tierLabel,
+    rejectionReasons: item.confirmationFailureReasons,
+  }));
+  const reviewedTierLabels = [...new Set(bestReviewedFinalists.map((item) => item.tierLabel))];
+  const reviewedReasons = summarizeCrossTierRejectionReasons(bestReviewedFinalists);
+  const terminalTierReason = executions.at(-1)?.result.reason ?? null;
+  const terminalTierSuffix = terminalTierReason && !bestReviewedFinalists.some((item) => terminalTierReason.includes(item.symbol))
+    ? ` ${executions.at(-1)?.tier.label} also ended with: ${terminalTierReason}`
+    : "";
+  const crossTierFinalistSummary = `The closest reviewed candidates were ${bestReviewedFinalists.map((item) => `${item.symbol} (${item.tierLabel})`).join(", ")}, but each failed final confirmation due to ${reviewedReasons}.`;
+
+  return {
+    finalNoTradeExplanation: `No confirmed setup survived across scanned tiers (${tierLabels}). ${crossTierFinalistSummary}${terminalTierSuffix}`,
+    reviewedFinalistOutcomes,
+    bestReviewedFinalistsAcrossTiers: bestReviewedFinalists.map((item) => item.symbol),
+    bestRejectedCandidates,
+    crossTierFinalistSummary: `${crossTierFinalistSummary} Reviewed finalists came from ${reviewedTierLabels.join(", ")}.`,
+  };
 }
 
 function buildGenericNoTradeReason(stage3PassedCount: number, finalRankingCount: number, finalistsReviewedCount: number): string {
@@ -3100,6 +3251,7 @@ function combineTelemetry(
     },
   );
   const finalTelemetry = executions.at(-1)?.telemetry;
+  const reviewedFinalistOutcomes = executions.flatMap((item) => item.telemetry.reviewedFinalistOutcomes);
 
   return {
     stageCounts,
@@ -3119,6 +3271,15 @@ function combineTelemetry(
     tierFinalistsReviewed: Object.fromEntries(tierSummaries.map((summary) => [summary.tier, summary.finalistsReviewed])),
     cumulativeStageCounts: stageCounts,
     finalNoTradeExplanation,
+    reviewedFinalistOutcomes,
+    bestReviewedFinalistsAcrossTiers: finalTelemetry?.bestReviewedFinalistsAcrossTiers ?? reviewedFinalistOutcomes.map((item) => item.symbol),
+    bestRejectedCandidates: finalTelemetry?.bestRejectedCandidates ?? reviewedFinalistOutcomes.map((item) => ({
+      symbol: item.symbol,
+      tier: item.tier,
+      tierLabel: item.tierLabel,
+      rejectionReasons: item.confirmationFailureReasons,
+    })),
+    crossTierFinalistSummary: finalTelemetry?.crossTierFinalistSummary ?? null,
   };
 }
 
@@ -3455,17 +3616,19 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
     }
   }
 
-  const finalNoTradeExplanation = tierExecutions.length > 0
-    ? `No confirmed setup survived across scanned tiers (${tierExecutions.map((item) => item.tier.label).join(", ")}). Final outcome: ${tierExecutions.at(-1)?.result.reason ?? "no_trade_today"}`
-    : "No tiers were scanned.";
-  const combinedTelemetry = combineTelemetry(tierExecutions, null, null, finalNoTradeExplanation);
+  const crossTierNoTradeSummary = buildCrossTierNoTradeSummary(tierExecutions);
+  const combinedTelemetry = combineTelemetry(tierExecutions, null, null, crossTierNoTradeSummary.finalNoTradeExplanation);
+  combinedTelemetry.reviewedFinalistOutcomes = crossTierNoTradeSummary.reviewedFinalistOutcomes;
+  combinedTelemetry.bestReviewedFinalistsAcrossTiers = crossTierNoTradeSummary.bestReviewedFinalistsAcrossTiers;
+  combinedTelemetry.bestRejectedCandidates = crossTierNoTradeSummary.bestRejectedCandidates;
+  combinedTelemetry.crossTierFinalistSummary = crossTierNoTradeSummary.crossTierFinalistSummary;
 
   return {
     ticker: null,
     direction: null,
     confidence: null,
     conclusion: "no_trade_today",
-    reason: finalNoTradeExplanation,
+    reason: crossTierNoTradeSummary.finalNoTradeExplanation,
     telemetry: combinedTelemetry,
   };
 }
