@@ -1,8 +1,19 @@
-import { ALL_SCAN_UNIVERSE_SET, CORE_SCAN_UNIVERSE, SCAN_UNIVERSE_TIERS, type ScanUniverseTier, type ScanUniverseTierKey } from "../config/scanUniverseTiers.js";
-import { getFakeConfidence, type ScanConfidence, type ScanDirection } from "../scanner/scoring.js";
+import {
+  ALL_SCAN_UNIVERSE_SET,
+  CORE_SCAN_UNIVERSE,
+  SCAN_UNIVERSE_TIERS,
+  type ScanUniverseTier,
+  type ScanUniverseTierKey,
+} from "../config/scanUniverseTiers.js";
+import {
+  getFakeConfidence,
+  type ScanConfidence,
+  type ScanDirection,
+} from "../scanner/scoring.js";
 import { createTradeStationGetFetcher } from "../tradestation/client.js";
 import {
-  evaluateChartAnchoredTradability,
+  CHART_ANCHORED_TWO_TO_ONE_FAILURE,
+  evaluateChartAnchoredAsymmetryFromBars,
   MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
   MINIMUM_TRADABLE_RISK_REWARD_RATIO,
   PREFERRED_RISK_REWARD_RATIO,
@@ -30,7 +41,16 @@ type SymbolPromptMatch = {
   symbol: string;
 };
 
-const NON_TICKER_TOKENS = new Set(["FOR", "THIS", "WEEK", "FIND", "BULLISH", "SETUPS", "NEW", "RUN"]);
+const NON_TICKER_TOKENS = new Set([
+  "FOR",
+  "THIS",
+  "WEEK",
+  "FIND",
+  "BULLISH",
+  "SETUPS",
+  "NEW",
+  "RUN",
+]);
 
 type Stage1Candidate = {
   symbol: string;
@@ -50,7 +70,11 @@ type Stage2SymbolDiagnostic = {
   symbol: string;
   underlyingQuoteRequestTarget: string | null;
   underlyingQuoteStatus: number | null;
-  underlyingPriceFieldCandidates: { field: string; rawValue: string | number | null; parsedValue: number | null }[];
+  underlyingPriceFieldCandidates: {
+    field: string;
+    rawValue: string | number | null;
+    parsedValue: number | null;
+  }[];
   underlyingPriceFieldUsed: string | null;
   underlyingPrice: number | null;
   underlyingPriceFallback: string | null;
@@ -78,7 +102,11 @@ export type OptionStrikeCandidate = {
   putSymbol: string | null;
 };
 
-export type OptionExpirationCandidate = { date: string; dte: number; apiValue: string };
+export type OptionExpirationCandidate = {
+  date: string;
+  dte: number;
+  apiValue: string;
+};
 
 export type DirectOptionQuoteAttempt = {
   optionSymbol: string;
@@ -184,6 +212,30 @@ type Stage3Diagnostics = {
     insufficientRoomReason: string;
     preferred2R: boolean;
     minimumConfirmableRR: number;
+    invalidationLevel: number | null;
+    targetLevel: number | null;
+    invalidationReason: string | null;
+    targetReason: string | null;
+    riskDistance: number | null;
+    rewardDistance: number | null;
+    actualRewardRiskRatio: number | null;
+    actualRrTier: RiskRewardTier | "unknown";
+  };
+  chartAnchoredAsymmetry: {
+    referencePrice: number;
+    invalidationLevel: number | null;
+    targetLevel: number | null;
+    invalidationReason: string | null;
+    targetReason: string | null;
+    riskDistance: number | null;
+    rewardDistance: number | null;
+    actualRewardRiskRatio: number | null;
+    actualRrTier: RiskRewardTier | "unknown";
+    actualTradablePass: boolean;
+    failureReason: string | null;
+    stage3RoomPct: number | null;
+    asymmetryConsistencyFlag: boolean;
+    asymmetryConsistencyReason: string | null;
   };
   checks: Stage3CheckDiagnostic[];
 };
@@ -275,6 +327,18 @@ type FinalistReviewResult = {
     structureChecks: string;
     roomToTargetDecision: string;
   } | null;
+  asymmetryDebug: {
+    stage3ReferencePrice: number | null;
+    confirmationReferencePrice: number | null;
+    invalidationLevel: number | null;
+    targetLevel: number | null;
+    riskDistance: number | null;
+    rewardDistance: number | null;
+    actualRewardRiskRatio: number | null;
+    stage3RoomPct: number | null;
+    asymmetryConsistencyFlag: boolean;
+    asymmetryConsistencyReason: string | null;
+  } | null;
   conclusion: ScanResult["conclusion"];
   reason: string;
 };
@@ -286,6 +350,7 @@ type ConfirmationDebug = {
   continuationPass: boolean;
   higherTimeframeRoomPass: boolean;
   higherTimeframe2RPass: boolean;
+  actualTradableAsymmetryPass: boolean;
   supportsTradable2RStructure: boolean;
   rejectedBecauseConfidenceBelow75: boolean;
   weightedSoftIssueScore: number;
@@ -293,6 +358,16 @@ type ConfirmationDebug = {
   rrTier: RiskRewardTier | "unknown";
   preferred2R: boolean;
   minimumConfirmableRR: number;
+  stage3ReferencePrice: number | null;
+  confirmationReferencePrice: number | null;
+  invalidationLevel: number | null;
+  targetLevel: number | null;
+  riskDistance: number | null;
+  rewardDistance: number | null;
+  actualRewardRiskRatio: number | null;
+  stage3RoomPct: number | null;
+  asymmetryConsistencyFlag: boolean;
+  asymmetryConsistencyReason: string | null;
 };
 
 type SingleSymbolReviewResult = ScanResult & {
@@ -306,6 +381,7 @@ type ReviewedFinalistOutcome = {
   direction: ScanDirection | null;
   confidence: ScanConfidence | null;
   confirmationFailureReasons: string[];
+  asymmetryDebug: FinalistReviewResult["asymmetryDebug"];
   rankingScore: number;
   conclusion: ScanResult["conclusion"];
   reason: string;
@@ -318,7 +394,6 @@ type NormalizedRejectionFamily =
   | "impulse_hold_quality_issue"
   | "distribution_risk"
   | "other";
-
 
 type EarningsCheckResult = {
   symbol: string;
@@ -395,7 +470,9 @@ export type StarterUniverseTelemetry = {
   scannedTiers: ScanUniverseTierKey[];
   winningTier: ScanUniverseTierKey | null;
   tierSummaries: TierSummary[];
-  tierStageCounts: Partial<Record<ScanUniverseTierKey, StarterUniverseStageCounts>>;
+  tierStageCounts: Partial<
+    Record<ScanUniverseTierKey, StarterUniverseStageCounts>
+  >;
   tierFinalistsReviewed: Partial<Record<ScanUniverseTierKey, string[]>>;
   cumulativeStageCounts: StarterUniverseStageCounts;
   finalNoTradeExplanation: string | null;
@@ -452,9 +529,12 @@ function buildStarterUniverseTelemetry(params: {
   } = params;
   const finalRankingDebugWithOutcome = finalRankingDebug.map((item) => ({
     ...item,
-    confirmedFinalSelection: selectedSymbol !== null && item.symbol === selectedSymbol,
+    confirmedFinalSelection:
+      selectedSymbol !== null && item.symbol === selectedSymbol,
   }));
-  const stage3Passed = stage3Evaluations.flatMap((item) => (item.candidate ? [item.candidate] : []));
+  const stage3Passed = stage3Evaluations.flatMap((item) =>
+    item.candidate ? [item.candidate] : [],
+  );
   const stage3NearMissCandidates: Stage3NearMiss[] = [];
 
   for (const evaluation of stage3Evaluations) {
@@ -483,38 +563,60 @@ function buildStarterUniverseTelemetry(params: {
   const stage2Set = new Set(stage2Passed.map((candidate) => candidate.symbol));
   const stage3Set = new Set(stage3Passed.map((candidate) => candidate.symbol));
   const rankingSet = new Set(ranked.map((candidate) => candidate.symbol));
-  const continuationEligibleSet = new Set(finalistReviewSource.continuationEligibleFinalists.map((candidate) => candidate.symbol));
-  const confirmationEligibleSet = new Set(finalistReviewSource.confirmationEligibleFinalists.map((candidate) => candidate.symbol));
-  const finalistsSet = new Set(finalistReviewSource.finalists.map((candidate) => candidate.symbol));
+  const continuationEligibleSet = new Set(
+    finalistReviewSource.continuationEligibleFinalists.map(
+      (candidate) => candidate.symbol,
+    ),
+  );
+  const confirmationEligibleSet = new Set(
+    finalistReviewSource.confirmationEligibleFinalists.map(
+      (candidate) => candidate.symbol,
+    ),
+  );
+  const finalistsSet = new Set(
+    finalistReviewSource.finalists.map((candidate) => candidate.symbol),
+  );
 
   for (const symbol of stage2Set) {
     if (!stage1Set.has(symbol)) {
-      listConsistencyWarnings.push(`Stage 2 passed symbol ${symbol} is missing from Stage 1 passed list.`);
+      listConsistencyWarnings.push(
+        `Stage 2 passed symbol ${symbol} is missing from Stage 1 passed list.`,
+      );
     }
   }
   for (const symbol of stage3Set) {
     if (!stage2Set.has(symbol)) {
-      listConsistencyWarnings.push(`Stage 3 passed symbol ${symbol} is missing from Stage 2 passed list.`);
+      listConsistencyWarnings.push(
+        `Stage 3 passed symbol ${symbol} is missing from Stage 2 passed list.`,
+      );
     }
   }
   for (const symbol of rankingSet) {
     if (!stage3Set.has(symbol)) {
-      listConsistencyWarnings.push(`Final ranking symbol ${symbol} is missing from Stage 3 passed list.`);
+      listConsistencyWarnings.push(
+        `Final ranking symbol ${symbol} is missing from Stage 3 passed list.`,
+      );
     }
   }
   for (const symbol of continuationEligibleSet) {
     if (!rankingSet.has(symbol)) {
-      listConsistencyWarnings.push(`Continuation-eligible finalist ${symbol} is missing from final ranking list.`);
+      listConsistencyWarnings.push(
+        `Continuation-eligible finalist ${symbol} is missing from final ranking list.`,
+      );
     }
   }
   for (const symbol of confirmationEligibleSet) {
     if (!rankingSet.has(symbol)) {
-      listConsistencyWarnings.push(`Confirmation-eligible finalist ${symbol} is missing from final ranking list.`);
+      listConsistencyWarnings.push(
+        `Confirmation-eligible finalist ${symbol} is missing from final ranking list.`,
+      );
     }
   }
   for (const symbol of finalistsSet) {
     if (!rankingSet.has(symbol)) {
-      listConsistencyWarnings.push(`Finalists reviewed symbol ${symbol} is missing from final ranking list.`);
+      listConsistencyWarnings.push(
+        `Finalists reviewed symbol ${symbol} is missing from final ranking list.`,
+      );
     }
   }
 
@@ -540,9 +642,14 @@ function buildStarterUniverseTelemetry(params: {
     stage1Passed: stage1Passed.length,
     stage2Passed: stage2Passed.length,
     stage3Passed: stage3Passed.length,
-    continuationEligibleFinalists: finalistReviewSource.continuationEligibleFinalists.length,
-    confirmationEligibleFinalists: finalistReviewSource.confirmationEligibleFinalists.length,
-    finalistsReviewed: finalistReviewResults.length > 0 ? finalistReviewResults.length : finalistReviewSource.finalists.length,
+    continuationEligibleFinalists:
+      finalistReviewSource.continuationEligibleFinalists.length,
+    confirmationEligibleFinalists:
+      finalistReviewSource.confirmationEligibleFinalists.length,
+    finalistsReviewed:
+      finalistReviewResults.length > 0
+        ? finalistReviewResults.length
+        : finalistReviewSource.finalists.length,
     finalRanking: ranked.length,
   };
   const stageSymbols: StarterUniverseStageSymbols = {
@@ -550,39 +657,61 @@ function buildStarterUniverseTelemetry(params: {
     stage1Passed: stage1Passed.map((candidate) => candidate.symbol),
     stage2Passed: stage2Passed.map((candidate) => candidate.symbol),
     stage3Passed: stage3Passed.map((candidate) => candidate.symbol),
-    continuationEligibleFinalists: finalistReviewSource.continuationEligibleFinalists.map((candidate) => candidate.symbol),
-    confirmationEligibleFinalists: finalistReviewSource.confirmationEligibleFinalists.map((candidate) => candidate.symbol),
-    finalistsReviewed: finalistReviewResults.length > 0 ? finalistReviewResults.map((item) => item.symbol) : finalistReviewSource.finalists.map((candidate) => candidate.symbol),
+    continuationEligibleFinalists:
+      finalistReviewSource.continuationEligibleFinalists.map(
+        (candidate) => candidate.symbol,
+      ),
+    confirmationEligibleFinalists:
+      finalistReviewSource.confirmationEligibleFinalists.map(
+        (candidate) => candidate.symbol,
+      ),
+    finalistsReviewed:
+      finalistReviewResults.length > 0
+        ? finalistReviewResults.map((item) => item.symbol)
+        : finalistReviewSource.finalists.map((candidate) => candidate.symbol),
     finalRanking: ranked.map((candidate) => candidate.symbol),
   };
   const fallbackTier = scannedTiers[0] ?? "tier1";
-  const resolvedTierSummaries: TierSummary[] = tierSummaries.length > 0
-    ? tierSummaries
-    : [{
-        tier: fallbackTier,
-        label: getTierLabelForKey(fallbackTier),
-        description: "Current core universe of liquid optionable leaders and key ETFs.",
-        counts: stageCounts,
-        symbols: stageSymbols,
-        finalistsReviewed: stageSymbols.finalistsReviewed,
-        concludedWith: selectedSymbol ? "confirmed" : "no_trade_today",
-        winner: selectedSymbol,
-        noTradeReason: selectedSymbol ? null : noTradeReason.reason,
-      }];
-  const tierStageCounts = Object.fromEntries(resolvedTierSummaries.map((summary) => [summary.tier, summary.counts]));
-  const tierFinalistsReviewed = Object.fromEntries(resolvedTierSummaries.map((summary) => [summary.tier, summary.finalistsReviewed]));
+  const resolvedTierSummaries: TierSummary[] =
+    tierSummaries.length > 0
+      ? tierSummaries
+      : [
+          {
+            tier: fallbackTier,
+            label: getTierLabelForKey(fallbackTier),
+            description:
+              "Current core universe of liquid optionable leaders and key ETFs.",
+            counts: stageCounts,
+            symbols: stageSymbols,
+            finalistsReviewed: stageSymbols.finalistsReviewed,
+            concludedWith: selectedSymbol ? "confirmed" : "no_trade_today",
+            winner: selectedSymbol,
+            noTradeReason: selectedSymbol ? null : noTradeReason.reason,
+          },
+        ];
+  const tierStageCounts = Object.fromEntries(
+    resolvedTierSummaries.map((summary) => [summary.tier, summary.counts]),
+  );
+  const tierFinalistsReviewed = Object.fromEntries(
+    resolvedTierSummaries.map((summary) => [
+      summary.tier,
+      summary.finalistsReviewed,
+    ]),
+  );
   const tierSummary = resolvedTierSummaries[0];
-  const reviewedFinalistOutcomes: ReviewedFinalistOutcome[] = finalistReviewResults.map((item) => ({
-    symbol: item.symbol,
-    tier: tierSummary?.tier ?? scannedTiers[0] ?? "tier1",
-    tierLabel: tierSummary?.label ?? "Tier 1",
-    direction: item.direction,
-    confidence: item.confidence,
-    confirmationFailureReasons: item.confirmationFailureReasons,
-    rankingScore: item.rankingScore,
-    conclusion: item.conclusion,
-    reason: item.reason,
-  }));
+  const reviewedFinalistOutcomes: ReviewedFinalistOutcome[] =
+    finalistReviewResults.map((item) => ({
+      symbol: item.symbol,
+      tier: tierSummary?.tier ?? scannedTiers[0] ?? "tier1",
+      tierLabel: tierSummary?.label ?? "Tier 1",
+      direction: item.direction,
+      confidence: item.confidence,
+      confirmationFailureReasons: item.confirmationFailureReasons,
+      asymmetryDebug: item.asymmetryDebug,
+      rankingScore: item.rankingScore,
+      conclusion: item.conclusion,
+      reason: item.reason,
+    }));
 
   return {
     stageCounts,
@@ -598,7 +727,11 @@ function buildStarterUniverseTelemetry(params: {
     finalRankingDebug: finalRankingDebugWithOutcome,
     rejectionSummaries,
     nearMisses,
-    consistencyChecks: [...finalistReviewSource.warnings, ...listConsistencyWarnings, ...noTradeReason.symbolConsistencyWarnings],
+    consistencyChecks: [
+      ...finalistReviewSource.warnings,
+      ...listConsistencyWarnings,
+      ...noTradeReason.symbolConsistencyWarnings,
+    ],
     finalSelectedSymbol: selectedSymbol,
     topRankedSymbol: ranked[0]?.symbol ?? null,
     scannedTiers,
@@ -609,16 +742,19 @@ function buildStarterUniverseTelemetry(params: {
     cumulativeStageCounts: stageCounts,
     finalNoTradeExplanation,
     reviewedFinalistOutcomes,
-    bestReviewedFinalistsAcrossTiers: reviewedFinalistOutcomes.map((item) => item.symbol),
+    bestReviewedFinalistsAcrossTiers: reviewedFinalistOutcomes.map(
+      (item) => item.symbol,
+    ),
     bestRejectedCandidates: reviewedFinalistOutcomes.map((item) => ({
       symbol: item.symbol,
       tier: item.tier,
       tierLabel: item.tierLabel,
       rejectionReasons: item.confirmationFailureReasons,
     })),
-    crossTierFinalistSummary: reviewedFinalistOutcomes.length > 0
-      ? buildFinalistNoTradeReasonPath(finalistReviewResults)
-      : null,
+    crossTierFinalistSummary:
+      reviewedFinalistOutcomes.length > 0
+        ? buildFinalistNoTradeReasonPath(finalistReviewResults)
+        : null,
   };
 }
 
@@ -627,8 +763,13 @@ function buildFinalistReviewSource(
   stage2PassedSymbols: string[],
   stage3PassedSymbols: string[],
 ): FinalistReviewSource {
-  const continuationEligibleFinalists = ranked.filter((candidate) => getStage3CheckPass(candidate, "continuation"));
-  const confirmationEligibleFinalists = continuationEligibleFinalists.filter((candidate) => getStage3CheckPass(candidate, "higher-timeframe-2r-viability"));
+  const continuationEligibleFinalists = ranked.filter((candidate) =>
+    getStage3CheckPass(candidate, "continuation"),
+  );
+  const confirmationEligibleFinalists = continuationEligibleFinalists.filter(
+    (candidate) =>
+      getStage3CheckPass(candidate, "higher-timeframe-2r-viability"),
+  );
   const finalists = confirmationEligibleFinalists;
   const stage2Set = new Set(stage2PassedSymbols);
   const stage3Set = new Set(stage3PassedSymbols);
@@ -638,11 +779,12 @@ function buildFinalistReviewSource(
   for (const finalist of ranked) {
     const inStage2Passed = stage2Set.has(finalist.symbol);
     const inStage3Passed = stage3Set.has(finalist.symbol);
-    const sourceList: "stage3Passed" | "stage2PassedOnly" | "missingUpstream" = inStage3Passed
-      ? "stage3Passed"
-      : inStage2Passed
-      ? "stage2PassedOnly"
-      : "missingUpstream";
+    const sourceList: "stage3Passed" | "stage2PassedOnly" | "missingUpstream" =
+      inStage3Passed
+        ? "stage3Passed"
+        : inStage2Passed
+          ? "stage2PassedOnly"
+          : "missingUpstream";
 
     const upstreamConsistencyOk = inStage3Passed;
     const upstreamConsistencyWarning = upstreamConsistencyOk
@@ -657,8 +799,8 @@ function buildFinalistReviewSource(
       eligibleForReviewReason: !getStage3CheckPass(finalist, "continuation")
         ? `Stage 3 pass-through candidate excluded from deterministic confirmation review because continuationPass=false (${finalist.score.toFixed(2)}).`
         : getStage3CheckPass(finalist, "higher-timeframe-2r-viability")
-        ? `Stage 3 continuation-pass finalist eligible for deterministic confirmation review because higher-timeframe-2r-viability=true (${finalist.score.toFixed(2)}).`
-        : `Stage 3 continuation-pass finalist excluded from deterministic confirmation review because higher-timeframe-2r-viability=false (${finalist.score.toFixed(2)}).`,
+          ? `Stage 3 continuation-pass finalist eligible for deterministic confirmation review because higher-timeframe-2r-viability=true (${finalist.score.toFixed(2)}).`
+          : `Stage 3 continuation-pass finalist excluded from deterministic confirmation review because higher-timeframe-2r-viability=false (${finalist.score.toFixed(2)}).`,
       sourceList,
       inStage2Passed,
       inStage3Passed,
@@ -667,10 +809,19 @@ function buildFinalistReviewSource(
     });
   }
 
-  return { continuationEligibleFinalists, confirmationEligibleFinalists, finalists, debug, warnings };
+  return {
+    continuationEligibleFinalists,
+    confirmationEligibleFinalists,
+    finalists,
+    debug,
+    warnings,
+  };
 }
 
-function buildFinalRanking(stage3Passed: ChartCandidate[]): { ranked: (ChartCandidate & { score: number })[]; debug: FinalRankingEntry[] } {
+function buildFinalRanking(stage3Passed: ChartCandidate[]): {
+  ranked: (ChartCandidate & { score: number })[];
+  debug: FinalRankingEntry[];
+} {
   const debug = stage3Passed.map((candidate) => {
     const computedScore = scoreStage3Candidate(candidate);
     const score = Number.isFinite(computedScore) ? computedScore : null;
@@ -716,7 +867,11 @@ function buildFinalRanking(stage3Passed: ChartCandidate[]): { ranked: (ChartCand
   });
 
   const ranked = stage3Passed
-    .map((candidate, idx) => ({ ...candidate, score: scoreStage3Candidate(candidate), stableIdx: idx }))
+    .map((candidate, idx) => ({
+      ...candidate,
+      score: scoreStage3Candidate(candidate),
+      stableIdx: idx,
+    }))
     .filter((candidate) => Number.isFinite(candidate.score))
     .sort((a, b) => compareRankedFinalists(a, b))
     .map(({ stableIdx, ...candidate }) => candidate);
@@ -816,13 +971,20 @@ function logStage3PassThroughDebugSection(
     return;
   }
 
-  const finalRankingBySymbol = new Map(finalRankingDebug.map((item) => [item.symbol, item]));
-  const thresholdLabel = rankingThreshold === null ? "n/a" : rankingThreshold.toFixed(2);
+  const finalRankingBySymbol = new Map(
+    finalRankingDebug.map((item) => [item.symbol, item]),
+  );
+  const thresholdLabel =
+    rankingThreshold === null ? "n/a" : rankingThreshold.toFixed(2);
   for (const candidate of passCandidates) {
     const rankingEntry = finalRankingBySymbol.get(candidate.symbol);
     const enteredFinalRanking = rankingEntry?.enteredFinalRanking ?? false;
-    const topRankedCandidate = rankingEntry?.topRankedCandidate ?? rankingEntry?.selected ?? false;
-    const rankingScore = rankingEntry?.score === null || rankingEntry?.score === undefined ? "n/a" : rankingEntry.score.toFixed(2);
+    const topRankedCandidate =
+      rankingEntry?.topRankedCandidate ?? rankingEntry?.selected ?? false;
+    const rankingScore =
+      rankingEntry?.score === null || rankingEntry?.score === undefined
+        ? "n/a"
+        : rankingEntry.score.toFixed(2);
     const reason = rankingEntry?.reason ?? "not evaluated in final ranking";
 
     console.log(
@@ -831,7 +993,10 @@ function logStage3PassThroughDebugSection(
   }
 }
 
-function logFinalistReviewDebugSection(finalists: FinalistReviewResult[], selectedSymbol: string | null): void {
+function logFinalistReviewDebugSection(
+  finalists: FinalistReviewResult[],
+  selectedSymbol: string | null,
+): void {
   if (process.env.SCANNER_DEBUG !== "1") {
     return;
   }
@@ -843,14 +1008,20 @@ function logFinalistReviewDebugSection(finalists: FinalistReviewResult[], select
   }
 
   for (const finalist of finalists) {
-    const selected = selectedSymbol !== null && finalist.symbol === selectedSymbol ? "yes" : "no";
+    const selected =
+      selectedSymbol !== null && finalist.symbol === selectedSymbol
+        ? "yes"
+        : "no";
     const stageInputs = {
       stage1: finalist.stage1Inputs,
       stage2: finalist.stage2Inputs,
       stage3: finalist.stage3Inputs,
     };
     const roomDetails = finalist.stage3Inputs?.roomToTargetDecision ?? "n/a";
-    const failureReasons = finalist.confirmationFailureReasons.length > 0 ? finalist.confirmationFailureReasons.join("; ") : "none";
+    const failureReasons =
+      finalist.confirmationFailureReasons.length > 0
+        ? finalist.confirmationFailureReasons.join("; ")
+        : "none";
     console.log(
       `[scanner:debug] ${finalist.symbol}: dir=${finalist.direction ?? "n/a"} | status=${finalist.reviewStatus}/${finalist.confirmationStatus} | confidence=${finalist.confidence ?? "n/a"} | failureReasons=${failureReasons} | rankingScore=${finalist.rankingScore.toFixed(2)} | reviewConclusion=${finalist.conclusion} | selected=${selected} | room2R=${roomDetails} | reviewReason=${finalist.reason} | inputs=${JSON.stringify(stageInputs)}`,
     );
@@ -870,10 +1041,28 @@ function formatFinalistReasonList(reasons: string[]): string {
 }
 
 function getTierLabelForKey(tierKey: ScanUniverseTierKey): string {
-  return SCAN_UNIVERSE_TIERS.find((tier) => tier.key === tierKey)?.label ?? tierKey;
+  return (
+    SCAN_UNIVERSE_TIERS.find((tier) => tier.key === tierKey)?.label ?? tierKey
+  );
 }
 
-function buildFinalistNoTradeReasonPath(finalists: FinalistReviewResult[]): string {
+function buildFinalistNoTradeReasonPath(
+  finalists: FinalistReviewResult[],
+): string {
+  const sharedBlockerSummary = summarizeCrossTierRejectionReasons(
+    finalists.map((item) => ({
+      symbol: item.symbol,
+      tier: "tier1",
+      tierLabel: "Current tier",
+      direction: item.direction,
+      confidence: item.confidence,
+      confirmationFailureReasons: item.confirmationFailureReasons,
+      asymmetryDebug: item.asymmetryDebug,
+      rankingScore: item.rankingScore,
+      conclusion: item.conclusion,
+      reason: item.reason,
+    })),
+  );
   const reviewed = finalists
     .map(
       (item) =>
@@ -882,35 +1071,64 @@ function buildFinalistNoTradeReasonPath(finalists: FinalistReviewResult[]): stri
     .join("; ");
 
   const narrative = finalists
-    .map((item) => `${item.symbol} was shortlisted but failed final confirmation due to ${formatFinalistReasonList(item.confirmationFailureReasons)}.`)
+    .map(
+      (item) =>
+        `${item.symbol} was shortlisted but failed final confirmation due to ${formatFinalistReasonList(item.confirmationFailureReasons)}.`,
+    )
     .join(" ");
 
-  return `Ranked finalists were reviewed in deterministic order and all were rejected (${finalists.map((item) => item.symbol).join(", ")}). Reason path: ${narrative} Finalist outcomes: ${reviewed}.`;
+  return `Ranked finalists were reviewed in deterministic order and all were rejected (${finalists.map((item) => item.symbol).join(", ")}). Headline blocker: ${sharedBlockerSummary} Reason path: ${narrative} Finalist outcomes: ${reviewed}.`;
 }
 
-function normalizeConfirmationFailureReason(reason: string): NormalizedRejectionFamily {
+function normalizeConfirmationFailureReason(
+  reason: string,
+): NormalizedRejectionFamily {
   const normalized = reason.toLowerCase();
 
-  if (normalized.includes("clean 2:1 structure missing") || normalized.includes("chart-anchored levels do not support a clean 2:1 structure")) {
+  if (
+    normalized.includes("clean 2:1 structure missing") ||
+    normalized.includes(
+      "chart-anchored levels do not support a clean 2:1 structure",
+    ) ||
+    normalized.includes(CHART_ANCHORED_TWO_TO_ONE_FAILURE.toLowerCase()) ||
+    normalized.includes("actual chart-anchored asymmetry") ||
+    normalized.includes("actual reward:risk collapsed")
+  ) {
     return "chart_anchored_2r_failure";
   }
   if (normalized.includes("weak expansion")) {
     return "weak_expansion";
   }
-  if (normalized.includes("weak volume") || normalized.includes("volume caution") || normalized.includes("volume /")) {
+  if (
+    normalized.includes("weak volume") ||
+    normalized.includes("volume caution") ||
+    normalized.includes("volume /")
+  ) {
     return "weak_volume";
   }
-  if (normalized.includes("impulse/hold quality issue") || normalized.includes("impulse plus consolidation structure is not clean enough") || normalized.includes("impulse")) {
+  if (
+    normalized.includes("impulse/hold quality issue") ||
+    normalized.includes(
+      "impulse plus consolidation structure is not clean enough",
+    ) ||
+    normalized.includes("impulse")
+  ) {
     return "impulse_hold_quality_issue";
   }
-  if (normalized.includes("distribution risk") || normalized.includes("distribution weakness") || normalized.includes("distribution")) {
+  if (
+    normalized.includes("distribution risk") ||
+    normalized.includes("distribution weakness") ||
+    normalized.includes("distribution")
+  ) {
     return "distribution_risk";
   }
 
   return "other";
 }
 
-function describeNormalizedRejectionFamily(family: NormalizedRejectionFamily): string {
+function describeNormalizedRejectionFamily(
+  family: NormalizedRejectionFamily,
+): string {
   switch (family) {
     case "chart_anchored_2r_failure":
       return "failure to support a clean chart-anchored 2:1 structure";
@@ -937,13 +1155,17 @@ function joinWithAnd(parts: string[]): string {
   return `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}`;
 }
 
-function summarizeCrossTierRejectionReasons(finalists: ReviewedFinalistOutcome[]): string {
+function summarizeCrossTierRejectionReasons(
+  finalists: ReviewedFinalistOutcome[],
+): string {
   const familyCounts = new Map<NormalizedRejectionFamily, number>();
   const familySymbols = new Map<NormalizedRejectionFamily, Set<string>>();
 
   for (const finalist of finalists) {
     const families = new Set<NormalizedRejectionFamily>(
-      finalist.confirmationFailureReasons.map((reason) => normalizeConfirmationFailureReason(reason)),
+      finalist.confirmationFailureReasons.map((reason) =>
+        normalizeConfirmationFailureReason(reason),
+      ),
     );
 
     for (const family of families) {
@@ -974,25 +1196,40 @@ function summarizeCrossTierRejectionReasons(finalists: ReviewedFinalistOutcome[]
     ? `The main shared blocker was ${describeNormalizedRejectionFamily(primaryFamily[0])}.`
     : null;
 
-  const secondaryFamilies = rankedFamilies.slice(1).filter(([, count]) => count >= Math.max(2, finalists.length - 1));
-  const secondaryClause = secondaryFamilies.length > 0
-    ? `${joinWithAnd(secondaryFamilies.map(([family]) => describeNormalizedRejectionFamily(family)))} ${secondaryFamilies.length === 1 ? "was" : "were"} also common across most reviewed candidates.`
-    : null;
+  const secondaryFamilies = rankedFamilies
+    .slice(1)
+    .filter(([, count]) => count >= Math.max(2, finalists.length - 1));
+  const secondaryClause =
+    secondaryFamilies.length > 0
+      ? `${joinWithAnd(secondaryFamilies.map(([family]) => describeNormalizedRejectionFamily(family)))} ${secondaryFamilies.length === 1 ? "was" : "were"} also common across most reviewed candidates.`
+      : null;
 
   const uniqueOutliers = finalists
     .map((finalist) => {
-      const families = [...new Set(finalist.confirmationFailureReasons.map((reason) => normalizeConfirmationFailureReason(reason)))].filter((family) => family !== "other");
-      const uniqueFamilies = families.filter((family) => (familySymbols.get(family)?.size ?? 0) === 1);
+      const families = [
+        ...new Set(
+          finalist.confirmationFailureReasons.map((reason) =>
+            normalizeConfirmationFailureReason(reason),
+          ),
+        ),
+      ].filter((family) => family !== "other");
+      const uniqueFamilies = families.filter(
+        (family) => (familySymbols.get(family)?.size ?? 0) === 1,
+      );
       return uniqueFamilies.length > 0
         ? `${finalist.symbol} additionally showed ${joinWithAnd(uniqueFamilies.map((family) => describeNormalizedRejectionFamily(family)))}.`
         : null;
     })
     .filter((value): value is string => value !== null);
 
-  return [primaryClause, secondaryClause, ...uniqueOutliers].filter((value): value is string => !!value).join(" ");
+  return [primaryClause, secondaryClause, ...uniqueOutliers]
+    .filter((value): value is string => !!value)
+    .join(" ");
 }
 
-function selectBestReviewedFinalistsAcrossTiers(finalists: ReviewedFinalistOutcome[]): ReviewedFinalistOutcome[] {
+function selectBestReviewedFinalistsAcrossTiers(
+  finalists: ReviewedFinalistOutcome[],
+): ReviewedFinalistOutcome[] {
   const bestBySymbol = new Map<string, ReviewedFinalistOutcome>();
 
   for (const finalist of finalists) {
@@ -1004,7 +1241,9 @@ function selectBestReviewedFinalistsAcrossTiers(finalists: ReviewedFinalistOutco
 
   return [...bestBySymbol.values()]
     .sort((a, b) => {
-      const tierDelta = SCAN_UNIVERSE_TIERS.findIndex((tier) => tier.key === a.tier) - SCAN_UNIVERSE_TIERS.findIndex((tier) => tier.key === b.tier);
+      const tierDelta =
+        SCAN_UNIVERSE_TIERS.findIndex((tier) => tier.key === a.tier) -
+        SCAN_UNIVERSE_TIERS.findIndex((tier) => tier.key === b.tier);
       if (tierDelta !== 0) {
         return tierDelta;
       }
@@ -1036,11 +1275,14 @@ function buildCrossTierNoTradeSummary(executions: TierScanExecution[]): {
     };
   }
 
-  const reviewedFinalistOutcomes = executions.flatMap((item) => item.telemetry.reviewedFinalistOutcomes);
+  const reviewedFinalistOutcomes = executions.flatMap(
+    (item) => item.telemetry.reviewedFinalistOutcomes,
+  );
   const tierLabels = executions.map((item) => item.tier.label).join(", ");
 
   if (reviewedFinalistOutcomes.length === 0) {
-    const finalTierReason = executions.at(-1)?.result.reason ?? "no_trade_today";
+    const finalTierReason =
+      executions.at(-1)?.result.reason ?? "no_trade_today";
     return {
       finalNoTradeExplanation: `No confirmed setup survived across scanned tiers (${tierLabels}). ${finalTierReason}`,
       reviewedFinalistOutcomes,
@@ -1050,32 +1292,52 @@ function buildCrossTierNoTradeSummary(executions: TierScanExecution[]): {
     };
   }
 
-  const bestReviewedFinalists = selectBestReviewedFinalistsAcrossTiers(reviewedFinalistOutcomes);
+  const bestReviewedFinalists = selectBestReviewedFinalistsAcrossTiers(
+    reviewedFinalistOutcomes,
+  );
   const bestRejectedCandidates = bestReviewedFinalists.map((item) => ({
     symbol: item.symbol,
     tier: item.tier,
     tierLabel: item.tierLabel,
     rejectionReasons: item.confirmationFailureReasons,
   }));
-  const reviewedTierLabels = [...new Set(bestReviewedFinalists.map((item) => item.tierLabel))];
-  const reviewedReasons = summarizeCrossTierRejectionReasons(bestReviewedFinalists);
+  const reviewedTierLabels = [
+    ...new Set(bestReviewedFinalists.map((item) => item.tierLabel)),
+  ];
+  const reviewedReasons = summarizeCrossTierRejectionReasons(
+    bestReviewedFinalists,
+  );
   const terminalTierReason = executions.at(-1)?.result.reason ?? null;
-  const terminalTierSuffix = terminalTierReason && !bestReviewedFinalists.some((item) => terminalTierReason.includes(item.symbol))
-    ? ` ${executions.at(-1)?.tier.label} also ended with: ${terminalTierReason}`
-    : "";
+  const terminalTierSuffix =
+    terminalTierReason &&
+    !bestReviewedFinalists.some((item) =>
+      terminalTierReason.includes(item.symbol),
+    )
+      ? ` ${executions.at(-1)?.tier.label} also ended with: ${terminalTierReason}`
+      : "";
   const crossTierFinalistSummary = `The closest reviewed candidates were ${bestReviewedFinalists.map((item) => `${item.symbol} (${item.tierLabel})`).join(", ")}. ${reviewedReasons}`;
 
   return {
     finalNoTradeExplanation: `No confirmed setup survived across scanned tiers (${tierLabels}). ${crossTierFinalistSummary}${terminalTierSuffix}`,
     reviewedFinalistOutcomes,
-    bestReviewedFinalistsAcrossTiers: bestReviewedFinalists.map((item) => item.symbol),
+    bestReviewedFinalistsAcrossTiers: bestReviewedFinalists.map(
+      (item) => item.symbol,
+    ),
     bestRejectedCandidates,
     crossTierFinalistSummary: `${crossTierFinalistSummary} Reviewed finalists came from ${reviewedTierLabels.join(", ")}.`,
   };
 }
 
-function buildGenericNoTradeReason(stage3PassedCount: number, finalRankingCount: number, finalistsReviewedCount: number): string {
-  if (stage3PassedCount === 0 && finalRankingCount === 0 && finalistsReviewedCount === 0) {
+function buildGenericNoTradeReason(
+  stage3PassedCount: number,
+  finalRankingCount: number,
+  finalistsReviewedCount: number,
+): string {
+  if (
+    stage3PassedCount === 0 &&
+    finalRankingCount === 0 &&
+    finalistsReviewedCount === 0
+  ) {
     return "No ranked finalists existed because no symbols passed Stage 3 chart/bar review.";
   }
 
@@ -1096,11 +1358,17 @@ function collectMentionedUniverseSymbols(reason: string): string[] {
   return [...new Set(mentioned.filter((symbol) => universe.has(symbol)))];
 }
 
-function getReasonSymbolConsistencyWarnings(reason: string, approvedSymbols: Set<string>): string[] {
+function getReasonSymbolConsistencyWarnings(
+  reason: string,
+  approvedSymbols: Set<string>,
+): string[] {
   const mentionedSymbols = collectMentionedUniverseSymbols(reason);
   return mentionedSymbols
     .filter((symbol) => !approvedSymbols.has(symbol))
-    .map((symbol) => `scan.reason mentions symbol ${symbol} that is absent from finalistsReviewed/stage3Passed source-of-truth lists.`);
+    .map(
+      (symbol) =>
+        `scan.reason mentions symbol ${symbol} that is absent from finalistsReviewed/stage3Passed source-of-truth lists.`,
+    );
 }
 
 function buildConsistentNoTradeReason(
@@ -1108,14 +1376,25 @@ function buildConsistentNoTradeReason(
   stage3PassedSymbols: string[],
   finalRankingSymbols: string[],
 ): { reason: string; symbolConsistencyWarnings: string[] } {
-  const fallbackReason = buildGenericNoTradeReason(stage3PassedSymbols.length, finalRankingSymbols.length, finalists.length);
+  const fallbackReason = buildGenericNoTradeReason(
+    stage3PassedSymbols.length,
+    finalRankingSymbols.length,
+    finalists.length,
+  );
   if (finalists.length === 0) {
     return { reason: fallbackReason, symbolConsistencyWarnings: [] };
   }
 
   const detailedReason = buildFinalistNoTradeReasonPath(finalists);
-  const approvedSymbols = new Set([...stage3PassedSymbols, ...finalRankingSymbols, ...finalists.map((item) => item.symbol)]);
-  const symbolConsistencyWarnings = getReasonSymbolConsistencyWarnings(detailedReason, approvedSymbols);
+  const approvedSymbols = new Set([
+    ...stage3PassedSymbols,
+    ...finalRankingSymbols,
+    ...finalists.map((item) => item.symbol),
+  ]);
+  const symbolConsistencyWarnings = getReasonSymbolConsistencyWarnings(
+    detailedReason,
+    approvedSymbols,
+  );
   if (symbolConsistencyWarnings.length > 0) {
     return { reason: fallbackReason, symbolConsistencyWarnings };
   }
@@ -1123,15 +1402,23 @@ function buildConsistentNoTradeReason(
   return { reason: detailedReason, symbolConsistencyWarnings: [] };
 }
 
-function getSelectionWhyWonReason(finalists: FinalistReviewResult[], selectedSymbol: string): string {
-  const selectedFinalist = finalists.find((item) => item.symbol === selectedSymbol);
+function getSelectionWhyWonReason(
+  finalists: FinalistReviewResult[],
+  selectedSymbol: string,
+): string {
+  const selectedFinalist = finalists.find(
+    (item) => item.symbol === selectedSymbol,
+  );
   if (!selectedFinalist) {
     return `${selectedSymbol} was the first confirmed finalist in deterministic ranked order.`;
   }
 
   const outranked = finalists
     .filter((item) => item.symbol !== selectedSymbol)
-    .map((item) => `${item.symbol} (${item.conclusion}, rank ${item.rankingScore.toFixed(2)})`)
+    .map(
+      (item) =>
+        `${item.symbol} (${item.conclusion}, rank ${item.rankingScore.toFixed(2)})`,
+    )
     .join("; ");
 
   if (!outranked) {
@@ -1148,7 +1435,8 @@ async function evaluateStage3Candidates(
   const evaluations: Stage3Evaluation[] = [];
 
   for (const candidate of stage2Passed) {
-    const { barsByView: multiTimeframeBars, timeframeDiagnostics } = await loadMultiTimeframeBars(get, candidate.symbol);
+    const { barsByView: multiTimeframeBars, timeframeDiagnostics } =
+      await loadMultiTimeframeBars(get, candidate.symbol);
     if (!multiTimeframeBars) {
       evaluations.push({
         symbol: candidate.symbol,
@@ -1158,13 +1446,20 @@ async function evaluateStage3Candidates(
         reviewScore: 0,
         summary: "failed to load required multi-timeframe bars",
         rejectionReason: "other",
-        issueBreakdown: { hardVetoes: ["failed to load required multi-timeframe bars"], softIssues: [], info: [] },
+        issueBreakdown: {
+          hardVetoes: ["failed to load required multi-timeframe bars"],
+          softIssues: [],
+          info: [],
+        },
         roomToTargetDiagnostics: null,
       });
       continue;
     }
 
-    const review = runStage3ChartReview(multiTimeframeBars, timeframeDiagnostics);
+    const review = runStage3ChartReview(
+      multiTimeframeBars,
+      timeframeDiagnostics,
+    );
     const issueBreakdown = getStage3IssueBreakdown(review);
     const hasHardVeto = issueBreakdown.hardVetoes.length > 0;
     const pass = !!review.direction && !hasHardVeto;
@@ -1220,7 +1515,10 @@ type MultiTimeframeBarsLoadResult = {
   timeframeDiagnostics: Record<MultiTimeframeView, Stage3TimeframeDiagnostic>;
 };
 
-const MULTI_TIMEFRAME_BAR_CONFIG: Record<MultiTimeframeView, { interval: number; unit: "Daily" | "Weekly"; barsBack: number }> = {
+const MULTI_TIMEFRAME_BAR_CONFIG: Record<
+  MultiTimeframeView,
+  { interval: number; unit: "Daily" | "Weekly"; barsBack: number }
+> = {
   "1D": { interval: 1, unit: "Daily", barsBack: 20 },
   "1W": { interval: 1, unit: "Daily", barsBack: 35 },
   "1M": { interval: 1, unit: "Daily", barsBack: 80 },
@@ -1228,9 +1526,16 @@ const MULTI_TIMEFRAME_BAR_CONFIG: Record<MultiTimeframeView, { interval: number;
   "1Y": { interval: 1, unit: "Weekly", barsBack: 60 },
 };
 
-function pickTicker(candidates: string[], excludedTickers: string[]): string | null {
-  const excludedSet = new Set(excludedTickers.map((item) => item.toUpperCase()));
-  const picked = candidates.find((ticker) => !excludedSet.has(ticker.toUpperCase()));
+function pickTicker(
+  candidates: string[],
+  excludedTickers: string[],
+): string | null {
+  const excludedSet = new Set(
+    excludedTickers.map((item) => item.toUpperCase()),
+  );
+  const picked = candidates.find(
+    (ticker) => !excludedSet.has(ticker.toUpperCase()),
+  );
   return picked ?? null;
 }
 
@@ -1256,8 +1561,13 @@ function logGeneralScanDebug(stage: string, symbols: string[]): void {
 
   const preview = symbols.slice(0, 20).join(", ");
   const remaining = symbols.length - 20;
-  const suffix = remaining > 0 ? ` ... (+${remaining} more, set SCANNER_DEBUG_VERBOSE=1 for full list)` : "";
-  console.log(`[scanner:debug] ${stage} (${symbols.length}): ${preview}${suffix}`);
+  const suffix =
+    remaining > 0
+      ? ` ... (+${remaining} more, set SCANNER_DEBUG_VERBOSE=1 for full list)`
+      : "";
+  console.log(
+    `[scanner:debug] ${stage} (${symbols.length}): ${preview}${suffix}`,
+  );
 }
 
 function logStage2Diagnostics(diagnostics: Stage2SymbolDiagnostic[]): void {
@@ -1266,7 +1576,9 @@ function logStage2Diagnostics(diagnostics: Stage2SymbolDiagnostic[]): void {
   }
 
   for (const item of diagnostics) {
-    console.log(`[scanner:debug:stage2] ${item.symbol}: ${JSON.stringify(item)}`);
+    console.log(
+      `[scanner:debug:stage2] ${item.symbol}: ${JSON.stringify(item)}`,
+    );
   }
 }
 
@@ -1284,13 +1596,19 @@ function categorizeStage2Failure(reason: string): string {
   return "other";
 }
 
-function categorizeStage3IssueSeverity(check: string, review?: ChartReviewResult): Stage3IssueSeverity {
+function categorizeStage3IssueSeverity(
+  check: string,
+  review?: ChartReviewResult,
+): Stage3IssueSeverity {
   if (check === "failed-breakout-trap" || check === "alignment") {
     return "hard_veto";
   }
 
   if (check === "higher-timeframe-2r-viability") {
-    return review?.diagnostics.roomToTargetDiagnostics.decisionMode === "hard_fail" ? "hard_veto" : "score_penalty";
+    return review?.diagnostics.roomToTargetDiagnostics.decisionMode ===
+      "hard_fail"
+      ? "hard_veto"
+      : "score_penalty";
   }
 
   if (check === "volume-data" || check === "higher-timeframe-context") {
@@ -1300,12 +1618,16 @@ function categorizeStage3IssueSeverity(check: string, review?: ChartReviewResult
   return "score_penalty";
 }
 
-function formatStage3IssueReason(check: string, reason: string, review: ChartReviewResult): string {
+function formatStage3IssueReason(
+  check: string,
+  reason: string,
+  review: ChartReviewResult,
+): string {
   if (check === "failed-breakout-trap") {
     return `bull/bear trap risk (${reason})`;
   }
   if (check === "higher-timeframe-2r-viability") {
-    return `2R room tight (${describeRoomToTargetDecision(review.diagnostics.roomToTargetDiagnostics)})`;
+    return `actual chart-anchored asymmetry weak (${reason})`;
   }
   if (check === "alignment") {
     return `directional misalignment (${reason})`;
@@ -1328,8 +1650,14 @@ function formatStage3IssueReason(check: string, reason: string, review: ChartRev
   return `${check} (${reason})`;
 }
 
-function getStage3IssueBreakdown(review: ChartReviewResult): Stage3IssueBreakdown {
-  const breakdown: Stage3IssueBreakdown = { hardVetoes: [], softIssues: [], info: [] };
+function getStage3IssueBreakdown(
+  review: ChartReviewResult,
+): Stage3IssueBreakdown {
+  const breakdown: Stage3IssueBreakdown = {
+    hardVetoes: [],
+    softIssues: [],
+    info: [],
+  };
 
   for (const check of review.diagnostics.checks) {
     if (check.pass) {
@@ -1377,14 +1705,27 @@ function getStage3FailReasons(review: ChartReviewResult): string[] {
 function scoreStage3Candidate(candidate: ChartCandidate): number {
   const moveScore = Math.min(Math.abs(candidate.chartMovePct), 6);
   const oiScore = Math.min(candidate.optionOpenInterest / 500, 6);
-  const spreadScore = Math.max(0, 3 - (candidate.optionSpread / Math.max(candidate.optionMid, 0.01)) * 10);
-  const volumeScore = candidate.volumeRatio === null ? 1 : Math.min(candidate.volumeRatio, 2);
+  const spreadScore = Math.max(
+    0,
+    3 - (candidate.optionSpread / Math.max(candidate.optionMid, 0.01)) * 10,
+  );
+  const volumeScore =
+    candidate.volumeRatio === null ? 1 : Math.min(candidate.volumeRatio, 2);
   const continuationPenalty = getStage3ContinuationPenalty(candidate);
-  return moveScore + oiScore + spreadScore + volumeScore + candidate.chartReviewScore - continuationPenalty;
+  return (
+    moveScore +
+    oiScore +
+    spreadScore +
+    volumeScore +
+    candidate.chartReviewScore -
+    continuationPenalty
+  );
 }
 
 function getStage3CheckPass(candidate: ChartCandidate, check: string): boolean {
-  return !!candidate.chartDiagnostics.checks.find((item) => item.check === check)?.pass;
+  return !!candidate.chartDiagnostics.checks.find(
+    (item) => item.check === check,
+  )?.pass;
 }
 
 function getStage3ContinuationPenalty(candidate: ChartCandidate): number {
@@ -1407,28 +1748,43 @@ function getStage3ContinuationPenalty(candidate: ChartCandidate): number {
 }
 
 function summarizePassingChecks(checks: Stage3CheckDiagnostic[]): string {
-  const passingChecks = checks.filter((check) => check.pass).map((check) => check.check);
-  return passingChecks.length > 0 ? passingChecks.join(", ") : "no failed checks";
+  const passingChecks = checks
+    .filter((check) => check.pass)
+    .map((check) => check.check);
+  return passingChecks.length > 0
+    ? passingChecks.join(", ")
+    : "no failed checks";
 }
 
-function summarizeFailedChecksByImpact(checks: Stage3CheckDiagnostic[]): string {
+function summarizeFailedChecksByImpact(
+  checks: Stage3CheckDiagnostic[],
+): string {
   const failedChecks = checks.filter((check) => !check.pass);
   if (failedChecks.length === 0) {
     return "no failed checks";
   }
 
-  return failedChecks.map((check) => `${check.check}:${check.impact}`).join(", ");
+  return failedChecks
+    .map((check) => `${check.check}:${check.impact}`)
+    .join(", ");
 }
 
 function summarizeCheckOutcomes(checks: Stage3CheckDiagnostic[]): string {
-  return checks.map((check) => `${check.check}:${check.pass ? "pass" : `fail/${check.impact}`}`).join(", ");
+  return checks
+    .map(
+      (check) =>
+        `${check.check}:${check.pass ? "pass" : `fail/${check.impact}`}`,
+    )
+    .join(", ");
 }
 
 function describeRoomToTargetDecision(
   diagnostics: Stage3Diagnostics["roomToTargetDiagnostics"],
 ): string {
-  const levelLabel = diagnostics.levelUsed === null ? "n/a" : diagnostics.levelUsed.toFixed(2);
-  const roomLabel = diagnostics.roomPct === null ? "n/a" : `${diagnostics.roomPct.toFixed(2)}%`;
+  const levelLabel =
+    diagnostics.levelUsed === null ? "n/a" : diagnostics.levelUsed.toFixed(2);
+  const roomLabel =
+    diagnostics.roomPct === null ? "n/a" : `${diagnostics.roomPct.toFixed(2)}%`;
   const roomStatus = diagnostics.sufficientRoom ? "sufficient" : "insufficient";
 
   return `2R room check -> ref=${diagnostics.referencePrice.toFixed(2)}, dir=${diagnostics.direction}, level=${levelLabel}, room=${roomLabel}, tier=${diagnostics.roomTier}, assumption=${diagnostics.targetAssumption}, decision=${diagnostics.decisionMode}, status=${roomStatus}, reason=${diagnostics.insufficientRoomReason}`;
@@ -1438,12 +1794,18 @@ function getCheckImpactLabel(
   check: string,
   volumeRatio: number | null,
 ): Stage3CheckDiagnostic["impact"] {
-  if (check === "alignment" || check === "failed-breakout-trap" || check === "higher-timeframe-2r-viability") {
+  if (
+    check === "alignment" ||
+    check === "failed-breakout-trap" ||
+    check === "higher-timeframe-2r-viability"
+  ) {
     return "blocker";
   }
 
   if (check === "volume") {
-    return volumeRatio !== null && volumeRatio >= 0.8 ? "mild_caution" : "downgrader";
+    return volumeRatio !== null && volumeRatio >= 0.8
+      ? "mild_caution"
+      : "downgrader";
   }
 
   if (check === "volume-data" || check === "higher-timeframe-context") {
@@ -1466,11 +1828,14 @@ function getConfirmationSoftIssueMetrics(review: ChartReviewResult): {
   overlappingPriceActionDrag: number;
   weightedSoftIssueScore: number;
 } {
-  const checkByName = new Map(review.diagnostics.checks.map((item) => [item.check, item]));
+  const checkByName = new Map(
+    review.diagnostics.checks.map((item) => [item.check, item]),
+  );
   const hasWeakExpansion = !checkByName.get("expansion")?.pass;
   const hasBodyWickIssue = !checkByName.get("body-wick")?.pass;
   const hasContinuationIssue = !checkByName.get("continuation")?.pass;
-  const hasImpulseConsolidationIssue = !checkByName.get("impulse-consolidation")?.pass;
+  const hasImpulseConsolidationIssue = !checkByName.get("impulse-consolidation")
+    ?.pass;
   const hasDistributionIssue = !checkByName.get("fake-hold-distribution")?.pass;
   const hasTriggerZoneIssue = !checkByName.get("trigger-zone-flips")?.pass;
   const hasChoppyIssue = !checkByName.get("choppy")?.pass;
@@ -1493,8 +1858,13 @@ function getConfirmationSoftIssueMetrics(review: ChartReviewResult): {
     (hasTriggerZoneIssue ? 0.45 : 0) +
     (hasChoppyIssue && !hasTriggerZoneIssue ? 0.25 : 0);
   const expansionWeight = hasWeakExpansion ? 0.25 : 0;
-  const overlappingPriceActionDrag = hasTriggerZoneIssue && hasChoppyIssue ? -0.2 : 0;
-  const weightedSoftIssueScore = structuralWeaknessWeight + volumeIssueWeight + expansionWeight + overlappingPriceActionDrag;
+  const overlappingPriceActionDrag =
+    hasTriggerZoneIssue && hasChoppyIssue ? -0.2 : 0;
+  const weightedSoftIssueScore =
+    structuralWeaknessWeight +
+    volumeIssueWeight +
+    expansionWeight +
+    overlappingPriceActionDrag;
 
   return {
     checkByName,
@@ -1511,7 +1881,10 @@ function getConfirmationSoftIssueMetrics(review: ChartReviewResult): {
   };
 }
 
-function resolveConfirmationOutcome(review: ChartReviewResult): { conclusion: ScanResult["conclusion"]; confidence: ScanConfidence | null } {
+function resolveConfirmationOutcome(review: ChartReviewResult): {
+  conclusion: ScanResult["conclusion"];
+  confidence: ScanConfidence | null;
+} {
   if (!review.direction) {
     return { conclusion: "rejected", confidence: null };
   }
@@ -1541,15 +1914,14 @@ function resolveConfirmationOutcome(review: ChartReviewResult): { conclusion: Sc
   }
 
   const supportsClean2RStructure =
-    !!checkByName.get("continuation")?.pass &&
-    !!checkByName.get("higher-timeframe-room")?.pass &&
-    !!checkByName.get("higher-timeframe-2r-viability")?.pass;
+    getConfirmationStructureDebug(review).supportsTradable2RStructure;
 
   if (!supportsClean2RStructure) {
     return { conclusion: "rejected", confidence: null };
   }
 
-  const confidence: ScanConfidence = review.score >= 11 ? "85-92" : review.score >= 9 ? "75-84" : "65-74";
+  const confidence: ScanConfidence =
+    review.score >= 11 ? "85-92" : review.score >= 9 ? "75-84" : "65-74";
   if (confidence === "65-74") {
     return { conclusion: "rejected", confidence: null };
   }
@@ -1561,13 +1933,21 @@ function getConfirmationStructureDebug(review: ChartReviewResult): {
   continuationPass: boolean;
   higherTimeframeRoomPass: boolean;
   higherTimeframe2RPass: boolean;
+  actualTradableAsymmetryPass: boolean;
   supportsTradable2RStructure: boolean;
   topBlockingReasons: string[];
 } {
-  const checkByName = new Map(review.diagnostics.checks.map((item) => [item.check, item]));
+  const checkByName = new Map(
+    review.diagnostics.checks.map((item) => [item.check, item]),
+  );
   const continuationPass = !!checkByName.get("continuation")?.pass;
-  const higherTimeframeRoomPass = !!checkByName.get("higher-timeframe-room")?.pass;
-  const higherTimeframe2RPass = !!checkByName.get("higher-timeframe-2r-viability")?.pass;
+  const higherTimeframeRoomPass = !!checkByName.get("higher-timeframe-room")
+    ?.pass;
+  const higherTimeframe2RPass = !!checkByName.get(
+    "higher-timeframe-2r-viability",
+  )?.pass;
+  const actualTradableAsymmetryPass =
+    review.diagnostics.chartAnchoredAsymmetry.actualTradablePass;
   const topBlockingReasons: string[] = [];
 
   if (!continuationPass) {
@@ -1579,12 +1959,29 @@ function getConfirmationStructureDebug(review: ChartReviewResult): {
   if (!higherTimeframe2RPass) {
     topBlockingReasons.push("higher-timeframe 2R viability failed");
   }
+  if (!actualTradableAsymmetryPass) {
+    topBlockingReasons.push(
+      review.diagnostics.chartAnchoredAsymmetry.failureReason ??
+        "actual chart-anchored asymmetry failed",
+    );
+  }
+  if (review.diagnostics.chartAnchoredAsymmetry.asymmetryConsistencyFlag) {
+    topBlockingReasons.push(
+      review.diagnostics.chartAnchoredAsymmetry.asymmetryConsistencyReason ??
+        "Stage 3 / confirmation asymmetry mismatch detected",
+    );
+  }
 
   return {
     continuationPass,
     higherTimeframeRoomPass,
     higherTimeframe2RPass,
-    supportsTradable2RStructure: continuationPass && higherTimeframeRoomPass && higherTimeframe2RPass,
+    actualTradableAsymmetryPass,
+    supportsTradable2RStructure:
+      continuationPass &&
+      higherTimeframeRoomPass &&
+      higherTimeframe2RPass &&
+      actualTradableAsymmetryPass,
     topBlockingReasons,
   };
 }
@@ -1593,14 +1990,20 @@ function buildConfirmationDebug(
   review: ChartReviewResult | null,
   confirmationStatus: "confirmed" | "rejected",
   confirmationFailureReasons: string[],
-  overrides?: Partial<Pick<ConfirmationDebug, "reviewStatus" | "topBlockingReasons">>,
+  overrides?: Partial<
+    Pick<ConfirmationDebug, "reviewStatus" | "topBlockingReasons">
+  >,
 ): ConfirmationDebug {
   const defaultStructure = {
     continuationPass: false,
     higherTimeframeRoomPass: false,
     higherTimeframe2RPass: false,
+    actualTradableAsymmetryPass: false,
     supportsTradable2RStructure: false,
-    topBlockingReasons: confirmationFailureReasons.length > 0 ? [...confirmationFailureReasons] : [],
+    topBlockingReasons:
+      confirmationFailureReasons.length > 0
+        ? [...confirmationFailureReasons]
+        : [],
     weightedSoftIssueScore: 0,
     rejectedBecauseConfidenceBelow75: false,
   };
@@ -1613,19 +2016,33 @@ function buildConfirmationDebug(
       continuationPass: defaultStructure.continuationPass,
       higherTimeframeRoomPass: defaultStructure.higherTimeframeRoomPass,
       higherTimeframe2RPass: defaultStructure.higherTimeframe2RPass,
+      actualTradableAsymmetryPass: defaultStructure.actualTradableAsymmetryPass,
       supportsTradable2RStructure: defaultStructure.supportsTradable2RStructure,
-      rejectedBecauseConfidenceBelow75: defaultStructure.rejectedBecauseConfidenceBelow75,
+      rejectedBecauseConfidenceBelow75:
+        defaultStructure.rejectedBecauseConfidenceBelow75,
       weightedSoftIssueScore: defaultStructure.weightedSoftIssueScore,
-      topBlockingReasons: overrides?.topBlockingReasons ?? defaultStructure.topBlockingReasons,
+      topBlockingReasons:
+        overrides?.topBlockingReasons ?? defaultStructure.topBlockingReasons,
       rrTier: "unknown",
       preferred2R: false,
       minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
+      stage3ReferencePrice: null,
+      confirmationReferencePrice: null,
+      invalidationLevel: null,
+      targetLevel: null,
+      riskDistance: null,
+      rewardDistance: null,
+      actualRewardRiskRatio: null,
+      stage3RoomPct: null,
+      asymmetryConsistencyFlag: false,
+      asymmetryConsistencyReason: null,
     };
   }
 
   const { weightedSoftIssueScore } = getConfirmationSoftIssueMetrics(review);
   const structureDebug = getConfirmationStructureDebug(review);
-  const confidence: ScanConfidence = review.score >= 11 ? "85-92" : review.score >= 9 ? "75-84" : "65-74";
+  const confidence: ScanConfidence =
+    review.score >= 11 ? "85-92" : review.score >= 9 ? "75-84" : "65-74";
 
   return {
     reviewStatus: overrides?.reviewStatus ?? "reviewed",
@@ -1634,13 +2051,36 @@ function buildConfirmationDebug(
     continuationPass: structureDebug.continuationPass,
     higherTimeframeRoomPass: structureDebug.higherTimeframeRoomPass,
     higherTimeframe2RPass: structureDebug.higherTimeframe2RPass,
+    actualTradableAsymmetryPass: structureDebug.actualTradableAsymmetryPass,
     supportsTradable2RStructure: structureDebug.supportsTradable2RStructure,
-    rejectedBecauseConfidenceBelow75: confirmationStatus === "rejected" && confidence === "65-74",
+    rejectedBecauseConfidenceBelow75:
+      confirmationStatus === "rejected" && confidence === "65-74",
     weightedSoftIssueScore,
-    topBlockingReasons: overrides?.topBlockingReasons ?? (structureDebug.topBlockingReasons.length > 0 ? structureDebug.topBlockingReasons : [...confirmationFailureReasons]),
+    topBlockingReasons:
+      overrides?.topBlockingReasons ??
+      (structureDebug.topBlockingReasons.length > 0
+        ? structureDebug.topBlockingReasons
+        : [...confirmationFailureReasons]),
     rrTier: review.diagnostics.roomToTargetDiagnostics.roomTier,
     preferred2R: review.diagnostics.roomToTargetDiagnostics.preferred2R,
-    minimumConfirmableRR: review.diagnostics.roomToTargetDiagnostics.minimumConfirmableRR,
+    minimumConfirmableRR:
+      review.diagnostics.roomToTargetDiagnostics.minimumConfirmableRR,
+    stage3ReferencePrice:
+      review.diagnostics.roomToTargetDiagnostics.referencePrice,
+    confirmationReferencePrice:
+      review.diagnostics.chartAnchoredAsymmetry.referencePrice,
+    invalidationLevel:
+      review.diagnostics.chartAnchoredAsymmetry.invalidationLevel,
+    targetLevel: review.diagnostics.chartAnchoredAsymmetry.targetLevel,
+    riskDistance: review.diagnostics.chartAnchoredAsymmetry.riskDistance,
+    rewardDistance: review.diagnostics.chartAnchoredAsymmetry.rewardDistance,
+    actualRewardRiskRatio:
+      review.diagnostics.chartAnchoredAsymmetry.actualRewardRiskRatio,
+    stage3RoomPct: review.diagnostics.chartAnchoredAsymmetry.stage3RoomPct,
+    asymmetryConsistencyFlag:
+      review.diagnostics.chartAnchoredAsymmetry.asymmetryConsistencyFlag,
+    asymmetryConsistencyReason:
+      review.diagnostics.chartAnchoredAsymmetry.asymmetryConsistencyReason,
   };
 }
 
@@ -1663,12 +2103,30 @@ function getConfirmationRejectionReasons(review: ChartReviewResult): string[] {
     overlappingPriceActionDrag,
     weightedSoftIssueScore,
   } = getConfirmationSoftIssueMetrics(review);
-  const nonExpansionSoftIssues = issueBreakdown.softIssues.filter((reason) => !reason.startsWith("weak expansion ("));
+  const nonExpansionSoftIssues = issueBreakdown.softIssues.filter(
+    (reason) => !reason.startsWith("weak expansion ("),
+  );
   const distinctNonExpansionSoftIssues = [...new Set(nonExpansionSoftIssues)];
   const topWeaknesses = distinctNonExpansionSoftIssues.slice(0, 4);
 
   if (issueBreakdown.hardVetoes.length > 0) {
-    return [`hard veto: ${formatFinalistReasonList(issueBreakdown.hardVetoes)}`];
+    return [
+      `hard veto: ${formatFinalistReasonList(issueBreakdown.hardVetoes)}`,
+    ];
+  }
+
+  if (!review.diagnostics.chartAnchoredAsymmetry.actualTradablePass) {
+    const primary = review.diagnostics.chartAnchoredAsymmetry
+      .asymmetryConsistencyFlag
+      ? review.diagnostics.chartAnchoredAsymmetry.asymmetryConsistencyReason
+      : review.diagnostics.chartAnchoredAsymmetry.failureReason;
+    const secondary = hasWeakExpansion
+      ? `secondary weakness: weak expansion (${checkByName.get("expansion")?.reason ?? "expansion ratio unavailable"})`
+      : null;
+    return [
+      primary ?? CHART_ANCHORED_TWO_TO_ONE_FAILURE,
+      ...(secondary ? [secondary] : []),
+    ];
   }
 
   if (weightedSoftIssueScore >= 2.35 || structuralWeaknessWeight >= 2.4) {
@@ -1676,20 +2134,32 @@ function getConfirmationRejectionReasons(review: ChartReviewResult): string[] {
       hasVolumeIssue && volumeRatio !== null && volumeRatio >= 0.8
         ? `; mild volume caution (${volumeRatio.toFixed(2)}x) down-weighted`
         : "";
-    const overlapQualifier = overlappingPriceActionDrag < 0 ? "; trigger-zone/chop overlap de-stacked" : "";
-    return [`multiple confirmation weaknesses (overlap-aware): ${formatFinalistReasonList(topWeaknesses.length > 0 ? topWeaknesses : distinctNonExpansionSoftIssues)}${volumeQualifier}${overlapQualifier}`];
+    const overlapQualifier =
+      overlappingPriceActionDrag < 0
+        ? "; trigger-zone/chop overlap de-stacked"
+        : "";
+    return [
+      `multiple confirmation weaknesses (overlap-aware): ${formatFinalistReasonList(topWeaknesses.length > 0 ? topWeaknesses : distinctNonExpansionSoftIssues)}${volumeQualifier}${overlapQualifier}`,
+    ];
   }
 
-  const confidence: ScanConfidence = review.score >= 11 ? "85-92" : review.score >= 9 ? "75-84" : "65-74";
+  const confidence: ScanConfidence =
+    review.score >= 11 ? "85-92" : review.score >= 9 ? "75-84" : "65-74";
   if (confidence === "65-74") {
-    const expansionNarrative = hasWeakExpansion ? `; weak expansion remained only a soft drag (${checkByName.get("expansion")?.reason ?? "expansion ratio unavailable"}, weight=${expansionWeight.toFixed(2)})` : "";
-    return [`confirmation score stayed below the 75 minimum (score=${review.score.toFixed(2)}, weightedSoftIssueScore=${weightedSoftIssueScore.toFixed(2)})${expansionNarrative}`];
+    const expansionNarrative = hasWeakExpansion
+      ? `; weak expansion remained only a soft drag (${checkByName.get("expansion")?.reason ?? "expansion ratio unavailable"}, weight=${expansionWeight.toFixed(2)})`
+      : "";
+    return [
+      `confirmation score stayed below the 75 minimum (score=${review.score.toFixed(2)}, weightedSoftIssueScore=${weightedSoftIssueScore.toFixed(2)})${expansionNarrative}`,
+    ];
   }
 
   const structureDebug = getConfirmationStructureDebug(review);
   if (!structureDebug.supportsTradable2RStructure) {
     if (structureDebug.topBlockingReasons.length === 1) {
-      return [`minimum tradable asymmetry missing: ${structureDebug.topBlockingReasons[0]} before trade-card confirmation`];
+      return [
+        `minimum tradable asymmetry missing: ${structureDebug.topBlockingReasons[0]} before trade-card confirmation`,
+      ];
     }
 
     return [
@@ -1705,7 +2175,10 @@ async function loadMultiTimeframeBars(
   symbol: string,
 ): Promise<MultiTimeframeBarsLoadResult> {
   const result = {} as MultiTimeframeBars;
-  const timeframeDiagnostics = {} as Record<MultiTimeframeView, Stage3TimeframeDiagnostic>;
+  const timeframeDiagnostics = {} as Record<
+    MultiTimeframeView,
+    Stage3TimeframeDiagnostic
+  >;
   let allViewsLoaded = true;
 
   for (const [view, config] of Object.entries(MULTI_TIMEFRAME_BAR_CONFIG) as [
@@ -1738,7 +2211,13 @@ async function loadMultiTimeframeBars(
     const parsedHigh = readNumber(latestBar, ["High"]) !== null;
     const parsedLow = readNumber(latestBar, ["Low"]) !== null;
     const parsedClose = readNumber(latestBar, ["Close"]) !== null;
-    const parsedVolume = readNumber(latestBar, ["TotalVolume", "Volume", "Vol", "TotalVolumeTraded"]) !== null;
+    const parsedVolume =
+      readNumber(latestBar, [
+        "TotalVolume",
+        "Volume",
+        "Vol",
+        "TotalVolumeTraded",
+      ]) !== null;
 
     timeframeDiagnostics[view] = {
       requestTarget,
@@ -1784,16 +2263,26 @@ function runStage3ChartReview(
   timeframeDiagnostics: Record<MultiTimeframeView, Stage3TimeframeDiagnostic>,
 ): ChartReviewResult {
   const bars1D = barsByView["1D"];
-  const bars1DForConfirmation = bars1D.length >= 2 ? bars1D.slice(0, -1) : bars1D;
+  const bars1DForConfirmation =
+    bars1D.length >= 2 ? bars1D.slice(0, -1) : bars1D;
   const bars1W = barsByView["1W"];
   const bars3M = barsByView["3M"];
   const bars1Y = barsByView["1Y"];
 
   const move1D = getMovePctFromBars(bars1DForConfirmation);
   const move1W = getMovePctFromBars(bars1W);
-  const dayBias: ScanDirection | "neutral" = move1D === null ? "neutral" : move1D >= 0.5 ? "bullish" : move1D <= -0.5 ? "bearish" : "neutral";
-  const weekBias: ScanDirection | "neutral" = move1W === null ? "neutral" : move1W >= 0 ? "bullish" : "bearish";
-  const alignmentRule = "bullish requires 1D move >= +0.5% and 1W move >= 0%; bearish requires 1D move <= -0.5% and 1W move <= 0%";
+  const dayBias: ScanDirection | "neutral" =
+    move1D === null
+      ? "neutral"
+      : move1D >= 0.5
+        ? "bullish"
+        : move1D <= -0.5
+          ? "bearish"
+          : "neutral";
+  const weekBias: ScanDirection | "neutral" =
+    move1W === null ? "neutral" : move1W >= 0 ? "bullish" : "bearish";
+  const alignmentRule =
+    "bullish requires 1D move >= +0.5% and 1W move >= 0%; bearish requires 1D move <= -0.5% and 1W move <= 0%";
 
   if (move1D === null || move1W === null) {
     return {
@@ -1821,7 +2310,8 @@ function runStage3ChartReview(
         lastVolume: null,
         priorVolumeBarsWithData: 0,
         averageVolume: null,
-        volumeRatioComputation: "volumeRatio requires both lastVolume and averageVolume > 0",
+        volumeRatioComputation:
+          "volumeRatio requires both lastVolume and averageVolume > 0",
         resistanceLevel: null,
         supportLevel: null,
         roomPct: null,
@@ -1832,15 +2322,48 @@ function runStage3ChartReview(
           levelStrength: "n/a",
           levelUsed: null,
           roomPct: null,
-          targetAssumption: "Preferred 2.00R+, confirmable >= 1.50R, hard fail < 1.25R",
+          targetAssumption:
+            "Preferred 2.00R+, confirmable >= 1.50R, hard fail < 1.25R",
           decisionMode: "score_penalty",
           roomTier: "unknown",
           sufficientRoom: true,
-          insufficientRoomReason: "No data because directional setup was not available.",
+          insufficientRoomReason:
+            "No data because directional setup was not available.",
           preferred2R: false,
           minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
+          invalidationLevel: null,
+          targetLevel: null,
+          invalidationReason: null,
+          targetReason: null,
+          riskDistance: null,
+          rewardDistance: null,
+          actualRewardRiskRatio: null,
+          actualRrTier: "unknown",
         },
-        checks: [{ check: "data-integrity", pass: false, reason: "missing/incomplete bar data (1D or 1W close unavailable)", impact: "blocker" }],
+        chartAnchoredAsymmetry: {
+          referencePrice: 0,
+          invalidationLevel: null,
+          targetLevel: null,
+          invalidationReason: null,
+          targetReason: null,
+          riskDistance: null,
+          rewardDistance: null,
+          actualRewardRiskRatio: null,
+          actualRrTier: "unknown",
+          actualTradablePass: false,
+          failureReason: "No data because directional setup was not available.",
+          stage3RoomPct: null,
+          asymmetryConsistencyFlag: false,
+          asymmetryConsistencyReason: null,
+        },
+        checks: [
+          {
+            check: "data-integrity",
+            pass: false,
+            reason: "missing/incomplete bar data (1D or 1W close unavailable)",
+            impact: "blocker",
+          },
+        ],
       },
     };
   }
@@ -1848,7 +2371,11 @@ function runStage3ChartReview(
   const bullishAlignment = move1D >= 0.5 && move1W >= 0;
   const bearishAlignment = move1D <= -0.5 && move1W <= 0;
   const alignmentPass = bullishAlignment || bearishAlignment;
-  const direction: ScanDirection | null = bullishAlignment ? "bullish" : bearishAlignment ? "bearish" : null;
+  const direction: ScanDirection | null = bullishAlignment
+    ? "bullish"
+    : bearishAlignment
+      ? "bearish"
+      : null;
   const alignmentReason = alignmentPass
     ? `aligned (${dayBias} day bias with ${weekBias} week bias)`
     : `not aligned (1D=${move1D.toFixed(2)}%, 1W=${move1W.toFixed(2)}%)`;
@@ -1879,7 +2406,8 @@ function runStage3ChartReview(
         lastVolume: null,
         priorVolumeBarsWithData: 0,
         averageVolume: null,
-        volumeRatioComputation: "volumeRatio requires both lastVolume and averageVolume > 0",
+        volumeRatioComputation:
+          "volumeRatio requires both lastVolume and averageVolume > 0",
         resistanceLevel: null,
         supportLevel: null,
         roomPct: null,
@@ -1890,28 +2418,73 @@ function runStage3ChartReview(
           levelStrength: "n/a",
           levelUsed: null,
           roomPct: null,
-          targetAssumption: "Preferred 2.00R+, confirmable >= 1.50R, hard fail < 1.25R",
+          targetAssumption:
+            "Preferred 2.00R+, confirmable >= 1.50R, hard fail < 1.25R",
           decisionMode: "score_penalty",
           roomTier: "unknown",
           sufficientRoom: true,
-          insufficientRoomReason: "No data because directional setup was not available.",
+          insufficientRoomReason:
+            "No data because directional setup was not available.",
           preferred2R: false,
           minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
+          invalidationLevel: null,
+          targetLevel: null,
+          invalidationReason: null,
+          targetReason: null,
+          riskDistance: null,
+          rewardDistance: null,
+          actualRewardRiskRatio: null,
+          actualRrTier: "unknown",
         },
-        checks: [{ check: "alignment", pass: false, reason: alignmentReason, impact: "blocker" }],
+        chartAnchoredAsymmetry: {
+          referencePrice: 0,
+          invalidationLevel: null,
+          targetLevel: null,
+          invalidationReason: null,
+          targetReason: null,
+          riskDistance: null,
+          rewardDistance: null,
+          actualRewardRiskRatio: null,
+          actualRrTier: "unknown",
+          actualTradablePass: false,
+          failureReason: "No data because directional setup was not available.",
+          stage3RoomPct: null,
+          asymmetryConsistencyFlag: false,
+          asymmetryConsistencyReason: null,
+        },
+        checks: [
+          {
+            check: "alignment",
+            pass: false,
+            reason: alignmentReason,
+            impact: "blocker",
+          },
+        ],
       },
     };
   }
 
-  const lastBar = bars1DForConfirmation[bars1DForConfirmation.length - 1] ?? null;
+  const lastBar =
+    bars1DForConfirmation[bars1DForConfirmation.length - 1] ?? null;
   const priorBars = bars1DForConfirmation.slice(0, -1);
   const open = readNumber(lastBar, ["Open"]);
   const high = readNumber(lastBar, ["High"]);
   const low = readNumber(lastBar, ["Low"]);
   const close = readNumber(lastBar, ["Close"]);
-  const lastVolume = readNumber(lastBar, ["TotalVolume", "Volume", "Vol", "TotalVolumeTraded"]);
+  const lastVolume = readNumber(lastBar, [
+    "TotalVolume",
+    "Volume",
+    "Vol",
+    "TotalVolumeTraded",
+  ]);
 
-  if (open === null || high === null || low === null || close === null || high <= low) {
+  if (
+    open === null ||
+    high === null ||
+    low === null ||
+    close === null ||
+    high <= low
+  ) {
     return {
       pass: false,
       direction,
@@ -1937,7 +2510,8 @@ function runStage3ChartReview(
         lastVolume,
         priorVolumeBarsWithData: 0,
         averageVolume: null,
-        volumeRatioComputation: "volumeRatio requires both lastVolume and averageVolume > 0",
+        volumeRatioComputation:
+          "volumeRatio requires both lastVolume and averageVolume > 0",
         resistanceLevel: null,
         supportLevel: null,
         roomPct: null,
@@ -1948,15 +2522,49 @@ function runStage3ChartReview(
           levelStrength: "n/a",
           levelUsed: null,
           roomPct: null,
-          targetAssumption: "Preferred 2.00R+, confirmable >= 1.50R, hard fail < 1.25R",
+          targetAssumption:
+            "Preferred 2.00R+, confirmable >= 1.50R, hard fail < 1.25R",
           decisionMode: "score_penalty",
           roomTier: "unknown",
           sufficientRoom: true,
-          insufficientRoomReason: "No data because directional setup was not available.",
+          insufficientRoomReason:
+            "No data because directional setup was not available.",
           preferred2R: false,
           minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
+          invalidationLevel: null,
+          targetLevel: null,
+          invalidationReason: null,
+          targetReason: null,
+          riskDistance: null,
+          rewardDistance: null,
+          actualRewardRiskRatio: null,
+          actualRrTier: "unknown",
         },
-        checks: [{ check: "data-integrity", pass: false, reason: "missing/incomplete bar data (latest 1D candle OHLC unavailable)", impact: "blocker" }],
+        chartAnchoredAsymmetry: {
+          referencePrice: 0,
+          invalidationLevel: null,
+          targetLevel: null,
+          invalidationReason: null,
+          targetReason: null,
+          riskDistance: null,
+          rewardDistance: null,
+          actualRewardRiskRatio: null,
+          actualRrTier: "unknown",
+          actualTradablePass: false,
+          failureReason: "No data because the latest 1D candle was incomplete.",
+          stage3RoomPct: null,
+          asymmetryConsistencyFlag: false,
+          asymmetryConsistencyReason: null,
+        },
+        checks: [
+          {
+            check: "data-integrity",
+            pass: false,
+            reason:
+              "missing/incomplete bar data (latest 1D candle OHLC unavailable)",
+            impact: "blocker",
+          },
+        ],
       },
     };
   }
@@ -1968,7 +2576,12 @@ function runStage3ChartReview(
   for (const bar of priorBars) {
     const barHigh = readNumber(bar, ["High"]);
     const barLow = readNumber(bar, ["Low"]);
-    const barVolume = readNumber(bar, ["TotalVolume", "Volume", "Vol", "TotalVolumeTraded"]);
+    const barVolume = readNumber(bar, [
+      "TotalVolume",
+      "Volume",
+      "Vol",
+      "TotalVolumeTraded",
+    ]);
     if (barHigh !== null && barLow !== null && barHigh > barLow) {
       priorRangeSum += barHigh - barLow;
       priorRangeCount += 1;
@@ -1984,12 +2597,18 @@ function runStage3ChartReview(
   const upperWick = high - Math.max(open, close);
   const lowerWick = Math.min(open, close) - low;
   const closeLocation = (close - low) / range;
-  const averageRange = priorRangeCount > 0 ? priorRangeSum / priorRangeCount : null;
-  const expansionRatio = averageRange !== null && averageRange > 0 ? range / averageRange : null;
+  const averageRange =
+    priorRangeCount > 0 ? priorRangeSum / priorRangeCount : null;
+  const expansionRatio =
+    averageRange !== null && averageRange > 0 ? range / averageRange : null;
   const bodyToRange = body / range;
   const wickiness = range > 0 ? (upperWick + lowerWick) / range : null;
-  const averageVolume = priorVolumeCount > 0 ? priorVolumeSum / priorVolumeCount : null;
-  const volumeRatio = averageVolume !== null && lastVolume !== null && averageVolume > 0 ? lastVolume / averageVolume : null;
+  const averageVolume =
+    priorVolumeCount > 0 ? priorVolumeSum / priorVolumeCount : null;
+  const volumeRatio =
+    averageVolume !== null && lastVolume !== null && averageVolume > 0
+      ? lastVolume / averageVolume
+      : null;
   const volumeDataPresent = lastVolume !== null || priorVolumeCount > 0;
 
   const expansionPass = expansionRatio === null || expansionRatio >= 1.1;
@@ -2020,9 +2639,14 @@ function runStage3ChartReview(
   const impulseAverageRange = averageRangeFor(impulseBars);
   const consolidationAverageRange = averageRangeFor(consolidationBars);
   const impulseStartClose = readNumber(impulseBars[0] ?? null, ["Close"]);
-  const impulseEndClose = readNumber(impulseBars[impulseBars.length - 1] ?? null, ["Close"]);
+  const impulseEndClose = readNumber(
+    impulseBars[impulseBars.length - 1] ?? null,
+    ["Close"],
+  );
   const impulseMovePct =
-    impulseStartClose !== null && impulseEndClose !== null && impulseStartClose > 0
+    impulseStartClose !== null &&
+    impulseEndClose !== null &&
+    impulseStartClose > 0
       ? ((impulseEndClose - impulseStartClose) / impulseStartClose) * 100
       : null;
   const impulseMoveDirectionalPass =
@@ -2032,10 +2656,13 @@ function runStage3ChartReview(
         ? impulseMovePct >= 1
         : impulseMovePct <= -1;
   const consolidationTightPass =
-    impulseAverageRange !== null && consolidationAverageRange !== null && impulseAverageRange > 0
+    impulseAverageRange !== null &&
+    consolidationAverageRange !== null &&
+    impulseAverageRange > 0
       ? consolidationAverageRange <= impulseAverageRange * 0.95
       : false;
-  const impulseConsolidationPass = impulseMoveDirectionalPass && consolidationTightPass;
+  const impulseConsolidationPass =
+    impulseMoveDirectionalPass && consolidationTightPass;
 
   const consolidationHighs = consolidationBars
     .map((bar) => readNumber(bar, ["High"]))
@@ -2043,8 +2670,10 @@ function runStage3ChartReview(
   const consolidationLows = consolidationBars
     .map((bar) => readNumber(bar, ["Low"]))
     .filter((value): value is number => value !== null);
-  const consolidationRangeHigh = consolidationHighs.length > 0 ? Math.max(...consolidationHighs) : null;
-  const consolidationRangeLow = consolidationLows.length > 0 ? Math.min(...consolidationLows) : null;
+  const consolidationRangeHigh =
+    consolidationHighs.length > 0 ? Math.max(...consolidationHighs) : null;
+  const consolidationRangeLow =
+    consolidationLows.length > 0 ? Math.min(...consolidationLows) : null;
 
   const lowerHighCount = (() => {
     if (consolidationHighs.length < 2) {
@@ -2055,7 +2684,11 @@ function runStage3ChartReview(
     for (let index = 1; index < consolidationHighs.length; index += 1) {
       const currentHigh = consolidationHighs[index];
       const previousHigh = consolidationHighs[index - 1];
-      if (currentHigh !== undefined && previousHigh !== undefined && currentHigh < previousHigh) {
+      if (
+        currentHigh !== undefined &&
+        previousHigh !== undefined &&
+        currentHigh < previousHigh
+      ) {
         count += 1;
       }
     }
@@ -2066,21 +2699,36 @@ function runStage3ChartReview(
     .map((bar) => readNumber(bar, ["Close"]))
     .filter((value): value is number => value !== null);
   const lowerZoneCloseCount = (() => {
-    if (consolidationRangeHigh === null || consolidationRangeLow === null || consolidationRangeHigh <= consolidationRangeLow) {
+    if (
+      consolidationRangeHigh === null ||
+      consolidationRangeLow === null ||
+      consolidationRangeHigh <= consolidationRangeLow
+    ) {
       return 0;
     }
 
-    const cutoff = consolidationRangeLow + (consolidationRangeHigh - consolidationRangeLow) * 0.35;
+    const cutoff =
+      consolidationRangeLow +
+      (consolidationRangeHigh - consolidationRangeLow) * 0.35;
     return consolidationCloses.filter((value) => value <= cutoff).length;
   })();
 
   const fakeHoldDistributionPass =
-    (direction === "bullish" && lowerHighCount <= 2 && lowerZoneCloseCount <= 2) ||
+    (direction === "bullish" &&
+      lowerHighCount <= 2 &&
+      lowerZoneCloseCount <= 2) ||
     (direction === "bearish" && lowerHighCount <= 2);
 
-  const keyLevel = direction === "bullish"
-    ? readNumber(bars1DForConfirmation[bars1DForConfirmation.length - 2] ?? null, ["High"])
-    : readNumber(bars1DForConfirmation[bars1DForConfirmation.length - 2] ?? null, ["Low"]);
+  const keyLevel =
+    direction === "bullish"
+      ? readNumber(
+          bars1DForConfirmation[bars1DForConfirmation.length - 2] ?? null,
+          ["High"],
+        )
+      : readNumber(
+          bars1DForConfirmation[bars1DForConfirmation.length - 2] ?? null,
+          ["Low"],
+        );
   const failedBreakoutBullTrapPass =
     direction === "bullish"
       ? keyLevel !== null && !(high > keyLevel && close < keyLevel)
@@ -2114,20 +2762,30 @@ function runStage3ChartReview(
   const pullbackAverageBody = averageBodyFor(pullbackBars);
   const consolidationAverageBody = averageBodyFor(consolidationBars);
   const pullbackBodyControlPass =
-    pullbackAverageBody === null || consolidationAverageBody === null || consolidationAverageBody <= 0
+    pullbackAverageBody === null ||
+    consolidationAverageBody === null ||
+    consolidationAverageBody <= 0
       ? true
       : pullbackAverageBody <= consolidationAverageBody * 1.1;
 
   const pullbackVolumes = pullbackBars
-    .map((bar) => readNumber(bar, ["TotalVolume", "Volume", "Vol", "TotalVolumeTraded"]))
+    .map((bar) =>
+      readNumber(bar, ["TotalVolume", "Volume", "Vol", "TotalVolumeTraded"]),
+    )
     .filter((value): value is number => value !== null);
-  const averagePullbackVolume = pullbackVolumes.length > 0
-    ? pullbackVolumes.reduce((sum, value) => sum + value, 0) / pullbackVolumes.length
-    : null;
-  const nonPullbackBars = consolidationBars.filter((bar) => !pullbackBars.includes(bar));
+  const averagePullbackVolume =
+    pullbackVolumes.length > 0
+      ? pullbackVolumes.reduce((sum, value) => sum + value, 0) /
+        pullbackVolumes.length
+      : null;
+  const nonPullbackBars = consolidationBars.filter(
+    (bar) => !pullbackBars.includes(bar),
+  );
   const averageNonPullbackVolume = (() => {
     const values = nonPullbackBars
-      .map((bar) => readNumber(bar, ["TotalVolume", "Volume", "Vol", "TotalVolumeTraded"]))
+      .map((bar) =>
+        readNumber(bar, ["TotalVolume", "Volume", "Vol", "TotalVolumeTraded"]),
+      )
       .filter((value): value is number => value !== null);
     if (values.length === 0) {
       return null;
@@ -2136,20 +2794,31 @@ function runStage3ChartReview(
     return values.reduce((sum, value) => sum + value, 0) / values.length;
   })();
   const pullbackVolumeTrendUp =
-    pullbackVolumes.length >= 2 ? pullbackVolumes[pullbackVolumes.length - 1]! > pullbackVolumes[0]! : false;
+    pullbackVolumes.length >= 2
+      ? pullbackVolumes[pullbackVolumes.length - 1]! > pullbackVolumes[0]!
+      : false;
   const pullbackSellingVolumePass =
     averagePullbackVolume === null || averageNonPullbackVolume === null
       ? true
-      : !(averagePullbackVolume > averageNonPullbackVolume * 1.05 && pullbackVolumeTrendUp);
+      : !(
+          averagePullbackVolume > averageNonPullbackVolume * 1.05 &&
+          pullbackVolumeTrendUp
+        );
 
-  const closes = bars1DForConfirmation.slice(-7).map((bar) => readNumber(bar, ["Close"]))
+  const closes = bars1DForConfirmation
+    .slice(-7)
+    .map((bar) => readNumber(bar, ["Close"]))
     .filter((value): value is number => value !== null);
   let flipCount = 0;
   for (let index = 2; index < closes.length; index += 1) {
     const closeMinus2 = closes[index - 2];
     const closeMinus1 = closes[index - 1];
     const closeCurrent = closes[index];
-    if (closeMinus2 === undefined || closeMinus1 === undefined || closeCurrent === undefined) {
+    if (
+      closeMinus2 === undefined ||
+      closeMinus1 === undefined ||
+      closeCurrent === undefined
+    ) {
       continue;
     }
 
@@ -2164,12 +2833,15 @@ function runStage3ChartReview(
   }
   const choppyPass = flipCount <= 3;
 
-  const prevBar = bars1DForConfirmation[bars1DForConfirmation.length - 2] ?? null;
+  const prevBar =
+    bars1DForConfirmation[bars1DForConfirmation.length - 2] ?? null;
   const prevHigh = readNumber(prevBar, ["High"]);
   const prevLow = readNumber(prevBar, ["Low"]);
-  const directionalClosePass = direction === "bullish" ? close >= open : close <= open;
+  const directionalClosePass =
+    direction === "bullish" ? close >= open : close <= open;
   const triggerReference = direction === "bullish" ? prevHigh : prevLow;
-  const triggerZoneBuffer = triggerReference === null ? null : Math.max(range * 0.2, close * 0.0025);
+  const triggerZoneBuffer =
+    triggerReference === null ? null : Math.max(range * 0.2, close * 0.0025);
   const triggerZoneHoldPass =
     triggerReference === null || triggerZoneBuffer === null
       ? directionalClosePass
@@ -2181,9 +2853,7 @@ function runStage3ChartReview(
       ? prevHigh !== null && close > prevHigh && directionalClosePass
       : prevLow !== null && close < prevLow && directionalClosePass;
   const triggerZoneRejectionPass =
-    direction === "bullish"
-      ? closeLocation >= 0.5
-      : closeLocation <= 0.5;
+    direction === "bullish" ? closeLocation >= 0.5 : closeLocation <= 0.5;
   const continuationFailureReasons: string[] = [];
   if (!directionalClosePass) {
     continuationFailureReasons.push("closed against the setup direction");
@@ -2203,13 +2873,17 @@ function runStage3ChartReview(
     );
   }
 
-  const highs3M = bars3M.map((bar) => readNumber(bar, ["High"]))
+  const highs3M = bars3M
+    .map((bar) => readNumber(bar, ["High"]))
     .filter((value): value is number => value !== null);
-  const highs1Y = bars1Y.map((bar) => readNumber(bar, ["High"]))
+  const highs1Y = bars1Y
+    .map((bar) => readNumber(bar, ["High"]))
     .filter((value): value is number => value !== null);
-  const lows3M = bars3M.map((bar) => readNumber(bar, ["Low"]))
+  const lows3M = bars3M
+    .map((bar) => readNumber(bar, ["Low"]))
     .filter((value): value is number => value !== null);
-  const lows1Y = bars1Y.map((bar) => readNumber(bar, ["Low"]))
+  const lows1Y = bars1Y
+    .map((bar) => readNumber(bar, ["Low"]))
     .filter((value): value is number => value !== null);
 
   const max3M = highs3M.length > 0 ? Math.max(...highs3M) : null;
@@ -2217,12 +2891,22 @@ function runStage3ChartReview(
   const min3M = lows3M.length > 0 ? Math.min(...lows3M) : null;
   const min1Y = lows1Y.length > 0 ? Math.min(...lows1Y) : null;
 
-  const resistanceLevel = direction === "bullish" ? Math.min(max3M ?? Infinity, max1Y ?? Infinity) : null;
-  const supportLevel = direction === "bearish" ? Math.max(min3M ?? -Infinity, min1Y ?? -Infinity) : null;
+  const resistanceLevel =
+    direction === "bullish"
+      ? Math.min(max3M ?? Infinity, max1Y ?? Infinity)
+      : null;
+  const supportLevel =
+    direction === "bearish"
+      ? Math.max(min3M ?? -Infinity, min1Y ?? -Infinity)
+      : null;
   const levelUsed =
-    direction === "bullish" && resistanceLevel !== null && Number.isFinite(resistanceLevel)
+    direction === "bullish" &&
+    resistanceLevel !== null &&
+    Number.isFinite(resistanceLevel)
       ? resistanceLevel
-      : direction === "bearish" && supportLevel !== null && Number.isFinite(supportLevel)
+      : direction === "bearish" &&
+          supportLevel !== null &&
+          Number.isFinite(supportLevel)
         ? supportLevel
         : null;
   const roomPct =
@@ -2231,8 +2915,17 @@ function runStage3ChartReview(
       : direction === "bearish" && levelUsed !== null
         ? ((close - levelUsed) / close) * 100
         : null;
-  const higherTimeframeRoomPass = roomPct === null || roomPct >= MINIMUM_TRADABLE_RISK_REWARD_RATIO;
-  const higherTimeframe2RPass = roomPct === null || roomPct >= MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO;
+  const higherTimeframeRoomPass =
+    roomPct === null || roomPct >= MINIMUM_TRADABLE_RISK_REWARD_RATIO;
+  const chartAnchoredAsymmetry = evaluateChartAnchoredAsymmetryFromBars(
+    "stage3",
+    direction,
+    close,
+    bars1DForConfirmation,
+    bars3M,
+    bars1Y,
+  );
+  const higherTimeframe2RPass = chartAnchoredAsymmetry.pass;
   const roomTier: Stage3Diagnostics["roomToTargetDiagnostics"]["roomTier"] =
     roomPct === null
       ? "unknown"
@@ -2244,47 +2937,78 @@ function runStage3ChartReview(
             ? "acceptable_sub2r"
             : "preferred_2r_or_better";
   const roomDecisionMode: Stage3Diagnostics["roomToTargetDiagnostics"]["decisionMode"] =
-    roomPct !== null && roomPct < MINIMUM_TRADABLE_RISK_REWARD_RATIO ? "hard_fail" : "score_penalty";
-  const roomToTargetDiagnostics: Stage3Diagnostics["roomToTargetDiagnostics"] = {
-    referencePrice: close,
-    direction,
-    levelDetection:
-      direction === "bullish"
-        ? `bullish uses nearest overhead high from 3M/1Y => min(max3M=${max3M?.toFixed(2) ?? "n/a"}, max1Y=${max1Y?.toFixed(2) ?? "n/a"})`
-        : `bearish uses nearest downside low from 3M/1Y => max(min3M=${min3M?.toFixed(2) ?? "n/a"}, min1Y=${min1Y?.toFixed(2) ?? "n/a"})`,
-    levelStrength:
-      direction === "bullish"
-        ? `3M high=${max3M?.toFixed(2) ?? "n/a"}, 1Y high=${max1Y?.toFixed(2) ?? "n/a"}`
-        : `3M low=${min3M?.toFixed(2) ?? "n/a"}, 1Y low=${min1Y?.toFixed(2) ?? "n/a"}`,
-    levelUsed,
-    roomPct,
-    targetAssumption: `Preferred ${PREFERRED_RISK_REWARD_RATIO.toFixed(2)}R+, confirmable >= ${MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO.toFixed(2)}R, hard fail < ${MINIMUM_TRADABLE_RISK_REWARD_RATIO.toFixed(2)}R`,
-    decisionMode: roomDecisionMode,
-    roomTier,
-    sufficientRoom: higherTimeframe2RPass,
-    preferred2R: roomPct !== null && roomPct >= PREFERRED_RISK_REWARD_RATIO,
-    minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
-    insufficientRoomReason:
-      roomPct === null
-        ? "No finite higher-timeframe level available, treated as pass by current rule."
-        : roomTier === "preferred_2r_or_better"
-          ? `Room ${roomPct.toFixed(2)}% meets/exceeds the preferred 2.00R threshold.`
-          : roomTier === "acceptable_sub2r"
-            ? `Room ${roomPct.toFixed(2)}% is below the preferred 2.00R threshold but still meets the minimum confirmable 1.50R threshold, so Prompt 1 should keep it with a confidence drag.`
-            : roomTier === "borderline_tight"
-              ? `Room ${roomPct.toFixed(2)}% is between 1.25R and 1.50R, so Prompt 1 should penalize it heavily and Prompt 2 should usually reject it.`
-              : `Room ${roomPct.toFixed(2)}% is below 1.25R, so Stage 3 treats it as obvious no-room for immediate trade planning.`,
-  };
-  const higherTimeframeContextPresent = direction === "bullish" ? max3M !== null && max1Y !== null : min3M !== null && min1Y !== null;
+    roomPct !== null && roomPct < MINIMUM_TRADABLE_RISK_REWARD_RATIO
+      ? "hard_fail"
+      : "score_penalty";
+  const roomToTargetDiagnostics: Stage3Diagnostics["roomToTargetDiagnostics"] =
+    {
+      referencePrice: close,
+      direction,
+      levelDetection:
+        direction === "bullish"
+          ? `bullish uses nearest overhead high from 3M/1Y => min(max3M=${max3M?.toFixed(2) ?? "n/a"}, max1Y=${max1Y?.toFixed(2) ?? "n/a"})`
+          : `bearish uses nearest downside low from 3M/1Y => max(min3M=${min3M?.toFixed(2) ?? "n/a"}, min1Y=${min1Y?.toFixed(2) ?? "n/a"})`,
+      levelStrength:
+        direction === "bullish"
+          ? `3M high=${max3M?.toFixed(2) ?? "n/a"}, 1Y high=${max1Y?.toFixed(2) ?? "n/a"}`
+          : `3M low=${min3M?.toFixed(2) ?? "n/a"}, 1Y low=${min1Y?.toFixed(2) ?? "n/a"}`,
+      levelUsed,
+      roomPct,
+      targetAssumption: `Preferred ${PREFERRED_RISK_REWARD_RATIO.toFixed(2)}R+, confirmable >= ${MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO.toFixed(2)}R, hard fail < ${MINIMUM_TRADABLE_RISK_REWARD_RATIO.toFixed(2)}R`,
+      decisionMode: roomDecisionMode,
+      roomTier,
+      sufficientRoom: higherTimeframe2RPass,
+      preferred2R: roomPct !== null && roomPct >= PREFERRED_RISK_REWARD_RATIO,
+      minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
+      invalidationLevel: chartAnchoredAsymmetry.invalidationUnderlying,
+      targetLevel: chartAnchoredAsymmetry.targetUnderlying,
+      invalidationReason: chartAnchoredAsymmetry.invalidationReason,
+      targetReason: chartAnchoredAsymmetry.targetReason,
+      riskDistance: chartAnchoredAsymmetry.riskDistance,
+      rewardDistance: chartAnchoredAsymmetry.rewardDistance,
+      actualRewardRiskRatio: chartAnchoredAsymmetry.rewardRiskRatio,
+      actualRrTier: chartAnchoredAsymmetry.rrTier,
+      insufficientRoomReason:
+        roomPct === null
+          ? "No finite higher-timeframe level available, treated as pass by current rule."
+          : roomTier === "preferred_2r_or_better"
+            ? `Room ${roomPct.toFixed(2)}% meets/exceeds the preferred 2.00R threshold.`
+            : roomTier === "acceptable_sub2r"
+              ? `Room ${roomPct.toFixed(2)}% is below the preferred 2.00R threshold but still meets the minimum confirmable 1.50R threshold, so Prompt 1 should keep it with a confidence drag.`
+              : roomTier === "borderline_tight"
+                ? `Room ${roomPct.toFixed(2)}% is between 1.25R and 1.50R, so Prompt 1 should penalize it heavily and Prompt 2 should usually reject it.`
+                : `Room ${roomPct.toFixed(2)}% is below 1.25R, so Stage 3 treats it as obvious no-room for immediate trade planning.`,
+    };
+  const asymmetryConsistencyFlag =
+    higherTimeframe2RPass &&
+    (chartAnchoredAsymmetry.rewardRiskRatio ?? Number.POSITIVE_INFINITY) < 0.75;
+  const asymmetryConsistencyReason = asymmetryConsistencyFlag
+    ? `Logic inconsistency: Stage 3 higher-timeframe 2R viability passed but chart-anchored actual reward:risk collapsed to ${(chartAnchoredAsymmetry.rewardRiskRatio ?? 0).toFixed(2)}.`
+    : !chartAnchoredAsymmetry.pass
+      ? chartAnchoredAsymmetry.reason
+      : "Stage 3 directional room and actual chart-anchored tradable asymmetry are aligned.";
+  const higherTimeframeContextPresent =
+    direction === "bullish"
+      ? max3M !== null && max1Y !== null
+      : min3M !== null && min1Y !== null;
 
   const triggerZoneFlipCount = (() => {
-    const triggerCloses = bars1DForConfirmation.slice(-6).map((bar) => readNumber(bar, ["Close"]));
+    const triggerCloses = bars1DForConfirmation
+      .slice(-6)
+      .map((bar) => readNumber(bar, ["Close"]));
     let flips = 0;
     for (let index = 2; index < triggerCloses.length; index += 1) {
       const a = triggerCloses[index - 2];
       const b = triggerCloses[index - 1];
       const c = triggerCloses[index];
-      if (a === null || b === null || c === null || a === undefined || b === undefined || c === undefined) {
+      if (
+        a === null ||
+        b === null ||
+        c === null ||
+        a === undefined ||
+        b === undefined ||
+        c === undefined
+      ) {
         continue;
       }
 
@@ -2299,14 +3023,22 @@ function runStage3ChartReview(
     }
     return flips;
   })();
-  const messyTriggerZonePass = triggerZoneFlipCount <= 2 || (triggerZoneFlipCount <= 3 && choppyPass);
-  const weakContinuationStack = !pullbackBodyControlPass && !pullbackSellingVolumePass;
+  const messyTriggerZonePass =
+    triggerZoneFlipCount <= 2 || (triggerZoneFlipCount <= 3 && choppyPass);
+  const weakContinuationStack =
+    !pullbackBodyControlPass && !pullbackSellingVolumePass;
   if (weakContinuationStack) {
-    continuationFailureReasons.push("pullback body and pullback volume both show give-back pressure");
+    continuationFailureReasons.push(
+      "pullback body and pullback volume both show give-back pressure",
+    );
   }
-  const severeDistributionStack = !fakeHoldDistributionPass && (!messyTriggerZonePass || !impulseConsolidationPass);
+  const severeDistributionStack =
+    !fakeHoldDistributionPass &&
+    (!messyTriggerZonePass || !impulseConsolidationPass);
   if (severeDistributionStack) {
-    continuationFailureReasons.push("distribution plus weak hold structure is severe");
+    continuationFailureReasons.push(
+      "distribution plus weak hold structure is severe",
+    );
   }
   const continuationPass =
     decisiveBreakoutContinuationPass ||
@@ -2321,9 +3053,24 @@ function runStage3ChartReview(
     : continuationFailureReasons.join("; ");
 
   const checkDiagnostics: Stage3CheckDiagnostic[] = [
-    { check: "alignment", pass: alignmentPass, reason: alignmentReason, impact: getCheckImpactLabel("alignment", volumeRatio) },
-    { check: "expansion", pass: expansionPass, reason: `expansionRatio=${expansionRatio === null ? "n/a" : expansionRatio.toFixed(2)}`, impact: getCheckImpactLabel("expansion", volumeRatio) },
-    { check: "body-wick", pass: bodyQualityPass, reason: `bodyToRange=${bodyToRange.toFixed(2)}, closeLocation=${closeLocation.toFixed(2)}, wickiness=${wickiness === null ? "n/a" : wickiness.toFixed(2)}`, impact: getCheckImpactLabel("body-wick", volumeRatio) },
+    {
+      check: "alignment",
+      pass: alignmentPass,
+      reason: alignmentReason,
+      impact: getCheckImpactLabel("alignment", volumeRatio),
+    },
+    {
+      check: "expansion",
+      pass: expansionPass,
+      reason: `expansionRatio=${expansionRatio === null ? "n/a" : expansionRatio.toFixed(2)}`,
+      impact: getCheckImpactLabel("expansion", volumeRatio),
+    },
+    {
+      check: "body-wick",
+      pass: bodyQualityPass,
+      reason: `bodyToRange=${bodyToRange.toFixed(2)}, closeLocation=${closeLocation.toFixed(2)}, wickiness=${wickiness === null ? "n/a" : wickiness.toFixed(2)}`,
+      impact: getCheckImpactLabel("body-wick", volumeRatio),
+    },
     {
       check: "volume",
       pass: volumePass,
@@ -2336,10 +3083,17 @@ function runStage3ChartReview(
     {
       check: "volume-data",
       pass: volumeDataPresent,
-      reason: volumeDataPresent ? "volume values parsed from at least one 1D bar" : "missing volume data in 1D bars",
+      reason: volumeDataPresent
+        ? "volume values parsed from at least one 1D bar"
+        : "missing volume data in 1D bars",
       impact: getCheckImpactLabel("volume-data", volumeRatio),
     },
-    { check: "choppy", pass: choppyPass, reason: `flipCount=${flipCount}`, impact: getCheckImpactLabel("choppy", volumeRatio) },
+    {
+      check: "choppy",
+      pass: choppyPass,
+      reason: `flipCount=${flipCount}`,
+      impact: getCheckImpactLabel("choppy", volumeRatio),
+    },
     {
       check: "impulse-consolidation",
       pass: impulseConsolidationPass,
@@ -2355,7 +3109,10 @@ function runStage3ChartReview(
     {
       check: "failed-breakout-trap",
       pass: failedBreakoutBullTrapPass,
-      reason: direction === "bullish" ? `high=${high.toFixed(2)}, close=${close.toFixed(2)}, keyLevel=${keyLevel?.toFixed(2) ?? "n/a"}` : `low=${low.toFixed(2)}, close=${close.toFixed(2)}, keyLevel=${keyLevel?.toFixed(2) ?? "n/a"}`,
+      reason:
+        direction === "bullish"
+          ? `high=${high.toFixed(2)}, close=${close.toFixed(2)}, keyLevel=${keyLevel?.toFixed(2) ?? "n/a"}`
+          : `low=${low.toFixed(2)}, close=${close.toFixed(2)}, keyLevel=${keyLevel?.toFixed(2) ?? "n/a"}`,
       impact: getCheckImpactLabel("failed-breakout-trap", volumeRatio),
     },
     {
@@ -2376,15 +3133,36 @@ function runStage3ChartReview(
       reason: `triggerZoneFlipCount=${triggerZoneFlipCount}`,
       impact: getCheckImpactLabel("trigger-zone-flips", volumeRatio),
     },
-    { check: "continuation", pass: continuationPass, reason: continuationReason, impact: getCheckImpactLabel("continuation", volumeRatio) },
+    {
+      check: "continuation",
+      pass: continuationPass,
+      reason: continuationReason,
+      impact: getCheckImpactLabel("continuation", volumeRatio),
+    },
     {
       check: "higher-timeframe-context",
       pass: higherTimeframeContextPresent,
-      reason: higherTimeframeContextPresent ? "3M/1Y highs/lows available" : "missing higher-timeframe context (3M/1Y high/low data)",
+      reason: higherTimeframeContextPresent
+        ? "3M/1Y highs/lows available"
+        : "missing higher-timeframe context (3M/1Y high/low data)",
       impact: getCheckImpactLabel("higher-timeframe-context", volumeRatio),
     },
-    { check: "higher-timeframe-room", pass: higherTimeframeRoomPass, reason: `roomPct=${roomPct === null ? "n/a" : roomPct.toFixed(2)}%; ${describeRoomToTargetDecision(roomToTargetDiagnostics)}`, impact: getCheckImpactLabel("higher-timeframe-room", volumeRatio) },
-    { check: "higher-timeframe-2r-viability", pass: higherTimeframe2RPass, reason: `${describeRoomToTargetDecision(roomToTargetDiagnostics)}`, impact: getCheckImpactLabel("higher-timeframe-2r-viability", volumeRatio) },
+    {
+      check: "higher-timeframe-room",
+      pass: higherTimeframeRoomPass,
+      reason: `roomPct=${roomPct === null ? "n/a" : roomPct.toFixed(2)}%; ${describeRoomToTargetDecision(roomToTargetDiagnostics)}`,
+      impact: getCheckImpactLabel("higher-timeframe-room", volumeRatio),
+    },
+    {
+      check: "higher-timeframe-2r-viability",
+      pass: higherTimeframe2RPass,
+      reason: chartAnchoredAsymmetry.pass
+        ? `${describeRoomToTargetDecision(
+            roomToTargetDiagnostics,
+          )}; actual chart-anchored R:R ${chartAnchoredAsymmetry.rewardRiskRatio.toFixed(2)} using ${chartAnchoredAsymmetry.invalidationReason} -> ${chartAnchoredAsymmetry.targetReason}`
+        : `${chartAnchoredAsymmetry.reason}; directional room=${roomPct === null ? "n/a" : `${roomPct.toFixed(2)}%`}`,
+      impact: getCheckImpactLabel("higher-timeframe-2r-viability", volumeRatio),
+    },
   ];
 
   const checks = [
@@ -2450,10 +3228,34 @@ function runStage3ChartReview(
         volumeRatio === null
           ? `unable to compute (lastVolume=${lastVolume ?? "n/a"}, averageVolume=${averageVolume === null ? "n/a" : averageVolume.toFixed(2)})`
           : `${lastVolume} / ${averageVolume?.toFixed(2)} = ${volumeRatio.toFixed(2)}`,
-      resistanceLevel: resistanceLevel !== null && Number.isFinite(resistanceLevel) ? resistanceLevel : null,
-      supportLevel: supportLevel !== null && Number.isFinite(supportLevel) ? supportLevel : null,
+      resistanceLevel:
+        resistanceLevel !== null && Number.isFinite(resistanceLevel)
+          ? resistanceLevel
+          : null,
+      supportLevel:
+        supportLevel !== null && Number.isFinite(supportLevel)
+          ? supportLevel
+          : null,
       roomPct,
       roomToTargetDiagnostics,
+      chartAnchoredAsymmetry: {
+        referencePrice: close,
+        invalidationLevel: chartAnchoredAsymmetry.invalidationUnderlying,
+        targetLevel: chartAnchoredAsymmetry.targetUnderlying,
+        invalidationReason: chartAnchoredAsymmetry.invalidationReason,
+        targetReason: chartAnchoredAsymmetry.targetReason,
+        riskDistance: chartAnchoredAsymmetry.riskDistance,
+        rewardDistance: chartAnchoredAsymmetry.rewardDistance,
+        actualRewardRiskRatio: chartAnchoredAsymmetry.rewardRiskRatio,
+        actualRrTier: chartAnchoredAsymmetry.rrTier,
+        actualTradablePass: chartAnchoredAsymmetry.pass,
+        failureReason: chartAnchoredAsymmetry.pass
+          ? null
+          : chartAnchoredAsymmetry.reason,
+        stage3RoomPct: roomPct,
+        asymmetryConsistencyFlag,
+        asymmetryConsistencyReason,
+      },
       checks: checkDiagnostics,
     },
   };
@@ -2472,7 +3274,8 @@ export function runFakeScan(input: ScanInput): ScanResult {
         direction: null,
         confidence: null,
         conclusion: "no_trade_today",
-        reason: "Bullish prompt detected, but all mock bullish tickers are excluded.",
+        reason:
+          "Bullish prompt detected, but all mock bullish tickers are excluded.",
       };
     }
 
@@ -2494,7 +3297,8 @@ export function runFakeScan(input: ScanInput): ScanResult {
         direction: null,
         confidence: null,
         conclusion: "no_trade_today",
-        reason: "Bearish prompt detected, but all mock bearish tickers are excluded.",
+        reason:
+          "Bearish prompt detected, but all mock bearish tickers are excluded.",
       };
     }
 
@@ -2524,12 +3328,18 @@ export function parseBars(payload: unknown): Record<string, unknown>[] {
   const objectPayload = payload as Record<string, unknown>;
   const directBars = objectPayload["Bars"];
   if (Array.isArray(directBars)) {
-    return directBars.filter((bar): bar is Record<string, unknown> => !!bar && typeof bar === "object");
+    return directBars.filter(
+      (bar): bar is Record<string, unknown> => !!bar && typeof bar === "object",
+    );
   }
 
-  const barsEntry = Object.entries(objectPayload).find(([key]) => normalizeFieldName(key) === "bars");
+  const barsEntry = Object.entries(objectPayload).find(
+    ([key]) => normalizeFieldName(key) === "bars",
+  );
   if (barsEntry && Array.isArray(barsEntry[1])) {
-    return barsEntry[1].filter((bar): bar is Record<string, unknown> => !!bar && typeof bar === "object");
+    return barsEntry[1].filter(
+      (bar): bar is Record<string, unknown> => !!bar && typeof bar === "object",
+    );
   }
 
   const nestedData = objectPayload["Data"];
@@ -2544,14 +3354,22 @@ function normalizeFieldName(field: string): string {
   return field.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
 }
 
-export function normalizeBar(bar: Record<string, unknown>): Record<string, unknown> {
+export function normalizeBar(
+  bar: Record<string, unknown>,
+): Record<string, unknown> {
   const normalized = { ...bar };
   const fieldAliasMap: Record<string, string[]> = {
     Open: ["open"],
     High: ["high"],
     Low: ["low"],
     Close: ["close", "last"],
-    Volume: ["volume", "vol", "totalvolume", "totalvolumetraded", "tradevolume"],
+    Volume: [
+      "volume",
+      "vol",
+      "totalvolume",
+      "totalvolumetraded",
+      "tradevolume",
+    ],
   };
 
   for (const [targetField, aliases] of Object.entries(fieldAliasMap)) {
@@ -2559,7 +3377,9 @@ export function normalizeBar(bar: Record<string, unknown>): Record<string, unkno
       continue;
     }
 
-    const matchedEntry = Object.entries(bar).find(([key]) => aliases.includes(normalizeFieldName(key)));
+    const matchedEntry = Object.entries(bar).find(([key]) =>
+      aliases.includes(normalizeFieldName(key)),
+    );
     if (!matchedEntry) {
       continue;
     }
@@ -2596,7 +3416,9 @@ function parseYahooEarningsDate(payload: unknown): string | null {
     return null;
   }
 
-  const calendarEvents = (firstResult as Record<string, unknown>)["calendarEvents"];
+  const calendarEvents = (firstResult as Record<string, unknown>)[
+    "calendarEvents"
+  ];
   if (!calendarEvents || typeof calendarEvents !== "object") {
     return null;
   }
@@ -2649,7 +3471,11 @@ async function fetchEarningsDate(symbol: string): Promise<string | null> {
   return parseYahooEarningsDate(payload);
 }
 
-async function runEarningsCheck(symbol: string, windowMinDte: number, windowMaxDte: number): Promise<EarningsCheckResult> {
+async function runEarningsCheck(
+  symbol: string,
+  windowMinDte: number,
+  windowMaxDte: number,
+): Promise<EarningsCheckResult> {
   const normalizedWindowMin = Math.max(0, Math.min(windowMinDte, windowMaxDte));
   const normalizedWindowMax = Math.max(normalizedWindowMin, windowMaxDte);
 
@@ -2672,7 +3498,8 @@ async function runEarningsCheck(symbol: string, windowMinDte: number, windowMaxD
   }
 
   const earningsDte = getDte(new Date(earningsDate));
-  const insideWindow = earningsDte >= normalizedWindowMin && earningsDte <= normalizedWindowMax;
+  const insideWindow =
+    earningsDte >= normalizedWindowMin && earningsDte <= normalizedWindowMax;
 
   if (insideWindow) {
     return {
@@ -2709,7 +3536,9 @@ async function resolveTargetDteForSymbol(
   get: (path: string) => Promise<Response>,
   symbol: string,
 ): Promise<number | null> {
-  const expirationsResponse = await get(`/marketdata/options/expirations/${encodeURIComponent(symbol)}`);
+  const expirationsResponse = await get(
+    `/marketdata/options/expirations/${encodeURIComponent(symbol)}`,
+  );
   if (!expirationsResponse.ok) {
     return null;
   }
@@ -2720,7 +3549,9 @@ async function resolveTargetDteForSymbol(
     return null;
   }
 
-  const inRange = expirations.filter((item) => item.dte >= 14 && item.dte <= 21);
+  const inRange = expirations.filter(
+    (item) => item.dte >= 14 && item.dte <= 21,
+  );
   const targetExpiration = (inRange.length > 0 ? inRange : expirations).sort(
     (a, b) => Math.abs(a.dte - 17) - Math.abs(b.dte - 17),
   )[0];
@@ -2763,7 +3594,11 @@ export function readExpirations(payload: unknown): OptionExpirationCandidate[] {
 
     const dte = getDte(expirationDate);
     if (dte > 0) {
-      results.push({ date: expirationDate.toISOString().slice(0, 10), dte, apiValue: dateText });
+      results.push({
+        date: expirationDate.toISOString().slice(0, 10),
+        dte,
+        apiValue: dateText,
+      });
     }
   }
 
@@ -2780,8 +3615,14 @@ export function pickTargetExpiration(
     return null;
   }
 
-  const inRange = expirations.filter((item) => item.dte >= dteMin && item.dte <= dteMax);
-  return (inRange.length > 0 ? inRange : expirations).sort((a, b) => Math.abs(a.dte - dteCenter) - Math.abs(b.dte - dteCenter))[0] ?? null;
+  const inRange = expirations.filter(
+    (item) => item.dte >= dteMin && item.dte <= dteMax,
+  );
+  return (
+    (inRange.length > 0 ? inRange : expirations).sort(
+      (a, b) => Math.abs(a.dte - dteCenter) - Math.abs(b.dte - dteCenter),
+    )[0] ?? null
+  );
 }
 
 function parseContracts(payload: unknown): Record<string, unknown>[] {
@@ -2790,18 +3631,31 @@ function parseContracts(payload: unknown): Record<string, unknown>[] {
   }
 
   const objectPayload = payload as Record<string, unknown>;
-  const keys = ["Options", "OptionChain", "Contracts", "Calls", "Puts", "Strikes"];
+  const keys = [
+    "Options",
+    "OptionChain",
+    "Contracts",
+    "Calls",
+    "Puts",
+    "Strikes",
+  ];
   for (const key of keys) {
     const value = objectPayload[key];
     if (Array.isArray(value)) {
-      return value.filter((contract): contract is Record<string, unknown> => !!contract && typeof contract === "object");
+      return value.filter(
+        (contract): contract is Record<string, unknown> =>
+          !!contract && typeof contract === "object",
+      );
     }
   }
 
   return [];
 }
 
-function readText(source: Record<string, unknown>, keys: string[]): string | null {
+function readText(
+  source: Record<string, unknown>,
+  keys: string[],
+): string | null {
   for (const key of keys) {
     const value = source[key];
     if (typeof value === "string" && value.trim().length > 0) {
@@ -2845,7 +3699,11 @@ export function readStrikes(payload: unknown): {
     const deduped = [...new Set(numericStrikes)].sort((a, b) => a - b);
 
     return {
-      strikes: deduped.map((strike) => ({ strike, callSymbol: null, putSymbol: null })),
+      strikes: deduped.map((strike) => ({
+        strike,
+        callSymbol: null,
+        putSymbol: null,
+      })),
       rawStrikeCount: rawStrikes.length,
       normalizedStrikeCount: deduped.length,
     };
@@ -2863,7 +3721,12 @@ export function readStrikes(payload: unknown): {
       continue;
     }
 
-    const callSymbol = readText(contract, ["CallSymbol", "Call", "OptionSymbol", "Symbol"]);
+    const callSymbol = readText(contract, [
+      "CallSymbol",
+      "Call",
+      "OptionSymbol",
+      "Symbol",
+    ]);
     const putSymbol = readText(contract, ["PutSymbol", "Put"]);
     results.push({ strike, callSymbol, putSymbol });
   }
@@ -2894,7 +3757,12 @@ export function readStrikes(payload: unknown): {
   };
 }
 
-export function buildOptionSymbol(symbol: string, expirationDate: string, type: "C" | "P", strike: number): string {
+export function buildOptionSymbol(
+  symbol: string,
+  expirationDate: string,
+  type: "C" | "P",
+  strike: number,
+): string {
   const [yearText, monthText, dayText] = expirationDate.split("-");
   const yearShort = yearText?.slice(-2) ?? "00";
   const month = monthText ?? "01";
@@ -2904,7 +3772,6 @@ export function buildOptionSymbol(symbol: string, expirationDate: string, type: 
     : strike.toFixed(3).replace(/\.?0+$/, "");
   return `${symbol} ${yearShort}${month}${day}${type}${strikeText}`;
 }
-
 
 export function buildDirectOptionSymbols(
   symbol: string,
@@ -2928,7 +3795,10 @@ export function buildDirectOptionSymbols(
 export async function fetchFirstUsableDirectOptionQuote(
   get: (path: string) => Promise<Response>,
   symbolsToTry: string[],
-): Promise<{ quote: DirectOptionQuoteData | null; attempts: DirectOptionQuoteAttempt[] }> {
+): Promise<{
+  quote: DirectOptionQuoteData | null;
+  attempts: DirectOptionQuoteAttempt[];
+}> {
   const attempts: DirectOptionQuoteAttempt[] = [];
   let capturedFirstHttp200Payload = false;
 
@@ -2961,14 +3831,24 @@ export async function fetchFirstUsableDirectOptionQuote(
       "Open_Int",
       "OpenInterestToday",
     ]);
-    const bid = readNumber(optionQuote, ["Bid", "BidPrice", "BestBid", "BidPx"]);
-    const ask = readNumber(optionQuote, ["Ask", "AskPrice", "BestAsk", "AskPx"]);
+    const bid = readNumber(optionQuote, [
+      "Bid",
+      "BidPrice",
+      "BestBid",
+      "BidPx",
+    ]);
+    const ask = readNumber(optionQuote, [
+      "Ask",
+      "AskPrice",
+      "BestAsk",
+      "AskPx",
+    ]);
     const mid = bid !== null && ask !== null ? (ask + bid) / 2 : null;
     const spread = bid !== null && ask !== null ? ask - bid : null;
-    const spreadPct = spread !== null && mid !== null && mid > 0 ? spread / mid : null;
-    const rawQuotePayloadSample = !capturedFirstHttp200Payload && optionQuote
-      ? optionQuote
-      : null;
+    const spreadPct =
+      spread !== null && mid !== null && mid > 0 ? spread / mid : null;
+    const rawQuotePayloadSample =
+      !capturedFirstHttp200Payload && optionQuote ? optionQuote : null;
 
     if (!capturedFirstHttp200Payload && optionQuote) {
       capturedFirstHttp200Payload = true;
@@ -3039,7 +3919,10 @@ async function evaluateStage2Strike(
   strike: OptionStrikeCandidate,
 ): Promise<Stage2ContractEvaluation> {
   const symbolsToTry = buildDirectOptionSymbols(symbol, expirationDate, strike);
-  const { quote, attempts } = await fetchFirstUsableDirectOptionQuote(get, symbolsToTry);
+  const { quote, attempts } = await fetchFirstUsableDirectOptionQuote(
+    get,
+    symbolsToTry,
+  );
 
   if (!quote) {
     return {
@@ -3051,7 +3934,8 @@ async function evaluateStage2Strike(
     };
   }
 
-  const spreadPercent = quote.mid > 0 ? quote.spread / quote.mid : Number.POSITIVE_INFINITY;
+  const spreadPercent =
+    quote.mid > 0 ? quote.spread / quote.mid : Number.POSITIVE_INFINITY;
   if (quote.openInterest <= 500) {
     return {
       strike,
@@ -3067,7 +3951,8 @@ async function evaluateStage2Strike(
       strike,
       quote,
       attempts,
-      reason: "Candidate contract failed spread threshold (requires <= 1.5 and <= 12% of mid).",
+      reason:
+        "Candidate contract failed spread threshold (requires <= 1.5 and <= 12% of mid).",
       spreadPercent,
     };
   }
@@ -3084,7 +3969,10 @@ async function evaluateStage2Strike(
 async function runStage2OptionsTradability(
   get: (path: string) => Promise<Response>,
   stage1Passed: Stage1Candidate[],
-): Promise<{ passed: OptionsCandidate[]; diagnostics: Stage2SymbolDiagnostic[] }> {
+): Promise<{
+  passed: OptionsCandidate[];
+  diagnostics: Stage2SymbolDiagnostic[];
+}> {
   const stage2Passed: OptionsCandidate[] = [];
   const diagnostics: Stage2SymbolDiagnostic[] = [];
 
@@ -3120,7 +4008,13 @@ async function runStage2OptionsTradability(
     const underlyingQuoteResponse = await get(quotePath);
     diagnostic.underlyingQuoteStatus = underlyingQuoteResponse.status;
 
-    const underlyingPriceFields = ["Last", "LastTrade", "Trade", "Mark", "Close"];
+    const underlyingPriceFields = [
+      "Last",
+      "LastTrade",
+      "Trade",
+      "Mark",
+      "Close",
+    ];
     let underlyingPrice = candidate.lastPrice;
 
     if (underlyingQuoteResponse.ok) {
@@ -3133,7 +4027,10 @@ async function runStage2OptionsTradability(
         const parsedValue = readNumber(underlyingQuote, [field]);
         diagnostic.underlyingPriceFieldCandidates.push({
           field,
-          rawValue: typeof rawValue === "number" || typeof rawValue === "string" ? rawValue : null,
+          rawValue:
+            typeof rawValue === "number" || typeof rawValue === "string"
+              ? rawValue
+              : null,
           parsedValue,
         });
 
@@ -3145,22 +4042,30 @@ async function runStage2OptionsTradability(
 
       diagnostic.underlyingPriceFieldUsed = selectedField;
       if (selectedField === null) {
-        diagnostic.underlyingPriceFallback = "No preferred quote field parsed; fell back to Stage 1 lastPrice.";
+        diagnostic.underlyingPriceFallback =
+          "No preferred quote field parsed; fell back to Stage 1 lastPrice.";
       }
     } else {
-      diagnostic.underlyingPriceFallback = "Underlying quote request failed; fell back to Stage 1 lastPrice.";
+      diagnostic.underlyingPriceFallback =
+        "Underlying quote request failed; fell back to Stage 1 lastPrice.";
     }
 
-    diagnostic.underlyingPrice = Number.isFinite(underlyingPrice) && underlyingPrice > 0 ? underlyingPrice : null;
+    diagnostic.underlyingPrice =
+      Number.isFinite(underlyingPrice) && underlyingPrice > 0
+        ? underlyingPrice
+        : null;
     if (diagnostic.underlyingPrice === null) {
-      diagnostic.reason = "Unable to resolve underlying price for strike selection.";
+      diagnostic.reason =
+        "Unable to resolve underlying price for strike selection.";
       diagnostics.push(diagnostic);
       continue;
     }
 
     const underlyingPriceForStrikeSelection = diagnostic.underlyingPrice;
 
-    const expirationsResponse = await get(`/marketdata/options/expirations/${encodeURIComponent(candidate.symbol)}`);
+    const expirationsResponse = await get(
+      `/marketdata/options/expirations/${encodeURIComponent(candidate.symbol)}`,
+    );
     if (!expirationsResponse.ok) {
       diagnostic.reason = `Expirations request failed (${expirationsResponse.status}).`;
       diagnostics.push(diagnostic);
@@ -3176,7 +4081,9 @@ async function runStage2OptionsTradability(
       continue;
     }
 
-    const inRange = expirations.filter((item) => item.dte >= 14 && item.dte <= 21);
+    const inRange = expirations.filter(
+      (item) => item.dte >= 14 && item.dte <= 21,
+    );
     const targetExpiration = (inRange.length > 0 ? inRange : expirations).sort(
       (a, b) => Math.abs(a.dte - 17) - Math.abs(b.dte - 17),
     )[0];
@@ -3200,7 +4107,8 @@ async function runStage2OptionsTradability(
     }
 
     const strikesPayload = await strikesResponse.json();
-    const { strikes, rawStrikeCount, normalizedStrikeCount } = readStrikes(strikesPayload);
+    const { strikes, rawStrikeCount, normalizedStrikeCount } =
+      readStrikes(strikesPayload);
     diagnostic.rawStrikeCount = rawStrikeCount;
     diagnostic.normalizedStrikeCount = normalizedStrikeCount;
     if (strikes.length === 0) {
@@ -3210,7 +4118,11 @@ async function runStage2OptionsTradability(
     }
 
     const nearbyStrikes = [...strikes]
-      .sort((a, b) => Math.abs(a.strike - underlyingPriceForStrikeSelection) - Math.abs(b.strike - underlyingPriceForStrikeSelection))
+      .sort(
+        (a, b) =>
+          Math.abs(a.strike - underlyingPriceForStrikeSelection) -
+          Math.abs(b.strike - underlyingPriceForStrikeSelection),
+      )
       .slice(0, 3);
     const selectedStrike = nearbyStrikes[0];
 
@@ -3224,7 +4136,12 @@ async function runStage2OptionsTradability(
     let fallbackEvaluation: Stage2ContractEvaluation | null = null;
 
     for (const strikeCandidate of nearbyStrikes) {
-      const evaluation = await evaluateStage2Strike(get, candidate.symbol, targetExpiration.date, strikeCandidate);
+      const evaluation = await evaluateStage2Strike(
+        get,
+        candidate.symbol,
+        targetExpiration.date,
+        strikeCandidate,
+      );
       diagnostic.optionQuoteAttempts.push(...evaluation.attempts);
 
       if (fallbackEvaluation === null) {
@@ -3242,10 +4159,12 @@ async function runStage2OptionsTradability(
     }
 
     const finalEvaluation = passingEvaluation ?? fallbackEvaluation;
-    diagnostic.selectedStrike = finalEvaluation?.strike.strike ?? selectedStrike.strike;
+    diagnostic.selectedStrike =
+      finalEvaluation?.strike.strike ?? selectedStrike.strike;
 
     if (!finalEvaluation || !finalEvaluation.quote) {
-      diagnostic.reason = "No usable direct option quote found for selected or nearby strikes.";
+      diagnostic.reason =
+        "No usable direct option quote found for selected or nearby strikes.";
       diagnostics.push(diagnostic);
       continue;
     }
@@ -3303,7 +4222,9 @@ function buildTierSummary(
   };
 }
 
-function mergeRejectionSummaries(...summaries: StarterUniverseTelemetry["rejectionSummaries"][]): StarterUniverseTelemetry["rejectionSummaries"] {
+function mergeRejectionSummaries(
+  ...summaries: StarterUniverseTelemetry["rejectionSummaries"][]
+): StarterUniverseTelemetry["rejectionSummaries"] {
   const merged: StarterUniverseTelemetry["rejectionSummaries"] = {
     stage1: {},
     stage2: {},
@@ -3328,16 +4249,24 @@ function combineTelemetry(
   finalNoTradeExplanation: string | null,
 ): StarterUniverseTelemetry {
   const scannedTiers = executions.map((item) => item.tier.key);
-  const tierSummaries = executions.map((item) => buildTierSummary(item.tier, item.telemetry, item.result));
+  const tierSummaries = executions.map((item) =>
+    buildTierSummary(item.tier, item.telemetry, item.result),
+  );
   const stageCounts = executions.reduce<StarterUniverseStageCounts>(
     (acc, item) => ({
-      stage1Entered: acc.stage1Entered + item.telemetry.stageCounts.stage1Entered,
+      stage1Entered:
+        acc.stage1Entered + item.telemetry.stageCounts.stage1Entered,
       stage1Passed: acc.stage1Passed + item.telemetry.stageCounts.stage1Passed,
       stage2Passed: acc.stage2Passed + item.telemetry.stageCounts.stage2Passed,
       stage3Passed: acc.stage3Passed + item.telemetry.stageCounts.stage3Passed,
-      continuationEligibleFinalists: acc.continuationEligibleFinalists + item.telemetry.stageCounts.continuationEligibleFinalists,
-      confirmationEligibleFinalists: acc.confirmationEligibleFinalists + item.telemetry.stageCounts.confirmationEligibleFinalists,
-      finalistsReviewed: acc.finalistsReviewed + item.telemetry.stageCounts.finalistsReviewed,
+      continuationEligibleFinalists:
+        acc.continuationEligibleFinalists +
+        item.telemetry.stageCounts.continuationEligibleFinalists,
+      confirmationEligibleFinalists:
+        acc.confirmationEligibleFinalists +
+        item.telemetry.stageCounts.confirmationEligibleFinalists,
+      finalistsReviewed:
+        acc.finalistsReviewed + item.telemetry.stageCounts.finalistsReviewed,
       finalRanking: acc.finalRanking + item.telemetry.stageCounts.finalRanking,
     }),
     {
@@ -3353,14 +4282,38 @@ function combineTelemetry(
   );
   const stageSymbols = executions.reduce<StarterUniverseStageSymbols>(
     (acc, item) => ({
-      stage1Entered: [...acc.stage1Entered, ...item.telemetry.stageSymbols.stage1Entered],
-      stage1Passed: [...acc.stage1Passed, ...item.telemetry.stageSymbols.stage1Passed],
-      stage2Passed: [...acc.stage2Passed, ...item.telemetry.stageSymbols.stage2Passed],
-      stage3Passed: [...acc.stage3Passed, ...item.telemetry.stageSymbols.stage3Passed],
-      continuationEligibleFinalists: [...acc.continuationEligibleFinalists, ...item.telemetry.stageSymbols.continuationEligibleFinalists],
-      confirmationEligibleFinalists: [...acc.confirmationEligibleFinalists, ...item.telemetry.stageSymbols.confirmationEligibleFinalists],
-      finalistsReviewed: [...acc.finalistsReviewed, ...item.telemetry.stageSymbols.finalistsReviewed],
-      finalRanking: [...acc.finalRanking, ...item.telemetry.stageSymbols.finalRanking],
+      stage1Entered: [
+        ...acc.stage1Entered,
+        ...item.telemetry.stageSymbols.stage1Entered,
+      ],
+      stage1Passed: [
+        ...acc.stage1Passed,
+        ...item.telemetry.stageSymbols.stage1Passed,
+      ],
+      stage2Passed: [
+        ...acc.stage2Passed,
+        ...item.telemetry.stageSymbols.stage2Passed,
+      ],
+      stage3Passed: [
+        ...acc.stage3Passed,
+        ...item.telemetry.stageSymbols.stage3Passed,
+      ],
+      continuationEligibleFinalists: [
+        ...acc.continuationEligibleFinalists,
+        ...item.telemetry.stageSymbols.continuationEligibleFinalists,
+      ],
+      confirmationEligibleFinalists: [
+        ...acc.confirmationEligibleFinalists,
+        ...item.telemetry.stageSymbols.confirmationEligibleFinalists,
+      ],
+      finalistsReviewed: [
+        ...acc.finalistsReviewed,
+        ...item.telemetry.stageSymbols.finalistsReviewed,
+      ],
+      finalRanking: [
+        ...acc.finalRanking,
+        ...item.telemetry.stageSymbols.finalRanking,
+      ],
     }),
     {
       stage1Entered: [],
@@ -3374,34 +4327,54 @@ function combineTelemetry(
     },
   );
   const finalTelemetry = executions.at(-1)?.telemetry;
-  const reviewedFinalistOutcomes = executions.flatMap((item) => item.telemetry.reviewedFinalistOutcomes);
+  const reviewedFinalistOutcomes = executions.flatMap(
+    (item) => item.telemetry.reviewedFinalistOutcomes,
+  );
 
   return {
     stageCounts,
     stageSymbols,
-    finalistsReviewedDebug: executions.flatMap((item) => item.telemetry.finalistsReviewedDebug),
-    stage3PassedDetails: executions.flatMap((item) => item.telemetry.stage3PassedDetails),
-    finalRankingDebug: executions.flatMap((item) => item.telemetry.finalRankingDebug),
-    rejectionSummaries: mergeRejectionSummaries(...executions.map((item) => item.telemetry.rejectionSummaries)),
+    finalistsReviewedDebug: executions.flatMap(
+      (item) => item.telemetry.finalistsReviewedDebug,
+    ),
+    stage3PassedDetails: executions.flatMap(
+      (item) => item.telemetry.stage3PassedDetails,
+    ),
+    finalRankingDebug: executions.flatMap(
+      (item) => item.telemetry.finalRankingDebug,
+    ),
+    rejectionSummaries: mergeRejectionSummaries(
+      ...executions.map((item) => item.telemetry.rejectionSummaries),
+    ),
     nearMisses: executions.flatMap((item) => item.telemetry.nearMisses),
-    consistencyChecks: executions.flatMap((item) => item.telemetry.consistencyChecks),
+    consistencyChecks: executions.flatMap(
+      (item) => item.telemetry.consistencyChecks,
+    ),
     finalSelectedSymbol: selectedSymbol,
     topRankedSymbol: finalTelemetry?.topRankedSymbol ?? null,
     scannedTiers,
     winningTier,
     tierSummaries,
-    tierStageCounts: Object.fromEntries(tierSummaries.map((summary) => [summary.tier, summary.counts])),
-    tierFinalistsReviewed: Object.fromEntries(tierSummaries.map((summary) => [summary.tier, summary.finalistsReviewed])),
+    tierStageCounts: Object.fromEntries(
+      tierSummaries.map((summary) => [summary.tier, summary.counts]),
+    ),
+    tierFinalistsReviewed: Object.fromEntries(
+      tierSummaries.map((summary) => [summary.tier, summary.finalistsReviewed]),
+    ),
     cumulativeStageCounts: stageCounts,
     finalNoTradeExplanation,
     reviewedFinalistOutcomes,
-    bestReviewedFinalistsAcrossTiers: finalTelemetry?.bestReviewedFinalistsAcrossTiers ?? reviewedFinalistOutcomes.map((item) => item.symbol),
-    bestRejectedCandidates: finalTelemetry?.bestRejectedCandidates ?? reviewedFinalistOutcomes.map((item) => ({
-      symbol: item.symbol,
-      tier: item.tier,
-      tierLabel: item.tierLabel,
-      rejectionReasons: item.confirmationFailureReasons,
-    })),
+    bestReviewedFinalistsAcrossTiers:
+      finalTelemetry?.bestReviewedFinalistsAcrossTiers ??
+      reviewedFinalistOutcomes.map((item) => item.symbol),
+    bestRejectedCandidates:
+      finalTelemetry?.bestRejectedCandidates ??
+      reviewedFinalistOutcomes.map((item) => ({
+        symbol: item.symbol,
+        tier: item.tier,
+        tierLabel: item.tierLabel,
+        rejectionReasons: item.confirmationFailureReasons,
+      })),
     crossTierFinalistSummary: finalTelemetry?.crossTierFinalistSummary ?? null,
   };
 }
@@ -3411,8 +4384,12 @@ async function runUniverseTierTradeStationScan(
   input: ScanInput,
   tier: ScanUniverseTier,
 ): Promise<ScanResult> {
-  const excludedSet = new Set((input.excludedTickers ?? []).map((item) => item.toUpperCase()));
-  const stage1Entered = tier.symbols.filter((symbol) => !excludedSet.has(symbol));
+  const excludedSet = new Set(
+    (input.excludedTickers ?? []).map((item) => item.toUpperCase()),
+  );
+  const stage1Entered = tier.symbols.filter(
+    (symbol) => !excludedSet.has(symbol),
+  );
   const stage1RejectionSummary: StageFailureSummary = {};
   const stage2RejectionSummary: StageFailureSummary = {};
   const stage3RejectionSummary: StageFailureSummary = {};
@@ -3424,7 +4401,9 @@ async function runUniverseTierTradeStationScan(
       continue;
     }
 
-    const quoteResponse = await get(`/marketdata/quotes/${encodeURIComponent(symbol)}`);
+    const quoteResponse = await get(
+      `/marketdata/quotes/${encodeURIComponent(symbol)}`,
+    );
     if (!quoteResponse.ok) {
       incrementSummary(stage1RejectionSummary, "quote");
       continue;
@@ -3432,8 +4411,18 @@ async function runUniverseTierTradeStationScan(
 
     const quotePayload = await quoteResponse.json();
     const quote = pickFirstQuote(quotePayload);
-    const lastPrice = readNumber(quote, ["Last", "LastTrade", "Trade", "Close"]);
-    const averageVolume = readNumber(quote, ["AverageVolume", "AverageDailyVolume", "AvgVolume", "Volume"]);
+    const lastPrice = readNumber(quote, [
+      "Last",
+      "LastTrade",
+      "Trade",
+      "Close",
+    ]);
+    const averageVolume = readNumber(quote, [
+      "AverageVolume",
+      "AverageDailyVolume",
+      "AvgVolume",
+      "Volume",
+    ]);
 
     if (lastPrice === null || lastPrice < 10 || lastPrice > 500) {
       incrementSummary(stage1RejectionSummary, "price");
@@ -3447,7 +4436,9 @@ async function runUniverseTierTradeStationScan(
 
     stage1Passed.push({ symbol, lastPrice, averageVolume });
   }
-  const stage1BySymbol = new Map(stage1Passed.map((candidate) => [candidate.symbol, candidate]));
+  const stage1BySymbol = new Map(
+    stage1Passed.map((candidate) => [candidate.symbol, candidate]),
+  );
 
   const buildScanTelemetry = (params: {
     stage2Passed?: OptionsCandidate[];
@@ -3463,7 +4454,8 @@ async function runUniverseTierTradeStationScan(
     const stage3Evaluations = params.stage3Evaluations ?? [];
     const ranked = params.ranked ?? [];
     const finalRankingDebug = params.finalRankingDebug ?? [];
-    const finalistReviewSource = params.finalistReviewSource ?? buildFinalistReviewSource([], [], []);
+    const finalistReviewSource =
+      params.finalistReviewSource ?? buildFinalistReviewSource([], [], []);
     const finalistReviewResults = params.finalistReviewResults ?? [];
 
     return buildStarterUniverseTelemetry({
@@ -3488,7 +4480,10 @@ async function runUniverseTierTradeStationScan(
     });
   };
 
-  logGeneralScanDebug(`${tier.label} Stage 1 passed`, stage1Passed.map((candidate) => candidate.symbol));
+  logGeneralScanDebug(
+    `${tier.label} Stage 1 passed`,
+    stage1Passed.map((candidate) => candidate.symbol),
+  );
 
   if (stage1Passed.length === 0) {
     return {
@@ -3497,19 +4492,30 @@ async function runUniverseTierTradeStationScan(
       confidence: null,
       conclusion: "no_trade_today",
       reason: `No symbols passed Stage 1 stock filters in ${tier.label}.`,
-      telemetry: buildScanTelemetry({ finalNoTradeExplanation: `No symbols passed Stage 1 stock filters in ${tier.label}.` }),
+      telemetry: buildScanTelemetry({
+        finalNoTradeExplanation: `No symbols passed Stage 1 stock filters in ${tier.label}.`,
+      }),
     };
   }
 
-  const { passed: stage2Passed, diagnostics: stage2Diagnostics } = await runStage2OptionsTradability(get, stage1Passed);
-  const stage2BySymbol = new Map(stage2Passed.map((candidate) => [candidate.symbol, candidate]));
+  const { passed: stage2Passed, diagnostics: stage2Diagnostics } =
+    await runStage2OptionsTradability(get, stage1Passed);
+  const stage2BySymbol = new Map(
+    stage2Passed.map((candidate) => [candidate.symbol, candidate]),
+  );
   for (const item of stage2Diagnostics) {
     if (!item.pass) {
-      incrementSummary(stage2RejectionSummary, categorizeStage2Failure(item.reason));
+      incrementSummary(
+        stage2RejectionSummary,
+        categorizeStage2Failure(item.reason),
+      );
     }
   }
   logStage2Diagnostics(stage2Diagnostics);
-  logGeneralScanDebug(`${tier.label} Stage 2 passed`, stage2Passed.map((candidate) => candidate.symbol));
+  logGeneralScanDebug(
+    `${tier.label} Stage 2 passed`,
+    stage2Passed.map((candidate) => candidate.symbol),
+  );
 
   if (stage2Passed.length === 0) {
     return {
@@ -3518,19 +4524,29 @@ async function runUniverseTierTradeStationScan(
       confidence: null,
       conclusion: "no_trade_today",
       reason: `No symbols passed Stage 2 options tradability filters in ${tier.label}.`,
-      telemetry: buildScanTelemetry({ stage2Passed, finalNoTradeExplanation: `No symbols passed Stage 2 options tradability filters in ${tier.label}.` }),
+      telemetry: buildScanTelemetry({
+        stage2Passed,
+        finalNoTradeExplanation: `No symbols passed Stage 2 options tradability filters in ${tier.label}.`,
+      }),
     };
   }
 
   const stage3Evaluations = await evaluateStage3Candidates(get, stage2Passed);
-  const stage3Passed = stage3Evaluations.flatMap((item) => (item.candidate ? [item.candidate] : []));
+  const stage3Passed = stage3Evaluations.flatMap((item) =>
+    item.candidate ? [item.candidate] : [],
+  );
   for (const evaluation of stage3Evaluations) {
     if (!evaluation.pass && evaluation.rejectionReason) {
       incrementSummary(stage3RejectionSummary, evaluation.rejectionReason);
     }
   }
-  const stage3BySymbol = new Map(stage3Passed.map((candidate) => [candidate.symbol, candidate]));
-  logGeneralScanDebug(`${tier.label} Stage 3 passed`, stage3Passed.map((candidate) => candidate.symbol));
+  const stage3BySymbol = new Map(
+    stage3Passed.map((candidate) => [candidate.symbol, candidate]),
+  );
+  logGeneralScanDebug(
+    `${tier.label} Stage 3 passed`,
+    stage3Passed.map((candidate) => candidate.symbol),
+  );
 
   if (stage3Passed.length === 0) {
     return {
@@ -3539,12 +4555,20 @@ async function runUniverseTierTradeStationScan(
       confidence: null,
       conclusion: "no_trade_today",
       reason: `No symbols passed Stage 3 chart/bar review in ${tier.label}.`,
-      telemetry: buildScanTelemetry({ stage2Passed, stage3Evaluations, finalNoTradeExplanation: `No symbols passed Stage 3 chart/bar review in ${tier.label}.` }),
+      telemetry: buildScanTelemetry({
+        stage2Passed,
+        stage3Evaluations,
+        finalNoTradeExplanation: `No symbols passed Stage 3 chart/bar review in ${tier.label}.`,
+      }),
     };
   }
 
   const { ranked, debug: finalRankingDebug } = buildFinalRanking(stage3Passed);
-  logStage3PassThroughDebugSection(stage3Evaluations, finalRankingDebug, ranked[0]?.score ?? null);
+  logStage3PassThroughDebugSection(
+    stage3Evaluations,
+    finalRankingDebug,
+    ranked[0]?.score ?? null,
+  );
   logFinalRankingDebugSection(finalRankingDebug);
 
   const finalistReviewSource = buildFinalistReviewSource(
@@ -3553,8 +4577,18 @@ async function runUniverseTierTradeStationScan(
     stage3Passed.map((candidate) => candidate.symbol),
   );
   const finalists = finalistReviewSource.finalists;
-  logGeneralScanDebug(`${tier.label} continuation-eligible finalists`, finalistReviewSource.continuationEligibleFinalists.map((candidate) => candidate.symbol));
-  logGeneralScanDebug(`${tier.label} confirmation-eligible finalists`, finalistReviewSource.confirmationEligibleFinalists.map((candidate) => candidate.symbol));
+  logGeneralScanDebug(
+    `${tier.label} continuation-eligible finalists`,
+    finalistReviewSource.continuationEligibleFinalists.map(
+      (candidate) => candidate.symbol,
+    ),
+  );
+  logGeneralScanDebug(
+    `${tier.label} confirmation-eligible finalists`,
+    finalistReviewSource.confirmationEligibleFinalists.map(
+      (candidate) => candidate.symbol,
+    ),
+  );
   for (const warning of finalistReviewSource.warnings) {
     console.warn(`[scanner:debug] ${warning}`);
   }
@@ -3567,7 +4601,14 @@ async function runUniverseTierTradeStationScan(
       confidence: null,
       conclusion: "no_trade_today",
       reason,
-      telemetry: buildScanTelemetry({ stage2Passed, stage3Evaluations, ranked, finalRankingDebug, finalistReviewSource, finalNoTradeExplanation: reason }),
+      telemetry: buildScanTelemetry({
+        stage2Passed,
+        stage3Evaluations,
+        ranked,
+        finalRankingDebug,
+        finalistReviewSource,
+        finalNoTradeExplanation: reason,
+      }),
     };
   }
 
@@ -3576,7 +4617,11 @@ async function runUniverseTierTradeStationScan(
     const finalistStage2Inputs = stage2BySymbol.get(finalist.symbol);
     const finalistDte = finalistStage2Inputs?.targetDte;
     if (finalistDte !== undefined) {
-      const earningsCheck = await runEarningsCheck(finalist.symbol, 0, finalistDte);
+      const earningsCheck = await runEarningsCheck(
+        finalist.symbol,
+        0,
+        finalistDte,
+      );
       logEarningsCheckDebug(earningsCheck);
       if (!earningsCheck.pass) {
         finalistReviewResults.push({
@@ -3585,11 +4630,15 @@ async function runUniverseTierTradeStationScan(
           confidence: null,
           reviewStatus: "reviewed",
           confirmationStatus: "rejected",
-          confirmationFailureReasons: ["earnings risk inside target DTE window"],
+          confirmationFailureReasons: [
+            "earnings risk inside target DTE window",
+          ],
           rankingScore: finalist.score,
           stage1Inputs: (() => {
             const item = stage1BySymbol.get(finalist.symbol);
-            return item ? { lastPrice: item.lastPrice, averageVolume: item.averageVolume } : null;
+            return item
+              ? { lastPrice: item.lastPrice, averageVolume: item.averageVolume }
+              : null;
           })(),
           stage2Inputs: finalistStage2Inputs
             ? {
@@ -3609,8 +4658,44 @@ async function runUniverseTierTradeStationScan(
                   volumeRatio: item.volumeRatio,
                   chartReviewScore: item.chartReviewScore,
                   chartReviewSummary: item.chartReviewSummary,
-                  structureChecks: summarizeCheckOutcomes(item.chartDiagnostics.checks),
-                  roomToTargetDecision: describeRoomToTargetDecision(item.chartDiagnostics.roomToTargetDiagnostics),
+                  structureChecks: summarizeCheckOutcomes(
+                    item.chartDiagnostics.checks,
+                  ),
+                  roomToTargetDecision: describeRoomToTargetDecision(
+                    item.chartDiagnostics.roomToTargetDiagnostics,
+                  ),
+                }
+              : null;
+          })(),
+          asymmetryDebug: (() => {
+            const item = stage3BySymbol.get(finalist.symbol);
+            return item
+              ? {
+                  stage3ReferencePrice:
+                    item.chartDiagnostics.roomToTargetDiagnostics
+                      .referencePrice,
+                  confirmationReferencePrice:
+                    item.chartDiagnostics.chartAnchoredAsymmetry.referencePrice,
+                  invalidationLevel:
+                    item.chartDiagnostics.chartAnchoredAsymmetry
+                      .invalidationLevel,
+                  targetLevel:
+                    item.chartDiagnostics.chartAnchoredAsymmetry.targetLevel,
+                  riskDistance:
+                    item.chartDiagnostics.chartAnchoredAsymmetry.riskDistance,
+                  rewardDistance:
+                    item.chartDiagnostics.chartAnchoredAsymmetry.rewardDistance,
+                  actualRewardRiskRatio:
+                    item.chartDiagnostics.chartAnchoredAsymmetry
+                      .actualRewardRiskRatio,
+                  stage3RoomPct:
+                    item.chartDiagnostics.chartAnchoredAsymmetry.stage3RoomPct,
+                  asymmetryConsistencyFlag:
+                    item.chartDiagnostics.chartAnchoredAsymmetry
+                      .asymmetryConsistencyFlag,
+                  asymmetryConsistencyReason:
+                    item.chartDiagnostics.chartAnchoredAsymmetry
+                      .asymmetryConsistencyReason,
                 }
               : null;
           })(),
@@ -3621,18 +4706,46 @@ async function runUniverseTierTradeStationScan(
       }
     }
 
-    const reviewResult: SingleSymbolReviewResult = await runSingleSymbolTradeStationAnalysis(finalist.symbol);
+    const reviewResult: SingleSymbolReviewResult =
+      await runSingleSymbolTradeStationAnalysis(finalist.symbol);
+    const stage3Candidate = stage3BySymbol.get(finalist.symbol);
+    const stage3SaidViable =
+      !!stage3Candidate &&
+      getStage3CheckPass(stage3Candidate, "higher-timeframe-2r-viability");
+    const finalActualRewardRiskRatio =
+      reviewResult.confirmationDebug?.actualRewardRiskRatio ?? null;
+    const stage3FinalConsistencyFlag =
+      stage3SaidViable &&
+      finalActualRewardRiskRatio !== null &&
+      finalActualRewardRiskRatio < 0.75;
+    const stage3FinalConsistencyReason = stage3FinalConsistencyFlag
+      ? `Logic inconsistency: Stage 3 marked ${finalist.symbol} higher-timeframe-2r-viability=true, but final chart-anchored actual reward:risk was only ${finalActualRewardRiskRatio.toFixed(2)}.`
+      : (reviewResult.confirmationDebug?.asymmetryConsistencyReason ?? null);
+    const confirmationFailureReasons = stage3FinalConsistencyFlag
+      ? [
+          stage3FinalConsistencyReason ??
+            "Stage 3 / confirmation asymmetry mismatch detected",
+          ...(reviewResult.confirmationDebug?.confirmationFailureReasons ?? [
+            "final confirmation checks did not pass",
+          ]),
+        ]
+      : (reviewResult.confirmationDebug?.confirmationFailureReasons ?? [
+          "final confirmation checks did not pass",
+        ]);
     finalistReviewResults.push({
       symbol: finalist.symbol,
       direction: reviewResult.direction,
       confidence: reviewResult.confidence,
       reviewStatus: reviewResult.confirmationDebug?.reviewStatus ?? "reviewed",
-      confirmationStatus: reviewResult.conclusion === "confirmed" ? "confirmed" : "rejected",
-      confirmationFailureReasons: reviewResult.confirmationDebug?.confirmationFailureReasons ?? ["final confirmation checks did not pass"],
+      confirmationStatus:
+        reviewResult.conclusion === "confirmed" ? "confirmed" : "rejected",
+      confirmationFailureReasons,
       rankingScore: finalist.score,
       stage1Inputs: (() => {
         const item = stage1BySymbol.get(finalist.symbol);
-        return item ? { lastPrice: item.lastPrice, averageVolume: item.averageVolume } : null;
+        return item
+          ? { lastPrice: item.lastPrice, averageVolume: item.averageVolume }
+          : null;
       })(),
       stage2Inputs: (() => {
         const item = stage2BySymbol.get(finalist.symbol);
@@ -3647,7 +4760,7 @@ async function runUniverseTierTradeStationScan(
           : null;
       })(),
       stage3Inputs: (() => {
-        const item = stage3BySymbol.get(finalist.symbol);
+        const item = stage3Candidate;
         return item
           ? {
               direction: item.chartDirection,
@@ -3655,17 +4768,47 @@ async function runUniverseTierTradeStationScan(
               volumeRatio: item.volumeRatio,
               chartReviewScore: item.chartReviewScore,
               chartReviewSummary: item.chartReviewSummary,
-              structureChecks: summarizeCheckOutcomes(item.chartDiagnostics.checks),
-              roomToTargetDecision: describeRoomToTargetDecision(item.chartDiagnostics.roomToTargetDiagnostics),
+              structureChecks: summarizeCheckOutcomes(
+                item.chartDiagnostics.checks,
+              ),
+              roomToTargetDecision: describeRoomToTargetDecision(
+                item.chartDiagnostics.roomToTargetDiagnostics,
+              ),
             }
           : null;
       })(),
+      asymmetryDebug: reviewResult.confirmationDebug
+        ? {
+            stage3ReferencePrice:
+              reviewResult.confirmationDebug.stage3ReferencePrice,
+            confirmationReferencePrice:
+              reviewResult.confirmationDebug.confirmationReferencePrice,
+            invalidationLevel: reviewResult.confirmationDebug.invalidationLevel,
+            targetLevel: reviewResult.confirmationDebug.targetLevel,
+            riskDistance: reviewResult.confirmationDebug.riskDistance,
+            rewardDistance: reviewResult.confirmationDebug.rewardDistance,
+            actualRewardRiskRatio:
+              reviewResult.confirmationDebug.actualRewardRiskRatio,
+            stage3RoomPct: reviewResult.confirmationDebug.stage3RoomPct,
+            asymmetryConsistencyFlag:
+              stage3FinalConsistencyFlag ||
+              reviewResult.confirmationDebug.asymmetryConsistencyFlag,
+            asymmetryConsistencyReason: stage3FinalConsistencyReason,
+          }
+        : null,
       conclusion: reviewResult.conclusion,
       reason: reviewResult.reason,
     });
 
-    if (reviewResult.conclusion === "confirmed" && reviewResult.ticker && reviewResult.direction && reviewResult.confidence) {
-      logGeneralScanDebug(`${tier.label} final selected`, [reviewResult.ticker]);
+    if (
+      reviewResult.conclusion === "confirmed" &&
+      reviewResult.ticker &&
+      reviewResult.direction &&
+      reviewResult.confidence
+    ) {
+      logGeneralScanDebug(`${tier.label} final selected`, [
+        reviewResult.ticker,
+      ]);
       logFinalistReviewDebugSection(finalistReviewResults, reviewResult.ticker);
       const telemetry = buildScanTelemetry({
         stage2Passed,
@@ -3718,7 +4861,9 @@ async function runUniverseTierTradeStationScan(
   };
 }
 
-async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<ScanResult> {
+async function runStarterUniverseTradeStationScan(
+  input: ScanInput,
+): Promise<ScanResult> {
   const get = await createTradeStationGetFetcher();
   const tierExecutions: TierScanExecution[] = [];
 
@@ -3730,8 +4875,18 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
     }
 
     tierExecutions.push({ tier, result, telemetry });
-    if (result.conclusion === "confirmed" && result.ticker && result.direction && result.confidence) {
-      const combinedTelemetry = combineTelemetry(tierExecutions, result.ticker, tier.key, null);
+    if (
+      result.conclusion === "confirmed" &&
+      result.ticker &&
+      result.direction &&
+      result.confidence
+    ) {
+      const combinedTelemetry = combineTelemetry(
+        tierExecutions,
+        result.ticker,
+        tier.key,
+        null,
+      );
       return {
         ...result,
         telemetry: combinedTelemetry,
@@ -3740,11 +4895,20 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
   }
 
   const crossTierNoTradeSummary = buildCrossTierNoTradeSummary(tierExecutions);
-  const combinedTelemetry = combineTelemetry(tierExecutions, null, null, crossTierNoTradeSummary.finalNoTradeExplanation);
-  combinedTelemetry.reviewedFinalistOutcomes = crossTierNoTradeSummary.reviewedFinalistOutcomes;
-  combinedTelemetry.bestReviewedFinalistsAcrossTiers = crossTierNoTradeSummary.bestReviewedFinalistsAcrossTiers;
-  combinedTelemetry.bestRejectedCandidates = crossTierNoTradeSummary.bestRejectedCandidates;
-  combinedTelemetry.crossTierFinalistSummary = crossTierNoTradeSummary.crossTierFinalistSummary;
+  const combinedTelemetry = combineTelemetry(
+    tierExecutions,
+    null,
+    null,
+    crossTierNoTradeSummary.finalNoTradeExplanation,
+  );
+  combinedTelemetry.reviewedFinalistOutcomes =
+    crossTierNoTradeSummary.reviewedFinalistOutcomes;
+  combinedTelemetry.bestReviewedFinalistsAcrossTiers =
+    crossTierNoTradeSummary.bestReviewedFinalistsAcrossTiers;
+  combinedTelemetry.bestRejectedCandidates =
+    crossTierNoTradeSummary.bestRejectedCandidates;
+  combinedTelemetry.crossTierFinalistSummary =
+    crossTierNoTradeSummary.crossTierFinalistSummary;
 
   return {
     ticker: null,
@@ -3756,14 +4920,21 @@ async function runStarterUniverseTradeStationScan(input: ScanInput): Promise<Sca
   };
 }
 
-export async function runStage2DebugForStarterUniverse(): Promise<Stage2SymbolDiagnostic[]> {
+export async function runStage2DebugForStarterUniverse(): Promise<
+  Stage2SymbolDiagnostic[]
+> {
   const get = await createTradeStationGetFetcher();
-  const stage1Candidates: Stage1Candidate[] = CORE_SCAN_UNIVERSE.map((symbol) => ({
-    symbol,
-    lastPrice: 1,
-    averageVolume: null,
-  }));
-  const { diagnostics } = await runStage2OptionsTradability(get, stage1Candidates);
+  const stage1Candidates: Stage1Candidate[] = CORE_SCAN_UNIVERSE.map(
+    (symbol) => ({
+      symbol,
+      lastPrice: 1,
+      averageVolume: null,
+    }),
+  );
+  const { diagnostics } = await runStage2OptionsTradability(
+    get,
+    stage1Candidates,
+  );
   return diagnostics;
 }
 
@@ -3774,7 +4945,11 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
     throw new Error("Tier 1 universe is not configured.");
   }
 
-  const result = await runUniverseTierTradeStationScan(get, { prompt: "debug starter universe", excludedTickers: [] }, tier);
+  const result = await runUniverseTierTradeStationScan(
+    get,
+    { prompt: "debug starter universe", excludedTickers: [] },
+    tier,
+  );
   if (!result.telemetry) {
     throw new Error("Tier 1 telemetry was unavailable.");
   }
@@ -3783,13 +4958,32 @@ export async function runStarterUniverseTelemetryDebug(): Promise<StarterUnivers
 }
 
 export async function runStage3DebugForStarterUniverse(): Promise<
-  { symbol: string; pass: boolean; direction: ScanDirection | null; movePct: number; volumeRatio: number | null; score: number; summary: string; diagnostics: Stage3Diagnostics }[]
+  {
+    symbol: string;
+    pass: boolean;
+    direction: ScanDirection | null;
+    movePct: number;
+    volumeRatio: number | null;
+    score: number;
+    summary: string;
+    diagnostics: Stage3Diagnostics;
+  }[]
 > {
   const get = await createTradeStationGetFetcher();
-  const results: { symbol: string; pass: boolean; direction: ScanDirection | null; movePct: number; volumeRatio: number | null; score: number; summary: string; diagnostics: Stage3Diagnostics }[] = [];
+  const results: {
+    symbol: string;
+    pass: boolean;
+    direction: ScanDirection | null;
+    movePct: number;
+    volumeRatio: number | null;
+    score: number;
+    summary: string;
+    diagnostics: Stage3Diagnostics;
+  }[] = [];
 
   for (const symbol of CORE_SCAN_UNIVERSE) {
-    const { barsByView: bars, timeframeDiagnostics } = await loadMultiTimeframeBars(get, symbol);
+    const { barsByView: bars, timeframeDiagnostics } =
+      await loadMultiTimeframeBars(get, symbol);
     if (!bars) {
       results.push({
         symbol,
@@ -3805,7 +4999,8 @@ export async function runStage3DebugForStarterUniverse(): Promise<
           move1W: null,
           bias1D: "neutral",
           bias1W: "neutral",
-          alignmentRule: "bullish requires 1D move >= +0.5% and 1W move >= 0%; bearish requires 1D move <= -0.5% and 1W move <= 0%",
+          alignmentRule:
+            "bullish requires 1D move >= +0.5% and 1W move >= 0%; bearish requires 1D move <= -0.5% and 1W move <= 0%",
           alignmentPass: false,
           alignmentReason: "failed to load required multi-timeframe bars",
           candleBodySize: null,
@@ -3817,7 +5012,8 @@ export async function runStage3DebugForStarterUniverse(): Promise<
           lastVolume: null,
           priorVolumeBarsWithData: 0,
           averageVolume: null,
-          volumeRatioComputation: "volumeRatio requires both lastVolume and averageVolume > 0",
+          volumeRatioComputation:
+            "volumeRatio requires both lastVolume and averageVolume > 0",
           resistanceLevel: null,
           supportLevel: null,
           roomPct: null,
@@ -3828,15 +5024,47 @@ export async function runStage3DebugForStarterUniverse(): Promise<
             levelStrength: "n/a",
             levelUsed: null,
             roomPct: null,
-            targetAssumption: "Preferred 2.00R+, confirmable >= 1.50R, hard fail < 1.25R",
+            targetAssumption:
+              "Preferred 2.00R+, confirmable >= 1.50R, hard fail < 1.25R",
             decisionMode: "score_penalty",
             roomTier: "unknown",
             sufficientRoom: true,
             insufficientRoomReason: "No data because bars failed to load.",
             preferred2R: false,
             minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
+            invalidationLevel: null,
+            targetLevel: null,
+            invalidationReason: null,
+            targetReason: null,
+            riskDistance: null,
+            rewardDistance: null,
+            actualRewardRiskRatio: null,
+            actualRrTier: "unknown",
           },
-          checks: [{ check: "bars-load", pass: false, reason: "failed to load required multi-timeframe bars", impact: "blocker" }],
+          chartAnchoredAsymmetry: {
+            referencePrice: 0,
+            invalidationLevel: null,
+            targetLevel: null,
+            invalidationReason: null,
+            targetReason: null,
+            riskDistance: null,
+            rewardDistance: null,
+            actualRewardRiskRatio: null,
+            actualRrTier: "unknown",
+            actualTradablePass: false,
+            failureReason: "No data because bars failed to load.",
+            stage3RoomPct: null,
+            asymmetryConsistencyFlag: false,
+            asymmetryConsistencyReason: null,
+          },
+          checks: [
+            {
+              check: "bars-load",
+              pass: false,
+              reason: "failed to load required multi-timeframe bars",
+              impact: "blocker",
+            },
+          ],
         },
       });
       continue;
@@ -3850,7 +5078,9 @@ export async function runStage3DebugForStarterUniverse(): Promise<
 }
 
 function parseSingleSymbolPrompt(prompt: string): SymbolPromptMatch | null {
-  const matched = prompt.match(/(?:^|\s)(analyze|review|scan)\s+\$?([A-Za-z]{1,5})(?=\s|$|[,.!?;:])/i);
+  const matched = prompt.match(
+    /(?:^|\s)(analyze|review|scan)\s+\$?([A-Za-z]{1,5})(?=\s|$|[,.!?;:])/i,
+  );
 
   if (!matched) {
     return null;
@@ -3865,7 +5095,11 @@ function parseSingleSymbolPrompt(prompt: string): SymbolPromptMatch | null {
   const symbol = symbolRaw.toUpperCase();
   const isUppercaseTickerStyle = symbolRaw === symbol;
   const looksLikeTicker = /^[A-Z]{1,5}$/.test(symbol);
-  if (!isUppercaseTickerStyle || !looksLikeTicker || NON_TICKER_TOKENS.has(symbol)) {
+  if (
+    !isUppercaseTickerStyle ||
+    !looksLikeTicker ||
+    NON_TICKER_TOKENS.has(symbol)
+  ) {
     return null;
   }
 
@@ -3907,7 +5141,10 @@ function pickFirstQuote(payload: unknown): Record<string, unknown> | null {
   return objectPayload;
 }
 
-function readNumber(source: Record<string, unknown> | null, keys: string[]): number | null {
+function readNumber(
+  source: Record<string, unknown> | null,
+  keys: string[],
+): number | null {
   if (!source) {
     return null;
   }
@@ -3927,7 +5164,9 @@ function readNumber(source: Record<string, unknown> | null, keys: string[]): num
     }
 
     const normalizedKey = normalizeFieldName(key);
-    const caseInsensitiveMatch = Object.entries(source).find(([sourceKey]) => normalizeFieldName(sourceKey) === normalizedKey);
+    const caseInsensitiveMatch = Object.entries(source).find(
+      ([sourceKey]) => normalizeFieldName(sourceKey) === normalizedKey,
+    );
     if (!caseInsensitiveMatch) {
       continue;
     }
@@ -3948,7 +5187,9 @@ function readNumber(source: Record<string, unknown> | null, keys: string[]): num
   return null;
 }
 
-export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promise<SingleSymbolReviewResult> {
+export async function runSingleSymbolTradeStationAnalysis(
+  symbol: string,
+): Promise<SingleSymbolReviewResult> {
   const get = await createTradeStationGetFetcher();
   const targetDte = await resolveTargetDteForSymbol(get, symbol);
   if (targetDte !== null) {
@@ -3961,36 +5202,37 @@ export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promi
         confidence: null,
         conclusion: "rejected",
         reason: `Single-symbol review rejected due to earnings risk inside the target DTE window. ${earningsCheck.reason}`,
-        confirmationDebug: buildConfirmationDebug(null, "rejected", ["earnings risk inside target DTE window"], {
-          topBlockingReasons: ["earnings risk inside target DTE window"],
-        }),
+        confirmationDebug: buildConfirmationDebug(
+          null,
+          "rejected",
+          ["earnings risk inside target DTE window"],
+          {
+            topBlockingReasons: ["earnings risk inside target DTE window"],
+          },
+        ),
       };
     }
   }
 
-  const { barsByView: bars, timeframeDiagnostics } = await loadMultiTimeframeBars(get, symbol);
+  const { barsByView: bars, timeframeDiagnostics } =
+    await loadMultiTimeframeBars(get, symbol);
   if (bars) {
     const review = runStage3ChartReview(bars, timeframeDiagnostics);
     const outcome = resolveConfirmationOutcome(review);
-    let chartAnchoredFailureReason: string | null = null;
+    const chartAnchoredFailureReason =
+      review.diagnostics.chartAnchoredAsymmetry.failureReason;
 
-    if (outcome.conclusion === "confirmed" && review.direction) {
-      const chartAnchoredResult = await evaluateChartAnchoredTradability(
-        get,
-        symbol,
-        review.direction,
-        review.diagnostics.roomToTargetDiagnostics.referencePrice,
-      );
-      if (!chartAnchoredResult.pass) {
-        chartAnchoredFailureReason = chartAnchoredResult.reason;
-        outcome.conclusion = "rejected";
-        outcome.confidence = null;
-      }
-    }
+    const reviewNarrative = buildSingleSymbolReviewNarrative(
+      review,
+      outcome.conclusion,
+      chartAnchoredFailureReason,
+    );
 
-    const reviewNarrative = buildSingleSymbolReviewNarrative(review, outcome.conclusion, chartAnchoredFailureReason);
-
-    if (outcome.conclusion === "confirmed" && review.direction && outcome.confidence) {
+    if (
+      outcome.conclusion === "confirmed" &&
+      review.direction &&
+      outcome.confidence
+    ) {
       return {
         ticker: symbol,
         direction: review.direction,
@@ -4011,11 +5253,17 @@ export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promi
         review,
         "rejected",
         chartAnchoredFailureReason
-          ? [...getConfirmationRejectionReasons(review), chartAnchoredFailureReason]
+          ? [
+              ...getConfirmationRejectionReasons(review),
+              chartAnchoredFailureReason,
+            ]
           : getConfirmationRejectionReasons(review),
         chartAnchoredFailureReason
           ? {
-              topBlockingReasons: [...getConfirmationStructureDebug(review).topBlockingReasons, chartAnchoredFailureReason],
+              topBlockingReasons: [
+                ...getConfirmationStructureDebug(review).topBlockingReasons,
+                chartAnchoredFailureReason,
+              ],
             }
           : undefined,
       ),
@@ -4027,10 +5275,16 @@ export async function runSingleSymbolTradeStationAnalysis(symbol: string): Promi
     direction: null,
     confidence: null,
     conclusion: "no_trade_today",
-    reason: "Could not review the full 1D/1W/1M/3M/1Y chart context from TradeStation data, so no_trade_today.",
-    confirmationDebug: buildConfirmationDebug(null, "rejected", ["missing multi-timeframe chart context"], {
-      topBlockingReasons: ["missing multi-timeframe chart context"],
-    }),
+    reason:
+      "Could not review the full 1D/1W/1M/3M/1Y chart context from TradeStation data, so no_trade_today.",
+    confirmationDebug: buildConfirmationDebug(
+      null,
+      "rejected",
+      ["missing multi-timeframe chart context"],
+      {
+        topBlockingReasons: ["missing multi-timeframe chart context"],
+      },
+    ),
   };
 }
 
@@ -4039,7 +5293,9 @@ function buildSingleSymbolReviewNarrative(
   conclusion: ScanResult["conclusion"],
   chartAnchoredFailureReason: string | null = null,
 ): string {
-  const checkByName = new Map(review.diagnostics.checks.map((item) => [item.check, item]));
+  const checkByName = new Map(
+    review.diagnostics.checks.map((item) => [item.check, item]),
+  );
   const bodyToRange = review.diagnostics.bodyToRange;
   const wickiness = review.diagnostics.wickiness;
   const volumeRatio = review.volumeRatio;
@@ -4048,61 +5304,99 @@ function buildSingleSymbolReviewNarrative(
   const supportive: string[] = [];
   const problematic: string[] = [];
 
-  supportive.push(`1D/1W alignment ${review.diagnostics.alignmentPass ? "supports the setup" : "is not clean"} (${review.diagnostics.alignmentReason})`);
+  supportive.push(
+    `1D/1W alignment ${review.diagnostics.alignmentPass ? "supports the setup" : "is not clean"} (${review.diagnostics.alignmentReason})`,
+  );
 
   if (checkByName.get("body-wick")?.pass) {
-    supportive.push(`candle body/wick quality looks constructive (body/range ${bodyToRange?.toFixed(2) ?? "n/a"}, wickiness ${wickiness?.toFixed(2) ?? "n/a"})`);
+    supportive.push(
+      `candle body/wick quality looks constructive (body/range ${bodyToRange?.toFixed(2) ?? "n/a"}, wickiness ${wickiness?.toFixed(2) ?? "n/a"})`,
+    );
   } else {
-    problematic.push(`candle body/wick quality is weaker than preferred (body/range ${bodyToRange?.toFixed(2) ?? "n/a"}, wickiness ${wickiness?.toFixed(2) ?? "n/a"})`);
+    problematic.push(
+      `candle body/wick quality is weaker than preferred (body/range ${bodyToRange?.toFixed(2) ?? "n/a"}, wickiness ${wickiness?.toFixed(2) ?? "n/a"})`,
+    );
   }
 
   if (checkByName.get("expansion")?.pass) {
     supportive.push("range expansion is acceptable relative to recent bars");
   } else {
-    problematic.push(`range expansion is weaker than ideal (${checkByName.get("expansion")?.reason ?? "expansion ratio unavailable"})`);
+    problematic.push(
+      `range expansion is weaker than ideal (${checkByName.get("expansion")?.reason ?? "expansion ratio unavailable"})`,
+    );
   }
 
   if (checkByName.get("volume")?.pass) {
-    supportive.push(`volume confirms participation (${volumeRatio === null ? "ratio n/a" : `ratio ${volumeRatio.toFixed(2)}x`})`);
+    supportive.push(
+      `volume confirms participation (${volumeRatio === null ? "ratio n/a" : `ratio ${volumeRatio.toFixed(2)}x`})`,
+    );
   } else {
-    problematic.push(`volume confirmation is limited (${volumeRatio === null ? "ratio unavailable" : `ratio ${volumeRatio.toFixed(2)}x`})`);
+    problematic.push(
+      `volume confirmation is limited (${volumeRatio === null ? "ratio unavailable" : `ratio ${volumeRatio.toFixed(2)}x`})`,
+    );
   }
 
   if (checkByName.get("continuation")?.pass) {
-    supportive.push("price action still looks more like continuation than rejection");
+    supportive.push(
+      "price action still looks more like continuation than rejection",
+    );
   } else {
-    problematic.push("price action shows rejection risk versus clean continuation");
+    problematic.push(
+      "price action shows rejection risk versus clean continuation",
+    );
   }
 
   if (checkByName.get("impulse-consolidation")?.pass) {
-    supportive.push("impulse plus consolidation structure is present (expansion then tighter hold)");
+    supportive.push(
+      "impulse plus consolidation structure is present (expansion then tighter hold)",
+    );
   } else {
-    problematic.push("impulse plus consolidation structure is not clean enough");
+    problematic.push(
+      "impulse plus consolidation structure is not clean enough",
+    );
   }
 
-  if (checkByName.get("fake-hold-distribution")?.pass && checkByName.get("failed-breakout-trap")?.pass) {
+  if (
+    checkByName.get("fake-hold-distribution")?.pass &&
+    checkByName.get("failed-breakout-trap")?.pass
+  ) {
     supportive.push("fake-hold/distribution and trap behavior look controlled");
   } else {
     problematic.push("fake-hold/distribution or trap behavior is elevated");
   }
 
-  const roomDecision = describeRoomToTargetDecision(review.diagnostics.roomToTargetDiagnostics);
+  const roomDecision = describeRoomToTargetDecision(
+    review.diagnostics.roomToTargetDiagnostics,
+  );
   if (checkByName.get("higher-timeframe-room")?.pass) {
-    supportive.push(`higher-timeframe room/resistance appears workable (${roomPct === null ? "room n/a" : `${roomPct.toFixed(2)}% room`}; ${roomDecision})`);
+    supportive.push(
+      `higher-timeframe room/resistance appears workable (${roomPct === null ? "room n/a" : `${roomPct.toFixed(2)}% room`}; ${roomDecision})`,
+    );
   } else {
-    problematic.push(`higher-timeframe room/resistance looks tight (${roomPct === null ? "room n/a" : `${roomPct.toFixed(2)}% room`}; ${roomDecision})`);
+    problematic.push(
+      `higher-timeframe room/resistance looks tight (${roomPct === null ? "room n/a" : `${roomPct.toFixed(2)}% room`}; ${roomDecision})`,
+    );
   }
 
   const structureDebug = getConfirmationStructureDebug(review);
-  const structureInPrinciple = structureDebug.supportsTradable2RStructure && !chartAnchoredFailureReason;
+  const structureInPrinciple =
+    structureDebug.supportsTradable2RStructure && !chartAnchoredFailureReason;
   if (structureInPrinciple) {
-    supportive.push("the chart supports tradable positive asymmetry (continuation + room + confirmable reward:risk)");
+    supportive.push(
+      `the chart supports tradable positive asymmetry (actual chart-anchored R:R ${review.diagnostics.chartAnchoredAsymmetry.actualRewardRiskRatio?.toFixed(2) ?? "n/a"})`,
+    );
   } else if (chartAnchoredFailureReason) {
-    problematic.push(`tradable asymmetry failed chart-anchored invalidation/target test (${chartAnchoredFailureReason})`);
+    problematic.push(
+      `tradable asymmetry failed chart-anchored invalidation/target test (${chartAnchoredFailureReason}; risk=${review.diagnostics.chartAnchoredAsymmetry.riskDistance?.toFixed(2) ?? "n/a"}, reward=${review.diagnostics.chartAnchoredAsymmetry.rewardDistance?.toFixed(2) ?? "n/a"}, actual R:R=${review.diagnostics.chartAnchoredAsymmetry.actualRewardRiskRatio?.toFixed(2) ?? "n/a"})`,
+    );
   } else if (structureDebug.topBlockingReasons.length === 1) {
-    problematic.push(`tradable asymmetry is not clear yet (${structureDebug.topBlockingReasons[0]})`);
+    problematic.push(
+      `tradable asymmetry is not clear yet (${structureDebug.topBlockingReasons[0]})`,
+    );
   } else {
-    problematic.push(`tradable asymmetry is not clear yet (${formatFinalistReasonList(structureDebug.topBlockingReasons)})`);
+    problematic.push(
+      `tradable asymmetry is not clear yet (${formatFinalistReasonList(structureDebug.topBlockingReasons)})`,
+    );
   }
 
   if (conclusion === "confirmed" && problematic.length > 0) {
@@ -4111,8 +5405,13 @@ function buildSingleSymbolReviewNarrative(
     problematic.push(...reframedProblematic);
   }
 
-  const timeframeStatus = (["1D", "1W", "1M", "3M", "1Y"] as MultiTimeframeView[])
-    .map((view) => `${view}:${review.diagnostics.timeframeDiagnostics[view]?.barCount ?? 0}`)
+  const timeframeStatus = (
+    ["1D", "1W", "1M", "3M", "1Y"] as MultiTimeframeView[]
+  )
+    .map(
+      (view) =>
+        `${view}:${review.diagnostics.timeframeDiagnostics[view]?.barCount ?? 0}`,
+    )
     .join(", ");
 
   return `Single-symbol chart review (${review.direction ?? "neutral"}) across 1D/1W/1M/3M/1Y [bars ${timeframeStatus}]. Supportive: ${
@@ -4144,13 +5443,17 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
     };
 
     try {
-      return enforceStarterUniverse(await runStarterUniverseTradeStationScan(normalizedInput));
+      return enforceStarterUniverse(
+        await runStarterUniverseTradeStationScan(normalizedInput),
+      );
     } catch {
       return enforceStarterUniverse(runFakeScan(normalizedInput));
     }
   }
 
-  const excluded = new Set((normalizedInput.excludedTickers ?? []).map((item) => item.toUpperCase()));
+  const excluded = new Set(
+    (normalizedInput.excludedTickers ?? []).map((item) => item.toUpperCase()),
+  );
   if (excluded.has(symbolMatch.symbol)) {
     return {
       ticker: null,
