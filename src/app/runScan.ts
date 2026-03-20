@@ -459,6 +459,13 @@ export type StarterUniverseTelemetry = {
   finalistsReviewedDebug: {
     symbol: string;
     eligibleForReviewReason: string;
+    continuationPass: boolean;
+    continuationReason: string | null;
+    confirmationEligible: boolean;
+    confirmationEligibilityReason: string;
+    preReviewAsymmetryTier: RiskRewardTier | "unknown";
+    directionalRoomTier: RiskRewardTier | "unknown";
+    actualChartAsymmetryTier: RiskRewardTier | "unknown";
     sourceList: "stage3Passed" | "stage2PassedOnly" | "missingUpstream";
     inStage2Passed: boolean;
     inStage3Passed: boolean;
@@ -673,6 +680,12 @@ function buildStarterUniverseTelemetry(params: {
     finalistReviewResults,
     stage3Passed.map((candidate) => candidate.symbol),
     ranked.map((candidate) => candidate.symbol),
+    finalistReviewSource.continuationEligibleFinalists.map(
+      (candidate) => candidate.symbol,
+    ),
+    finalistReviewSource.confirmationEligibleFinalists.map(
+      (candidate) => candidate.symbol,
+    ),
   );
 
   const stageCounts: StarterUniverseStageCounts = {
@@ -814,8 +827,7 @@ function buildFinalistReviewSource(
     getStage3CheckPass(candidate, "continuation"),
   );
   const confirmationEligibleFinalists = continuationEligibleFinalists.filter(
-    (candidate) =>
-      getStage3CheckPass(candidate, "higher-timeframe-2r-viability"),
+    (candidate) => isPrompt2ConfirmationEligible(candidate),
   );
   const finalists = confirmationEligibleFinalists;
   const stage2Set = new Set(stage2PassedSymbols);
@@ -840,14 +852,40 @@ function buildFinalistReviewSource(
     if (upstreamConsistencyWarning) {
       warnings.push(upstreamConsistencyWarning);
     }
+    const continuationCheck = getStage3CheckDiagnostic(finalist, "continuation");
+    const continuationPass = !!continuationCheck?.pass;
+    const continuationReason = continuationCheck?.reason ?? null;
+    const directionalRoomTier =
+      finalist.chartDiagnostics.roomToTargetDiagnostics.roomTier;
+    const actualChartAsymmetryTier =
+      finalist.chartDiagnostics.chartAnchoredAsymmetry.actualRrTier;
+    const preReviewAsymmetryTier = getMoreConservativeAsymmetryTier(
+      directionalRoomTier,
+      actualChartAsymmetryTier,
+    );
+    const confirmationEligible = continuationPass
+      ? isPrompt2ConfirmationEligible(finalist)
+      : false;
+    const confirmationEligibilityReason = !continuationPass
+      ? `continuation failed before Prompt 2 (${continuationReason ?? "no continuation reason recorded"})`
+      : confirmationEligible
+        ? `allowed into Prompt 2 because pre-review asymmetry tier=${preReviewAsymmetryTier} (directional room=${directionalRoomTier}, actual chart asymmetry=${actualChartAsymmetryTier})`
+        : `excluded before Prompt 2 because pre-review asymmetry tier=${preReviewAsymmetryTier} (directional room=${directionalRoomTier}, actual chart asymmetry=${actualChartAsymmetryTier})`;
 
     debug.push({
       symbol: finalist.symbol,
-      eligibleForReviewReason: !getStage3CheckPass(finalist, "continuation")
+      eligibleForReviewReason: !continuationPass
         ? `Stage 3 pass-through candidate excluded from deterministic confirmation review because continuationPass=false (${finalist.score.toFixed(2)}).`
-        : getStage3CheckPass(finalist, "higher-timeframe-2r-viability")
-          ? `Stage 3 continuation-pass finalist eligible for deterministic confirmation review because higher-timeframe-2r-viability=true (${finalist.score.toFixed(2)}).`
-          : `Stage 3 continuation-pass finalist excluded from deterministic confirmation review because higher-timeframe-2r-viability=false (${finalist.score.toFixed(2)}).`,
+        : confirmationEligible
+          ? `Stage 3 continuation-pass finalist eligible for deterministic confirmation review because pre-review asymmetry stayed out of obvious_no_room (${finalist.score.toFixed(2)}).`
+          : `Stage 3 continuation-pass finalist excluded from deterministic confirmation review because pre-review asymmetry was obvious_no_room (${finalist.score.toFixed(2)}).`,
+      continuationPass,
+      continuationReason,
+      confirmationEligible,
+      confirmationEligibilityReason,
+      preReviewAsymmetryTier,
+      directionalRoomTier,
+      actualChartAsymmetryTier,
       sourceList,
       inStage2Passed,
       inStage3Passed,
@@ -1378,11 +1416,15 @@ function buildCrossTierNoTradeSummary(executions: TierScanExecution[]): {
 function buildGenericNoTradeReason(
   stage3PassedCount: number,
   finalRankingCount: number,
+  continuationEligibleCount: number,
+  confirmationEligibleCount: number,
   finalistsReviewedCount: number,
 ): string {
   if (
     stage3PassedCount === 0 &&
     finalRankingCount === 0 &&
+    continuationEligibleCount === 0 &&
+    confirmationEligibleCount === 0 &&
     finalistsReviewedCount === 0
   ) {
     return "No ranked finalists existed because no symbols passed Stage 3 chart/bar review.";
@@ -1392,8 +1434,16 @@ function buildGenericNoTradeReason(
     return "No ranked finalists existed after final scoring.";
   }
 
+  if (continuationEligibleCount === 0) {
+    return "No finalists were reviewed because no Stage 3 pass-through names remained continuation-eligible.";
+  }
+
+  if (confirmationEligibleCount === 0) {
+    return "No finalists were reviewed because continuation-eligible names all failed the pre-review confirmation gate (obvious_no_room asymmetry before Prompt 2).";
+  }
+
   if (finalistsReviewedCount === 0) {
-    return "No continuation-pass Stage 3 finalists with higher-timeframe 2R viability remained for immediate-entry confirmation review.";
+    return "No finalists were reviewed despite having confirmation-eligible names; inspect finalist review telemetry for downstream review suppression.";
   }
 
   return "Ranked finalists were reviewed in deterministic order and all were rejected.";
@@ -1422,10 +1472,14 @@ function buildConsistentNoTradeReason(
   finalists: FinalistReviewResult[],
   stage3PassedSymbols: string[],
   finalRankingSymbols: string[],
+  continuationEligibleSymbols: string[] = [],
+  confirmationEligibleSymbols: string[] = [],
 ): { reason: string; symbolConsistencyWarnings: string[] } {
   const fallbackReason = buildGenericNoTradeReason(
     stage3PassedSymbols.length,
     finalRankingSymbols.length,
+    continuationEligibleSymbols.length,
+    confirmationEligibleSymbols.length,
     finalists.length,
   );
   if (finalists.length === 0) {
@@ -1773,6 +1827,46 @@ function getStage3CheckPass(candidate: ChartCandidate, check: string): boolean {
   return !!candidate.chartDiagnostics.checks.find(
     (item) => item.check === check,
   )?.pass;
+}
+
+function getStage3CheckDiagnostic(
+  candidate: ChartCandidate,
+  check: string,
+): Stage3CheckDiagnostic | undefined {
+  return candidate.chartDiagnostics.checks.find((item) => item.check === check);
+}
+
+function getMoreConservativeAsymmetryTier(
+  directionalRoomTier: RiskRewardTier | "unknown",
+  actualChartAsymmetryTier: RiskRewardTier | "unknown",
+): RiskRewardTier | "unknown" {
+  const tierPriority: Record<RiskRewardTier | "unknown", number> = {
+    obvious_no_room: 0,
+    borderline_tight: 1,
+    acceptable_sub2r: 2,
+    preferred_2r_or_better: 3,
+    unknown: 4,
+  };
+
+  return tierPriority[directionalRoomTier] <= tierPriority[actualChartAsymmetryTier]
+    ? directionalRoomTier
+    : actualChartAsymmetryTier;
+}
+
+function isPrompt2ConfirmationEligible(candidate: ChartCandidate): boolean {
+  const directionalRoomTier =
+    candidate.chartDiagnostics.roomToTargetDiagnostics.roomTier;
+  const actualChartAsymmetryTier =
+    candidate.chartDiagnostics.chartAnchoredAsymmetry.actualRrTier;
+  const preReviewAsymmetryTier = getMoreConservativeAsymmetryTier(
+    directionalRoomTier,
+    actualChartAsymmetryTier,
+  );
+
+  return (
+    getStage3CheckPass(candidate, "continuation") &&
+    preReviewAsymmetryTier !== "obvious_no_room"
+  );
 }
 
 function getStage3ContinuationPenalty(candidate: ChartCandidate): number {
@@ -4808,7 +4902,13 @@ async function runUniverseTierTradeStationScan(
   }
 
   if (finalists.length === 0) {
-    const reason = `No continuation-pass Stage 3 finalists with higher-timeframe 2R viability remained for immediate-entry confirmation review in ${tier.label}.`;
+    const reason = `${buildGenericNoTradeReason(
+      stage3Passed.length,
+      ranked.length,
+      finalistReviewSource.continuationEligibleFinalists.length,
+      finalistReviewSource.confirmationEligibleFinalists.length,
+      0,
+    )} (${tier.label}).`;
     return {
       ticker: null,
       direction: null,
@@ -5050,6 +5150,12 @@ async function runUniverseTierTradeStationScan(
     finalistReviewResults,
     stage3Passed.map((candidate) => candidate.symbol),
     ranked.map((candidate) => candidate.symbol),
+    finalistReviewSource.continuationEligibleFinalists.map(
+      (candidate) => candidate.symbol,
+    ),
+    finalistReviewSource.confirmationEligibleFinalists.map(
+      (candidate) => candidate.symbol,
+    ),
   );
   for (const warning of noTradeReason.symbolConsistencyWarnings) {
     console.warn(`[scanner:debug] ${warning}`);
