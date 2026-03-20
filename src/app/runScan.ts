@@ -56,6 +56,19 @@ type Stage1Candidate = {
   symbol: string;
   lastPrice: number;
   averageVolume: number | null;
+  priceSource: "quote" | "bars";
+  volumeSource: "quote" | "bars" | null;
+};
+
+type Stage1DataResolution = {
+  lastPrice: number | null;
+  averageVolume: number | null;
+  priceSource: "quote" | "bars" | null;
+  volumeSource: "quote" | "bars" | null;
+  quoteAttempted: boolean;
+  quoteFailed: boolean;
+  fallbackUsed: boolean;
+  recoveredByFallback: boolean;
 };
 
 type OptionsCandidate = Stage1Candidate & {
@@ -431,6 +444,8 @@ type TierSummary = {
   label: string;
   description: string;
   counts: StarterUniverseStageCounts;
+  quoteFailures: number;
+  fallbackRecoveries: number;
   symbols: StarterUniverseStageSymbols;
   finalistsReviewed: string[];
   concludedWith: ScanResult["conclusion"];
@@ -463,6 +478,13 @@ export type StarterUniverseTelemetry = {
     stage2: StageFailureSummary;
     stage3: StageFailureSummary;
   };
+  stage1QuoteAttempts: number;
+  stage1QuoteFailures: number;
+  stage1QuoteFallbackUsed: number;
+  symbolsRecoveredByFallback: number;
+  perTierQuoteFailures: Partial<Record<ScanUniverseTierKey, number>>;
+  perTierFallbackRecoveries: Partial<Record<ScanUniverseTierKey, number>>;
+  effectiveCoverageSummary: string;
   nearMisses: Stage3NearMiss[];
   consistencyChecks: string[];
   finalSelectedSymbol: string | null;
@@ -505,6 +527,13 @@ function buildStarterUniverseTelemetry(params: {
   finalistReviewSource: FinalistReviewSource;
   finalistReviewResults: FinalistReviewResult[];
   rejectionSummaries: StarterUniverseTelemetry["rejectionSummaries"];
+  stage1QuoteAttempts?: number;
+  stage1QuoteFailures?: number;
+  stage1QuoteFallbackUsed?: number;
+  symbolsRecoveredByFallback?: number;
+  perTierQuoteFailures?: Partial<Record<ScanUniverseTierKey, number>>;
+  perTierFallbackRecoveries?: Partial<Record<ScanUniverseTierKey, number>>;
+  effectiveCoverageSummary?: string;
   selectedSymbol: string | null;
   scannedTiers?: ScanUniverseTierKey[];
   winningTier?: ScanUniverseTierKey | null;
@@ -521,6 +550,15 @@ function buildStarterUniverseTelemetry(params: {
     finalistReviewSource,
     finalistReviewResults,
     rejectionSummaries,
+    stage1QuoteAttempts = 0,
+    stage1QuoteFailures = 0,
+    stage1QuoteFallbackUsed = 0,
+    symbolsRecoveredByFallback = 0,
+    perTierQuoteFailures = {},
+    perTierFallbackRecoveries = {},
+    effectiveCoverageSummary = stage1QuoteFailures > 0
+      ? `Recovered ${symbolsRecoveredByFallback} symbols via fallback quote/bar data.`
+      : `Stage 1 evaluated ${stage1Passed.length}/${stage1Entered.length} symbols without quote interruptions.`,
     selectedSymbol,
     scannedTiers = ["tier1"],
     winningTier = null,
@@ -682,6 +720,8 @@ function buildStarterUniverseTelemetry(params: {
             description:
               "Current core universe of liquid optionable leaders and key ETFs.",
             counts: stageCounts,
+            quoteFailures: stage1QuoteFailures,
+            fallbackRecoveries: symbolsRecoveredByFallback,
             symbols: stageSymbols,
             finalistsReviewed: stageSymbols.finalistsReviewed,
             concludedWith: selectedSymbol ? "confirmed" : "no_trade_today",
@@ -726,6 +766,13 @@ function buildStarterUniverseTelemetry(params: {
     })),
     finalRankingDebug: finalRankingDebugWithOutcome,
     rejectionSummaries,
+    stage1QuoteAttempts,
+    stage1QuoteFailures,
+    stage1QuoteFallbackUsed,
+    symbolsRecoveredByFallback,
+    perTierQuoteFailures,
+    perTierFallbackRecoveries,
+    effectiveCoverageSummary,
     nearMisses,
     consistencyChecks: [
       ...finalistReviewSource.warnings,
@@ -4204,6 +4251,30 @@ type TierScanExecution = {
   telemetry: StarterUniverseTelemetry;
 };
 
+function buildEffectiveCoverageSummary(
+  executions: TierScanExecution[],
+): string {
+  const recovered = executions.reduce(
+    (acc, item) => acc + item.telemetry.symbolsRecoveredByFallback,
+    0,
+  );
+  if (recovered > 0) {
+    return `Recovered ${recovered} symbols via fallback quote/bar data.`;
+  }
+
+  const blockedTier = executions.find(
+    (item) =>
+      item.telemetry.stageCounts.stage1Passed === 0 &&
+      item.telemetry.stage1QuoteFailures > 0 &&
+      item.telemetry.stageCounts.stage1Entered > 0,
+  );
+  if (blockedTier) {
+    return `${blockedTier.tier.label} evaluated ${blockedTier.telemetry.stageCounts.stage1Passed}/${blockedTier.telemetry.stageCounts.stage1Entered} symbols beyond Stage 1 because quote failures blocked ${blockedTier.telemetry.stage1QuoteFailures} names.`;
+  }
+
+  return "Stage 1 quote handling did not reduce scan coverage.";
+}
+
 function buildTierSummary(
   tier: ScanUniverseTier,
   telemetry: StarterUniverseTelemetry,
@@ -4214,6 +4285,8 @@ function buildTierSummary(
     label: tier.label,
     description: tier.description,
     counts: telemetry.stageCounts,
+    quoteFailures: telemetry.stage1QuoteFailures,
+    fallbackRecoveries: telemetry.symbolsRecoveredByFallback,
     symbols: telemetry.stageSymbols,
     finalistsReviewed: telemetry.stageSymbols.finalistsReviewed,
     concludedWith: result.conclusion,
@@ -4240,6 +4313,90 @@ function mergeRejectionSummaries(
   }
 
   return merged;
+}
+
+async function loadStage1FallbackBars(
+  get: (path: string) => Promise<Response>,
+  symbol: string,
+): Promise<Record<string, unknown>[]> {
+  const requestTarget = `/marketdata/barcharts/${encodeURIComponent(symbol)}?interval=1&unit=Daily&barsback=30`;
+  const response = await get(requestTarget);
+  if (!response.ok) {
+    return [];
+  }
+
+  const payload = await response.json();
+  return parseBars(payload).map((bar) => normalizeBar(bar));
+}
+
+function deriveAverageVolumeFromBars(
+  bars: Record<string, unknown>[],
+): number | null {
+  const volumes = bars
+    .map((bar) =>
+      readNumber(bar, ["TotalVolume", "Volume", "Vol", "TotalVolumeTraded"]),
+    )
+    .filter((value): value is number => value !== null && value > 0);
+
+  if (volumes.length === 0) {
+    return null;
+  }
+
+  return volumes.reduce((sum, value) => sum + value, 0) / volumes.length;
+}
+
+async function resolveStage1MarketData(
+  get: (path: string) => Promise<Response>,
+  symbol: string,
+): Promise<Stage1DataResolution> {
+  const quotePath = `/marketdata/quotes/${encodeURIComponent(symbol)}`;
+  const quoteResponse = await get(quotePath);
+  const quoteFailed = !quoteResponse.ok;
+  let quote: Record<string, unknown> | null = null;
+
+  if (quoteResponse.ok) {
+    const quotePayload = await quoteResponse.json();
+    quote = pickFirstQuote(quotePayload);
+  }
+
+  const quoteLastPrice = readNumber(quote, ["Last", "LastTrade", "Trade", "Close"]);
+  const quoteAverageVolume = readNumber(quote, [
+    "AverageVolume",
+    "AverageDailyVolume",
+    "AvgVolume",
+    "Volume",
+  ]);
+
+  let fallbackBars: Record<string, unknown>[] = [];
+  if (quoteFailed || quoteLastPrice === null || quoteAverageVolume === null) {
+    fallbackBars = await loadStage1FallbackBars(get, symbol);
+  }
+
+  const lastBar = fallbackBars[fallbackBars.length - 1] ?? null;
+  const barsLastClose = readNumber(lastBar, ["Close"]);
+  const barsAverageVolume = deriveAverageVolumeFromBars(fallbackBars);
+  const lastPrice = quoteLastPrice ?? barsLastClose;
+  const averageVolume = quoteAverageVolume ?? barsAverageVolume;
+  const priceSource =
+    quoteLastPrice !== null ? "quote" : barsLastClose !== null ? "bars" : null;
+  const volumeSource =
+    quoteAverageVolume !== null
+      ? "quote"
+      : barsAverageVolume !== null
+        ? "bars"
+        : null;
+  const fallbackUsed = priceSource === "bars" || volumeSource === "bars";
+
+  return {
+    lastPrice,
+    averageVolume,
+    priceSource,
+    volumeSource,
+    quoteAttempted: true,
+    quoteFailed,
+    fallbackUsed,
+    recoveredByFallback: quoteFailed && lastPrice !== null,
+  };
 }
 
 function combineTelemetry(
@@ -4346,6 +4503,29 @@ function combineTelemetry(
     rejectionSummaries: mergeRejectionSummaries(
       ...executions.map((item) => item.telemetry.rejectionSummaries),
     ),
+    stage1QuoteAttempts: executions.reduce(
+      (acc, item) => acc + item.telemetry.stage1QuoteAttempts,
+      0,
+    ),
+    stage1QuoteFailures: executions.reduce(
+      (acc, item) => acc + item.telemetry.stage1QuoteFailures,
+      0,
+    ),
+    stage1QuoteFallbackUsed: executions.reduce(
+      (acc, item) => acc + item.telemetry.stage1QuoteFallbackUsed,
+      0,
+    ),
+    symbolsRecoveredByFallback: executions.reduce(
+      (acc, item) => acc + item.telemetry.symbolsRecoveredByFallback,
+      0,
+    ),
+    perTierQuoteFailures: Object.fromEntries(
+      executions.map((item) => [item.tier.key, item.telemetry.stage1QuoteFailures]),
+    ),
+    perTierFallbackRecoveries: Object.fromEntries(
+      executions.map((item) => [item.tier.key, item.telemetry.symbolsRecoveredByFallback]),
+    ),
+    effectiveCoverageSummary: buildEffectiveCoverageSummary(executions),
     nearMisses: executions.flatMap((item) => item.telemetry.nearMisses),
     consistencyChecks: executions.flatMap(
       (item) => item.telemetry.consistencyChecks,
@@ -4393,6 +4573,10 @@ async function runUniverseTierTradeStationScan(
   const stage1RejectionSummary: StageFailureSummary = {};
   const stage2RejectionSummary: StageFailureSummary = {};
   const stage3RejectionSummary: StageFailureSummary = {};
+  let stage1QuoteAttempts = 0;
+  let stage1QuoteFailures = 0;
+  let stage1QuoteFallbackUsed = 0;
+  let symbolsRecoveredByFallback = 0;
   logGeneralScanDebug(`${tier.label} Stage 1 entered`, stage1Entered);
 
   const stage1Passed: Stage1Candidate[] = [];
@@ -4401,40 +4585,58 @@ async function runUniverseTierTradeStationScan(
       continue;
     }
 
-    const quoteResponse = await get(
-      `/marketdata/quotes/${encodeURIComponent(symbol)}`,
-    );
-    if (!quoteResponse.ok) {
-      incrementSummary(stage1RejectionSummary, "quote");
+    const resolution = await resolveStage1MarketData(get, symbol);
+    stage1QuoteAttempts += resolution.quoteAttempted ? 1 : 0;
+    stage1QuoteFailures += resolution.quoteFailed ? 1 : 0;
+    stage1QuoteFallbackUsed += resolution.fallbackUsed ? 1 : 0;
+    symbolsRecoveredByFallback += resolution.recoveredByFallback ? 1 : 0;
+
+    if (resolution.quoteFailed && !resolution.recoveredByFallback) {
+      incrementSummary(
+        stage1RejectionSummary,
+        "quote_unavailable_no_fallback",
+      );
       continue;
     }
 
-    const quotePayload = await quoteResponse.json();
-    const quote = pickFirstQuote(quotePayload);
-    const lastPrice = readNumber(quote, [
-      "Last",
-      "LastTrade",
-      "Trade",
-      "Close",
-    ]);
-    const averageVolume = readNumber(quote, [
-      "AverageVolume",
-      "AverageDailyVolume",
-      "AvgVolume",
-      "Volume",
-    ]);
+    if (resolution.recoveredByFallback) {
+      incrementSummary(
+        stage1RejectionSummary,
+        "quote_unavailable_recovered_by_fallback",
+      );
+    }
 
-    if (lastPrice === null || lastPrice < 10 || lastPrice > 500) {
-      incrementSummary(stage1RejectionSummary, "price");
+    if (
+      resolution.lastPrice !== null &&
+      (resolution.lastPrice < 10 || resolution.lastPrice > 500)
+    ) {
+      incrementSummary(stage1RejectionSummary, "true_price_fail");
       continue;
     }
 
-    if (averageVolume !== null && averageVolume <= 1_000_000) {
-      incrementSummary(stage1RejectionSummary, "volume");
+    if (
+      resolution.averageVolume !== null &&
+      resolution.averageVolume <= 1_000_000
+    ) {
+      incrementSummary(stage1RejectionSummary, "true_volume_fail");
       continue;
     }
 
-    stage1Passed.push({ symbol, lastPrice, averageVolume });
+    if (resolution.lastPrice === null) {
+      incrementSummary(
+        stage1RejectionSummary,
+        "quote_unavailable_no_fallback",
+      );
+      continue;
+    }
+
+    stage1Passed.push({
+      symbol,
+      lastPrice: resolution.lastPrice,
+      averageVolume: resolution.averageVolume,
+      priceSource: resolution.priceSource ?? "quote",
+      volumeSource: resolution.volumeSource,
+    });
   }
   const stage1BySymbol = new Map(
     stage1Passed.map((candidate) => [candidate.symbol, candidate]),
@@ -4472,6 +4674,18 @@ async function runUniverseTierTradeStationScan(
         stage2: stage2RejectionSummary,
         stage3: stage3RejectionSummary,
       },
+      stage1QuoteAttempts,
+      stage1QuoteFailures,
+      stage1QuoteFallbackUsed,
+      symbolsRecoveredByFallback,
+      perTierQuoteFailures: { [tier.key]: stage1QuoteFailures },
+      perTierFallbackRecoveries: { [tier.key]: symbolsRecoveredByFallback },
+      effectiveCoverageSummary:
+        symbolsRecoveredByFallback > 0
+          ? `Recovered ${symbolsRecoveredByFallback} symbols via fallback quote/bar data in ${tier.label}.`
+          : stage1QuoteFailures > 0
+            ? `${tier.label} evaluated ${stage1Passed.length}/${stage1Entered.length} symbols beyond Stage 1 because quote failures blocked ${stage1QuoteFailures} names.`
+            : `Stage 1 quote handling did not reduce coverage in ${tier.label}.`,
       selectedSymbol: params.selectedSymbol ?? null,
       scannedTiers: [tier.key],
       winningTier: params.selectedSymbol ? tier.key : null,
@@ -4929,6 +5143,8 @@ export async function runStage2DebugForStarterUniverse(): Promise<
       symbol,
       lastPrice: 1,
       averageVolume: null,
+      priceSource: "quote",
+      volumeSource: null,
     }),
   );
   const { diagnostics } = await runStage2OptionsTradability(
