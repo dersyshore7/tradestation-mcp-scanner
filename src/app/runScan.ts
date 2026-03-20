@@ -466,6 +466,15 @@ export type StarterUniverseTelemetry = {
     preReviewAsymmetryTier: RiskRewardTier | "unknown";
     directionalRoomTier: RiskRewardTier | "unknown";
     actualChartAsymmetryTier: RiskRewardTier | "unknown";
+    invalidationLevel: number | null;
+    invalidationReason: string | null;
+    targetLevel: number | null;
+    targetReason: string | null;
+    riskDistance: number | null;
+    rewardDistance: number | null;
+    actualRewardRiskRatio: number | null;
+    asymmetryConsistencyReason: string | null;
+    consistencyWarning: string | null;
     sourceList: "stage3Passed" | "stage2PassedOnly" | "missingUpstream";
     inStage2Passed: boolean;
     inStage3Passed: boolean;
@@ -859,10 +868,20 @@ function buildFinalistReviewSource(
       finalist.chartDiagnostics.roomToTargetDiagnostics.roomTier;
     const actualChartAsymmetryTier =
       finalist.chartDiagnostics.chartAnchoredAsymmetry.actualRrTier;
+    const chartAnchoredAsymmetry = finalist.chartDiagnostics.chartAnchoredAsymmetry;
     const preReviewAsymmetryTier = getMoreConservativeAsymmetryTier(
       directionalRoomTier,
       actualChartAsymmetryTier,
     );
+    const consistencyWarning =
+      (directionalRoomTier === "acceptable_sub2r" ||
+        directionalRoomTier === "preferred_2r_or_better") &&
+      actualChartAsymmetryTier === "obvious_no_room"
+        ? `Directional room says ${directionalRoomTier}, but chart-anchored asymmetry collapsed to obvious_no_room.`
+        : null;
+    if (consistencyWarning) {
+      warnings.push(`${finalist.symbol}: ${consistencyWarning}`);
+    }
     const confirmationEligible = continuationPass
       ? isPrompt2ConfirmationEligible(finalist)
       : false;
@@ -886,6 +905,16 @@ function buildFinalistReviewSource(
       preReviewAsymmetryTier,
       directionalRoomTier,
       actualChartAsymmetryTier,
+      invalidationLevel: chartAnchoredAsymmetry.invalidationLevel,
+      invalidationReason: chartAnchoredAsymmetry.invalidationReason,
+      targetLevel: chartAnchoredAsymmetry.targetLevel,
+      targetReason: chartAnchoredAsymmetry.targetReason,
+      riskDistance: chartAnchoredAsymmetry.riskDistance,
+      rewardDistance: chartAnchoredAsymmetry.rewardDistance,
+      actualRewardRiskRatio: chartAnchoredAsymmetry.actualRewardRiskRatio,
+      asymmetryConsistencyReason:
+        chartAnchoredAsymmetry.asymmetryConsistencyReason,
+      consistencyWarning,
       sourceList,
       inStage2Passed,
       inStage3Passed,
