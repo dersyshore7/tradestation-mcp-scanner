@@ -11,6 +11,7 @@ type VercelRequestLike = {
 type VercelResponseLike = {
   status: (code: number) => VercelResponseLike;
   json: (body: unknown) => void;
+  setHeader?: (name: string, value: string) => void;
 };
 
 type WorkflowRequestBody = {
@@ -27,6 +28,29 @@ function isChartAnchoredTwoToOneBlocker(error: unknown): boolean {
   return message.includes(CHART_ANCHORED_TWO_TO_ONE_FAILURE);
 }
 
+
+function toSerializableJsonValue<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function sendJson(res: VercelResponseLike, statusCode: number, body: unknown): void {
+  res.setHeader?.("content-type", "application/json; charset=utf-8");
+  res.status(statusCode).json(toSerializableJsonValue(body));
+}
+
+function sendWorkflowError(
+  res: VercelResponseLike,
+  statusCode: number,
+  message: string,
+  details?: unknown,
+): void {
+  sendJson(res, statusCode, {
+    error: true,
+    message,
+    ...(details === undefined ? {} : { details }),
+  });
+}
+
 function normalizeInput(body: unknown): ScanInput {
   const payload = (body ?? {}) as WorkflowRequestBody;
   const prompt = typeof payload.prompt === "string" && payload.prompt.trim().length > 0 ? payload.prompt.trim() : DEFAULT_SCAN_PROMPT;
@@ -39,7 +63,7 @@ function normalizeInput(body: unknown): ScanInput {
 
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
   if (req.method !== "POST") {
-    res.status(404).json({ error: "Use POST /api/workflow" });
+    sendWorkflowError(res, 404, "Use POST /api/workflow");
     return;
   }
 
@@ -54,7 +78,7 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
       !scanResult.direction ||
       !scanResult.confidence
     ) {
-      res.status(200).json({
+      sendJson(res, 200, {
         prompt: scanInput.prompt,
         scan: scanResult,
         tradeCard: null,
@@ -70,7 +94,7 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
         confirmedConfidence: scanResult.confidence,
       });
 
-      res.status(200).json({
+      sendJson(res, 200, {
         prompt: scanInput.prompt,
         scan: scanResult,
         tradeCard,
@@ -92,7 +116,7 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
         console.warn("Unexpected trade-card reward:risk blocker after confirmation; returning no_trade_today for safety.");
       }
 
-      res.status(200).json({
+      sendJson(res, 200, {
         prompt: scanInput.prompt,
         scan: {
           ...scanResult,
@@ -105,9 +129,18 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
       return;
     }
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Workflow failed.";
     console.error("Failed to run /api/workflow", error);
-    res.status(500).json({
-      error: error instanceof Error ? error.message : "Workflow failed.",
-    });
+
+    try {
+      sendWorkflowError(res, 500, message, {
+        stage: "workflow_handler",
+      });
+    } catch (responseError) {
+      console.error("Failed to send JSON error response for /api/workflow", responseError);
+      sendWorkflowError(res, 500, "Workflow failed.", {
+        stage: "workflow_error_fallback",
+      });
+    }
   }
 }
