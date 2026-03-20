@@ -273,7 +273,7 @@
           }))}
 
           <div class="row"><strong>Finalist review summary:</strong></div>
-          ${renderList((telemetry?.finalistsReviewedDebug || []).map((item) => `${item.symbol}: ${item.eligibleForReviewReason} | source=${item.sourceList}${item.upstreamConsistencyWarning ? ` | WARNING: ${item.upstreamConsistencyWarning}` : ""}`))}
+          ${renderList((telemetry?.finalistsReviewedDebug || []).map((item) => `${item.symbol}: ${item.eligibleForReviewReason} | continuation=${item.continuationPass ? "pass" : "fail"}${item.continuationReason ? ` (${item.continuationReason})` : ""} | confirmationEligible=${item.confirmationEligible ? "yes" : "no"} (${item.confirmationEligibilityReason}) | preReviewAsymmetryTier=${item.preReviewAsymmetryTier} | directionalRoomTier=${item.directionalRoomTier} | actualChartAsymmetryTier=${item.actualChartAsymmetryTier} | source=${item.sourceList}${item.upstreamConsistencyWarning ? ` | WARNING: ${item.upstreamConsistencyWarning}` : ""}`))}
 
           <div class="row"><strong>Consistency checks:</strong></div>
           ${renderList(telemetry?.consistencyChecks || [])}
