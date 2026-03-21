@@ -318,6 +318,11 @@ type FinalistReviewResult = {
   confidence: ScanConfidence | null;
   reviewStatus: "reviewed";
   confirmationStatus: "confirmed" | "rejected";
+  candidateConfirmedInPrompt2: boolean;
+  candidateBlockedPostConfirmation: boolean;
+  blockedConfirmationReason: string | null;
+  tierAbandonedAfterBlock: boolean;
+  scanContinuedAfterBlock: boolean;
   confirmationFailureReasons: string[];
   rankingScore: number;
   stage1Inputs: {
@@ -393,6 +398,12 @@ type ReviewedFinalistOutcome = {
   tierLabel: string;
   direction: ScanDirection | null;
   confidence: ScanConfidence | null;
+  candidateConfirmedInPrompt2: boolean;
+  candidateBlockedPostConfirmation: boolean;
+  blockedConfirmationReason: string | null;
+  tierAbandonedAfterBlock: boolean;
+  scanContinuedAfterBlock: boolean;
+  survivedFinalSelection: boolean;
   confirmationFailureReasons: string[];
   asymmetryDebug: FinalistReviewResult["asymmetryDebug"];
   rankingScore: number;
@@ -507,6 +518,11 @@ export type StarterUniverseTelemetry = {
   topRankedSymbol: string | null;
   scannedTiers: ScanUniverseTierKey[];
   winningTier: ScanUniverseTierKey | null;
+  finalSelectionSourceTier: ScanUniverseTierKey | null;
+  finalOutcomeSource:
+    | "tier_confirmed"
+    | "cross_tier_no_trade"
+    | "tier_blocked_post_confirmation";
   tierSummaries: TierSummary[];
   tierStageCounts: Partial<
     Record<ScanUniverseTierKey, StarterUniverseStageCounts>
@@ -771,6 +787,13 @@ function buildStarterUniverseTelemetry(params: {
       tierLabel: tierSummary?.label ?? "Tier 1",
       direction: item.direction,
       confidence: item.confidence,
+      candidateConfirmedInPrompt2: item.candidateConfirmedInPrompt2,
+      candidateBlockedPostConfirmation: item.candidateBlockedPostConfirmation,
+      blockedConfirmationReason: item.blockedConfirmationReason,
+      tierAbandonedAfterBlock: item.tierAbandonedAfterBlock,
+      scanContinuedAfterBlock: item.scanContinuedAfterBlock,
+      survivedFinalSelection:
+        selectedSymbol !== null && item.symbol === selectedSymbol,
       confirmationFailureReasons: item.confirmationFailureReasons,
       asymmetryDebug: item.asymmetryDebug,
       rankingScore: item.rankingScore,
@@ -817,6 +840,13 @@ function buildStarterUniverseTelemetry(params: {
     topRankedSymbol: ranked[0]?.symbol ?? null,
     scannedTiers,
     winningTier,
+    finalSelectionSourceTier: selectedSymbol !== null ? winningTier : null,
+    finalOutcomeSource:
+      selectedSymbol !== null
+        ? "tier_confirmed"
+        : finalistReviewResults.some((item) => item.candidateBlockedPostConfirmation)
+          ? "tier_blocked_post_confirmation"
+          : "cross_tier_no_trade",
     tierSummaries: resolvedTierSummaries,
     tierStageCounts,
     tierFinalistsReviewed,
@@ -1172,6 +1202,9 @@ function getTierLabelForKey(tierKey: ScanUniverseTierKey): string {
 function buildFinalistNoTradeReasonPath(
   finalists: FinalistReviewResult[],
 ): string {
+  const blockedFinalists = finalists.filter(
+    (item) => item.candidateBlockedPostConfirmation,
+  );
   const rejectedFinalists = finalists.filter(
     (item) => item.conclusion !== "confirmed",
   );
@@ -1182,6 +1215,12 @@ function buildFinalistNoTradeReasonPath(
       tierLabel: "Current tier",
       direction: item.direction,
       confidence: item.confidence,
+      candidateConfirmedInPrompt2: item.candidateConfirmedInPrompt2,
+      candidateBlockedPostConfirmation: item.candidateBlockedPostConfirmation,
+      blockedConfirmationReason: item.blockedConfirmationReason,
+      tierAbandonedAfterBlock: item.tierAbandonedAfterBlock,
+      scanContinuedAfterBlock: item.scanContinuedAfterBlock,
+      survivedFinalSelection: false,
       confirmationFailureReasons: item.confirmationFailureReasons,
       asymmetryDebug: item.asymmetryDebug,
       rankingScore: item.rankingScore,
@@ -1192,9 +1231,11 @@ function buildFinalistNoTradeReasonPath(
   const reviewed = finalists
     .map((item) => {
       const reasons =
-        item.conclusion === "confirmed"
-          ? "confirmed"
-          : formatFinalistReasonList(item.confirmationFailureReasons);
+        item.candidateBlockedPostConfirmation
+          ? `confirmed in Prompt 2, then blocked (${item.blockedConfirmationReason ?? "post-confirmation trade-card block"})`
+          : item.conclusion === "confirmed"
+            ? "confirmed"
+            : formatFinalistReasonList(item.confirmationFailureReasons);
       return `${item.symbol} (${item.direction ?? "n/a"}, ${item.reviewStatus}/${item.confirmationStatus}, confidence=${item.confidence ?? "n/a"}, reasons: ${reasons})`;
     })
     .join("; ");
@@ -1202,11 +1243,18 @@ function buildFinalistNoTradeReasonPath(
   const narrative = rejectedFinalists
     .map(
       (item) =>
-        `${item.symbol} was shortlisted but failed final confirmation due to ${formatFinalistReasonList(item.confirmationFailureReasons)}.`,
+        item.candidateBlockedPostConfirmation
+          ? `${item.symbol} was confirmed in Prompt 2 but then disqualified by the trade-card step due to ${item.blockedConfirmationReason ?? "a downstream trade-card blocker"}.`
+          : `${item.symbol} was shortlisted but failed final confirmation due to ${formatFinalistReasonList(item.confirmationFailureReasons)}.`,
     )
     .join(" ");
 
-  return `Ranked finalists were reviewed in deterministic order and all were rejected (${rejectedFinalists.map((item) => item.symbol).join(", ")}). Headline blocker: ${sharedBlockerSummary} Reason path: ${narrative} Finalist outcomes: ${reviewed}.`;
+  const blockedClause =
+    blockedFinalists.length > 0
+      ? ` Post-confirmation trade-card blocks: ${blockedFinalists.map((item) => `${item.symbol} (${item.blockedConfirmationReason ?? "blocked"})`).join("; ")}.`
+      : "";
+
+  return `Ranked finalists were reviewed in deterministic order and no candidate survived the full workflow (${rejectedFinalists.map((item) => item.symbol).join(", ")}). Headline blocker: ${sharedBlockerSummary} Reason path: ${narrative} Finalist outcomes: ${reviewed}.${blockedClause}`;
 }
 
 function buildFinalistConfirmedSummary(
@@ -4716,6 +4764,17 @@ function combineTelemetry(
     topRankedSymbol: finalTelemetry?.topRankedSymbol ?? null,
     scannedTiers,
     winningTier,
+    finalSelectionSourceTier: selectedSymbol !== null ? winningTier : null,
+    finalOutcomeSource:
+      selectedSymbol !== null
+        ? "tier_confirmed"
+        : executions.some((item) =>
+            item.telemetry.reviewedFinalistOutcomes.some(
+              (outcome) => outcome.candidateBlockedPostConfirmation,
+            ),
+          )
+          ? "tier_blocked_post_confirmation"
+          : "cross_tier_no_trade",
     tierSummaries,
     tierStageCounts: Object.fromEntries(
       tierSummaries.map((summary) => [summary.tier, summary.counts]),
@@ -5034,6 +5093,11 @@ async function runUniverseTierTradeStationScan(
           confidence: null,
           reviewStatus: "reviewed",
           confirmationStatus: "rejected",
+          candidateConfirmedInPrompt2: false,
+          candidateBlockedPostConfirmation: false,
+          blockedConfirmationReason: null,
+          tierAbandonedAfterBlock: false,
+          scanContinuedAfterBlock: false,
           confirmationFailureReasons: [
             "earnings risk inside target DTE window",
           ],
@@ -5143,6 +5207,11 @@ async function runUniverseTierTradeStationScan(
       reviewStatus: reviewResult.confirmationDebug?.reviewStatus ?? "reviewed",
       confirmationStatus:
         reviewResult.conclusion === "confirmed" ? "confirmed" : "rejected",
+      candidateConfirmedInPrompt2: reviewResult.conclusion === "confirmed",
+      candidateBlockedPostConfirmation: false,
+      blockedConfirmationReason: null,
+      tierAbandonedAfterBlock: false,
+      scanContinuedAfterBlock: false,
       confirmationFailureReasons,
       rankingScore: finalist.score,
       stage1Inputs: (() => {
@@ -5210,6 +5279,34 @@ async function runUniverseTierTradeStationScan(
       reviewResult.direction &&
       reviewResult.confidence
     ) {
+      try {
+        const { constructTradeCard } = await import("./runTradeConstruction.js");
+        await constructTradeCard({
+          prompt: `build trade ${reviewResult.ticker}`,
+          confirmedDirection: reviewResult.direction,
+          confirmedConfidence: reviewResult.confidence,
+        });
+      } catch (error) {
+        const blockedReason =
+          error instanceof Error ? error.message : String(error);
+        const blockedOutcome = finalistReviewResults.at(-1);
+        if (blockedOutcome) {
+          blockedOutcome.candidateBlockedPostConfirmation = true;
+          blockedOutcome.blockedConfirmationReason = blockedReason;
+          blockedOutcome.tierAbandonedAfterBlock = true;
+          blockedOutcome.scanContinuedAfterBlock = true;
+          blockedOutcome.conclusion = "no_trade_today";
+          blockedOutcome.reason = blockedReason;
+          blockedOutcome.confirmationFailureReasons = [
+            ...new Set([
+              ...blockedOutcome.confirmationFailureReasons,
+              blockedReason,
+            ]),
+          ];
+        }
+        continue;
+      }
+
       logGeneralScanDebug(`${tier.label} final selected`, [
         reviewResult.ticker,
       ]);

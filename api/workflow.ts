@@ -103,8 +103,42 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
       return;
     } catch (error) {
       const blockerMessage = readErrorMessage(error);
+      const blockedTicker = scanResult.ticker;
+      const reviewedFinalistOutcomes = Array.isArray(telemetry?.reviewedFinalistOutcomes)
+        ? telemetry.reviewedFinalistOutcomes.map((item: any) =>
+            item?.symbol === blockedTicker
+              ? {
+                  ...item,
+                  candidateBlockedPostConfirmation: true,
+                  blockedConfirmationReason: blockerMessage,
+                  tierAbandonedAfterBlock: true,
+                  scanContinuedAfterBlock: false,
+                  survivedFinalSelection: false,
+                  conclusion: "no_trade_today",
+                  reason: blockerMessage,
+                }
+              : item,
+          )
+        : [];
       const telemetryWithTradeBlock = {
         ...(telemetry ?? {}),
+        finalSelectedSymbol: null,
+        winningTier: null,
+        finalSelectionSourceTier: null,
+        finalOutcomeSource: "tier_blocked_post_confirmation",
+        reviewedFinalistOutcomes,
+        bestRejectedCandidates: reviewedFinalistOutcomes
+          .filter((item: any) => item?.conclusion !== "confirmed")
+          .map((item: any) => ({
+            symbol: item.symbol,
+            tier: item.tier,
+            tierLabel: item.tierLabel,
+            rejectionReasons: item.confirmationFailureReasons,
+          })),
+        bestReviewedFinalistsAcrossTiers: reviewedFinalistOutcomes
+          .filter((item: any) => item?.survivedFinalSelection)
+          .map((item: any) => item.symbol),
+        crossTierFinalistSummary: null,
         tradeCardBlock: {
           blocked: true,
           reason: blockerMessage,
