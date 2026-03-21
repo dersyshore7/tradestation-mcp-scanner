@@ -501,6 +501,7 @@ export type StarterUniverseTelemetry = {
     postConfirmationInvalLevel: number | null;
     postConfirmationTargetLevel: number | null;
     postConfirmationAsymmetryReason: string | null;
+    asymmetryConsistencyFlag: boolean;
     asymmetryConsistencyReason: string | null;
     consistencyWarning: string | null;
     sourceList: "stage3Passed" | "stage2PassedOnly" | "missingUpstream";
@@ -565,6 +566,47 @@ type FinalistReviewSource = {
   debug: StarterUniverseTelemetry["finalistsReviewedDebug"];
   warnings: string[];
 };
+
+type FinalizedFinalistAsymmetrySource = {
+  symbol: string;
+  asymmetryDebug?: {
+    postConfirmationActualRewardRiskRatio: number | null;
+    postConfirmationAsymmetryTier: RiskRewardTier | "unknown";
+    postConfirmationInvalLevel: number | null;
+    postConfirmationTargetLevel: number | null;
+    postConfirmationAsymmetryReason: string | null;
+    asymmetryConsistencyFlag: boolean;
+    asymmetryConsistencyReason: string | null;
+  } | null;
+};
+
+export function mergeFinalizedAsymmetryIntoFinalistsReviewedDebug(
+  debug: StarterUniverseTelemetry["finalistsReviewedDebug"],
+  finalizedReviews: FinalizedFinalistAsymmetrySource[],
+): StarterUniverseTelemetry["finalistsReviewedDebug"] {
+  const finalizedBySymbol = new Map(
+    finalizedReviews.map((item) => [item.symbol, item]),
+  );
+
+  return debug.map((item) => {
+    const post = finalizedBySymbol.get(item.symbol)?.asymmetryDebug;
+    if (!post) {
+      return item;
+    }
+
+    return {
+      ...item,
+      postConfirmationActualRewardRiskRatio:
+        post.postConfirmationActualRewardRiskRatio,
+      postConfirmationAsymmetryTier: post.postConfirmationAsymmetryTier,
+      postConfirmationInvalLevel: post.postConfirmationInvalLevel,
+      postConfirmationTargetLevel: post.postConfirmationTargetLevel,
+      postConfirmationAsymmetryReason: post.postConfirmationAsymmetryReason,
+      asymmetryConsistencyFlag: post.asymmetryConsistencyFlag,
+      asymmetryConsistencyReason: post.asymmetryConsistencyReason,
+    };
+  });
+}
 
 function buildStarterUniverseTelemetry(params: {
   stage1Entered: string[];
@@ -827,26 +869,11 @@ function buildStarterUniverseTelemetry(params: {
         ? buildFinalistNoTradeReasonPath(finalistReviewResults)
         : null;
 
-  const finalistReviewResultBySymbol = new Map(
-    finalistReviewResults.map((item) => [item.symbol, item]),
-  );
-  const finalistsReviewedDebug = finalistReviewSource.debug.map((item) => {
-    const review = finalistReviewResultBySymbol.get(item.symbol);
-    const post = review?.asymmetryDebug;
-    return {
-      ...item,
-      postConfirmationActualRewardRiskRatio:
-        post?.postConfirmationActualRewardRiskRatio ?? null,
-      postConfirmationAsymmetryTier:
-        post?.postConfirmationAsymmetryTier ?? "unknown",
-      postConfirmationInvalLevel: post?.postConfirmationInvalLevel ?? null,
-      postConfirmationTargetLevel: post?.postConfirmationTargetLevel ?? null,
-      postConfirmationAsymmetryReason:
-        post?.postConfirmationAsymmetryReason ?? null,
-      asymmetryConsistencyReason:
-        post?.asymmetryConsistencyReason ?? item.asymmetryConsistencyReason,
-    };
-  });
+  const finalistsReviewedDebug =
+    mergeFinalizedAsymmetryIntoFinalistsReviewedDebug(
+      finalistReviewSource.debug,
+      finalistReviewResults,
+    );
 
   return {
     stageCounts,
@@ -987,6 +1014,8 @@ function buildFinalistReviewSource(
       postConfirmationInvalLevel: null,
       postConfirmationTargetLevel: null,
       postConfirmationAsymmetryReason: null,
+      asymmetryConsistencyFlag:
+        chartAnchoredAsymmetry.asymmetryConsistencyFlag,
       preReviewActualRewardRiskRatio: chartAnchoredAsymmetry.actualRewardRiskRatio,
       preReviewInvalLevel: chartAnchoredAsymmetry.invalidationLevel,
       preReviewInvalReason: chartAnchoredAsymmetry.invalidationReason,

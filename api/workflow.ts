@@ -1,4 +1,8 @@
-import { runScan, type ScanInput } from "../src/app/runScan.js";
+import {
+  mergeFinalizedAsymmetryIntoFinalistsReviewedDebug,
+  runScan,
+  type ScanInput,
+} from "../src/app/runScan.js";
 import { constructTradeCard } from "../src/app/runTradeConstruction.js";
 import { CHART_ANCHORED_TWO_TO_ONE_FAILURE } from "../src/app/chartAnchoredTradability.js";
 import { DEFAULT_SCAN_PROMPT } from "../src/config/defaultScanPrompt.js";
@@ -145,6 +149,14 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
           scanReasoning: scanResult.reason,
         },
       };
+
+      if (Array.isArray(telemetry?.finalistsReviewedDebug)) {
+        telemetryWithTradeBlock.finalistsReviewedDebug =
+          mergeFinalizedAsymmetryIntoFinalistsReviewedDebug(
+            telemetry.finalistsReviewedDebug,
+            reviewedFinalistOutcomes,
+          );
+      }
 
       if (isChartAnchoredTwoToOneBlocker(error)) {
         console.warn("Unexpected trade-card reward:risk blocker after confirmation; returning no_trade_today for safety.");
