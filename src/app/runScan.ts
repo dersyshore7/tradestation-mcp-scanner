@@ -685,17 +685,20 @@ function buildStarterUniverseTelemetry(params: {
     })
     .slice(0, 3);
 
-  const noTradeReason = buildConsistentNoTradeReason(
-    finalistReviewResults,
-    stage3Passed.map((candidate) => candidate.symbol),
-    ranked.map((candidate) => candidate.symbol),
-    finalistReviewSource.continuationEligibleFinalists.map(
-      (candidate) => candidate.symbol,
-    ),
-    finalistReviewSource.confirmationEligibleFinalists.map(
-      (candidate) => candidate.symbol,
-    ),
-  );
+  const noTradeReason =
+    selectedSymbol === null
+      ? buildConsistentNoTradeReason(
+          finalistReviewResults,
+          stage3Passed.map((candidate) => candidate.symbol),
+          ranked.map((candidate) => candidate.symbol),
+          finalistReviewSource.continuationEligibleFinalists.map(
+            (candidate) => candidate.symbol,
+          ),
+          finalistReviewSource.confirmationEligibleFinalists.map(
+            (candidate) => candidate.symbol,
+          ),
+        )
+      : { reason: null, symbolConsistencyWarnings: [] };
 
   const stageCounts: StarterUniverseStageCounts = {
     stage1Entered: stage1Entered.length,
@@ -774,6 +777,15 @@ function buildStarterUniverseTelemetry(params: {
       conclusion: item.conclusion,
       reason: item.reason,
     }));
+  const rejectedReviewedFinalistOutcomes = reviewedFinalistOutcomes.filter(
+    (item) => item.conclusion !== "confirmed",
+  );
+  const finalistSummary =
+    selectedSymbol !== null
+      ? buildFinalistConfirmedSummary(finalistReviewResults, selectedSymbol)
+      : reviewedFinalistOutcomes.length > 0
+        ? buildFinalistNoTradeReasonPath(finalistReviewResults)
+        : null;
 
   return {
     stageCounts,
@@ -814,16 +826,13 @@ function buildStarterUniverseTelemetry(params: {
     bestReviewedFinalistsAcrossTiers: reviewedFinalistOutcomes.map(
       (item) => item.symbol,
     ),
-    bestRejectedCandidates: reviewedFinalistOutcomes.map((item) => ({
+    bestRejectedCandidates: rejectedReviewedFinalistOutcomes.map((item) => ({
       symbol: item.symbol,
       tier: item.tier,
       tierLabel: item.tierLabel,
       rejectionReasons: item.confirmationFailureReasons,
     })),
-    crossTierFinalistSummary:
-      reviewedFinalistOutcomes.length > 0
-        ? buildFinalistNoTradeReasonPath(finalistReviewResults)
-        : null,
+    crossTierFinalistSummary: finalistSummary,
   };
 }
 
@@ -1163,8 +1172,11 @@ function getTierLabelForKey(tierKey: ScanUniverseTierKey): string {
 function buildFinalistNoTradeReasonPath(
   finalists: FinalistReviewResult[],
 ): string {
+  const rejectedFinalists = finalists.filter(
+    (item) => item.conclusion !== "confirmed",
+  );
   const sharedBlockerSummary = summarizeCrossTierRejectionReasons(
-    finalists.map((item) => ({
+    rejectedFinalists.map((item) => ({
       symbol: item.symbol,
       tier: "tier1",
       tierLabel: "Current tier",
@@ -1178,20 +1190,61 @@ function buildFinalistNoTradeReasonPath(
     })),
   );
   const reviewed = finalists
-    .map(
-      (item) =>
-        `${item.symbol} (${item.direction ?? "n/a"}, ${item.reviewStatus}/${item.confirmationStatus}, confidence=${item.confidence ?? "n/a"}, reasons: ${formatFinalistReasonList(item.confirmationFailureReasons)})`,
-    )
+    .map((item) => {
+      const reasons =
+        item.conclusion === "confirmed"
+          ? "confirmed"
+          : formatFinalistReasonList(item.confirmationFailureReasons);
+      return `${item.symbol} (${item.direction ?? "n/a"}, ${item.reviewStatus}/${item.confirmationStatus}, confidence=${item.confidence ?? "n/a"}, reasons: ${reasons})`;
+    })
     .join("; ");
 
-  const narrative = finalists
+  const narrative = rejectedFinalists
     .map(
       (item) =>
         `${item.symbol} was shortlisted but failed final confirmation due to ${formatFinalistReasonList(item.confirmationFailureReasons)}.`,
     )
     .join(" ");
 
-  return `Ranked finalists were reviewed in deterministic order and all were rejected (${finalists.map((item) => item.symbol).join(", ")}). Headline blocker: ${sharedBlockerSummary} Reason path: ${narrative} Finalist outcomes: ${reviewed}.`;
+  return `Ranked finalists were reviewed in deterministic order and all were rejected (${rejectedFinalists.map((item) => item.symbol).join(", ")}). Headline blocker: ${sharedBlockerSummary} Reason path: ${narrative} Finalist outcomes: ${reviewed}.`;
+}
+
+function buildFinalistConfirmedSummary(
+  finalists: FinalistReviewResult[],
+  selectedSymbol: string,
+): string {
+  const confirmedFinalists = finalists.filter(
+    (item) => item.conclusion === "confirmed",
+  );
+  const selectedFinalist =
+    confirmedFinalists.find((item) => item.symbol === selectedSymbol) ??
+    finalists.find((item) => item.symbol === selectedSymbol) ??
+    null;
+  const rejectedFinalists = finalists.filter(
+    (item) => item.symbol !== selectedSymbol && item.conclusion !== "confirmed",
+  );
+  const reviewed = finalists
+    .map((item) => {
+      const reasons =
+        item.conclusion === "confirmed"
+          ? "confirmed"
+          : formatFinalistReasonList(item.confirmationFailureReasons);
+      return `${item.symbol} (${item.direction ?? "n/a"}, ${item.reviewStatus}/${item.confirmationStatus}, confidence=${item.confidence ?? "n/a"}, reasons: ${reasons})`;
+    })
+    .join("; ");
+  const selectedClause = selectedFinalist
+    ? `${selectedSymbol} was confirmed in deterministic ranked order (${selectedFinalist.direction ?? "n/a"}, confidence=${selectedFinalist.confidence ?? "n/a"}).`
+    : `${selectedSymbol} was confirmed in deterministic ranked order.`;
+  const rejectedClause =
+    rejectedFinalists.length > 0
+      ? ` Earlier rejected finalists were ${rejectedFinalists.map((item) => `${item.symbol} (${formatFinalistReasonList(item.confirmationFailureReasons)})`).join(", ")}.`
+      : "";
+  const additionalConfirmedClause =
+    confirmedFinalists.filter((item) => item.symbol !== selectedSymbol).length > 0
+      ? ` Additional confirmed finalists recorded downstream were ${confirmedFinalists.filter((item) => item.symbol !== selectedSymbol).map((item) => item.symbol).join(", ")}.`
+      : "";
+
+  return `Ranked finalists produced a confirmed outcome. ${selectedClause}${rejectedClause}${additionalConfirmedClause} Finalist outcomes: ${reviewed}.`;
 }
 
 function normalizeConfirmationFailureReason(
@@ -1272,6 +1325,9 @@ function joinWithAnd(parts: string[]): string {
 function summarizeCrossTierRejectionReasons(
   finalists: ReviewedFinalistOutcome[],
 ): string {
+  if (finalists.length === 0) {
+    return "No rejected finalists remained after confirmation filtering.";
+  }
   const familyCounts = new Map<NormalizedRejectionFamily, number>();
   const familySymbols = new Map<NormalizedRejectionFamily, Set<string>>();
 
@@ -1406,8 +1462,11 @@ function buildCrossTierNoTradeSummary(executions: TierScanExecution[]): {
     };
   }
 
+  const rejectedReviewedFinalistOutcomes = reviewedFinalistOutcomes.filter(
+    (item) => item.conclusion !== "confirmed",
+  );
   const bestReviewedFinalists = selectBestReviewedFinalistsAcrossTiers(
-    reviewedFinalistOutcomes,
+    rejectedReviewedFinalistOutcomes,
   );
   const bestRejectedCandidates = bestReviewedFinalists.map((item) => ({
     symbol: item.symbol,
@@ -4672,12 +4731,14 @@ function combineTelemetry(
       reviewedFinalistOutcomes.map((item) => item.symbol),
     bestRejectedCandidates:
       finalTelemetry?.bestRejectedCandidates ??
-      reviewedFinalistOutcomes.map((item) => ({
-        symbol: item.symbol,
-        tier: item.tier,
-        tierLabel: item.tierLabel,
-        rejectionReasons: item.confirmationFailureReasons,
-      })),
+      reviewedFinalistOutcomes
+        .filter((item) => item.conclusion !== "confirmed")
+        .map((item) => ({
+          symbol: item.symbol,
+          tier: item.tier,
+          tierLabel: item.tierLabel,
+          rejectionReasons: item.confirmationFailureReasons,
+        })),
     crossTierFinalistSummary: finalTelemetry?.crossTierFinalistSummary ?? null,
   };
 }
