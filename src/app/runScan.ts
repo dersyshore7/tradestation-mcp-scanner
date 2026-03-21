@@ -17,6 +17,7 @@ import {
   MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
   MINIMUM_TRADABLE_RISK_REWARD_RATIO,
   PREFERRED_RISK_REWARD_RATIO,
+  getRiskRewardTier,
   type RiskRewardTier,
 } from "./chartAnchoredTradability.js";
 const FINAL_SCORE_TIE_TOLERANCE = 0.05;
@@ -312,6 +313,28 @@ type Stage3Evaluation = {
   roomToTargetDiagnostics: Stage3Diagnostics["roomToTargetDiagnostics"] | null;
 };
 
+type FinalistAsymmetryDebug = {
+  preReviewReferencePrice: number | null;
+  preReviewInvalLevel: number | null;
+  preReviewTargetLevel: number | null;
+  preReviewRiskDistance: number | null;
+  preReviewRewardDistance: number | null;
+  preReviewActualRewardRiskRatio: number | null;
+  preReviewAsymmetryTier: RiskRewardTier | "unknown";
+  preReviewAsymmetryReason: string | null;
+  postConfirmationReferencePrice: number | null;
+  postConfirmationInvalLevel: number | null;
+  postConfirmationTargetLevel: number | null;
+  postConfirmationRiskDistance: number | null;
+  postConfirmationRewardDistance: number | null;
+  postConfirmationActualRewardRiskRatio: number | null;
+  postConfirmationAsymmetryTier: RiskRewardTier | "unknown";
+  postConfirmationAsymmetryReason: string | null;
+  stage3RoomPct: number | null;
+  asymmetryConsistencyFlag: boolean;
+  asymmetryConsistencyReason: string | null;
+};
+
 type FinalistReviewResult = {
   symbol: string;
   direction: ScanDirection | null;
@@ -345,18 +368,7 @@ type FinalistReviewResult = {
     structureChecks: string;
     roomToTargetDecision: string;
   } | null;
-  asymmetryDebug: {
-    stage3ReferencePrice: number | null;
-    confirmationReferencePrice: number | null;
-    invalidationLevel: number | null;
-    targetLevel: number | null;
-    riskDistance: number | null;
-    rewardDistance: number | null;
-    actualRewardRiskRatio: number | null;
-    stage3RoomPct: number | null;
-    asymmetryConsistencyFlag: boolean;
-    asymmetryConsistencyReason: string | null;
-  } | null;
+  asymmetryDebug: FinalistAsymmetryDebug | null;
   conclusion: ScanResult["conclusion"];
   reason: string;
 };
@@ -475,15 +487,20 @@ export type StarterUniverseTelemetry = {
     confirmationEligible: boolean;
     confirmationEligibilityReason: string;
     preReviewAsymmetryTier: RiskRewardTier | "unknown";
+    preReviewActualRewardRiskRatio: number | null;
+    preReviewInvalLevel: number | null;
+    preReviewInvalReason: string | null;
+    preReviewTargetLevel: number | null;
+    preReviewTargetReason: string | null;
+    preReviewRiskDistance: number | null;
+    preReviewRewardDistance: number | null;
     directionalRoomTier: RiskRewardTier | "unknown";
     actualChartAsymmetryTier: RiskRewardTier | "unknown";
-    invalidationLevel: number | null;
-    invalidationReason: string | null;
-    targetLevel: number | null;
-    targetReason: string | null;
-    riskDistance: number | null;
-    rewardDistance: number | null;
-    actualRewardRiskRatio: number | null;
+    postConfirmationActualRewardRiskRatio: number | null;
+    postConfirmationAsymmetryTier: RiskRewardTier | "unknown";
+    postConfirmationInvalLevel: number | null;
+    postConfirmationTargetLevel: number | null;
+    postConfirmationAsymmetryReason: string | null;
     asymmetryConsistencyReason: string | null;
     consistencyWarning: string | null;
     sourceList: "stage3Passed" | "stage2PassedOnly" | "missingUpstream";
@@ -810,10 +827,29 @@ function buildStarterUniverseTelemetry(params: {
         ? buildFinalistNoTradeReasonPath(finalistReviewResults)
         : null;
 
+  const finalistReviewResultBySymbol = new Map(
+    finalistReviewResults.map((item) => [item.symbol, item]),
+  );
+  const finalistsReviewedDebug = finalistReviewSource.debug.map((item) => {
+    const review = finalistReviewResultBySymbol.get(item.symbol);
+    const post = review?.asymmetryDebug;
+    return {
+      ...item,
+      postConfirmationActualRewardRiskRatio:
+        post?.postConfirmationActualRewardRiskRatio ?? null,
+      postConfirmationAsymmetryTier:
+        post?.postConfirmationAsymmetryTier ?? "unknown",
+      postConfirmationInvalLevel: post?.postConfirmationInvalLevel ?? null,
+      postConfirmationTargetLevel: post?.postConfirmationTargetLevel ?? null,
+      postConfirmationAsymmetryReason:
+        post?.postConfirmationAsymmetryReason ?? null,
+    };
+  });
+
   return {
     stageCounts,
     stageSymbols,
-    finalistsReviewedDebug: finalistReviewSource.debug,
+    finalistsReviewedDebug,
     stage3PassedDetails: stage3Passed.map((candidate) => ({
       symbol: candidate.symbol,
       direction: candidate.chartDirection,
@@ -944,13 +980,18 @@ function buildFinalistReviewSource(
       preReviewAsymmetryTier,
       directionalRoomTier,
       actualChartAsymmetryTier,
-      invalidationLevel: chartAnchoredAsymmetry.invalidationLevel,
-      invalidationReason: chartAnchoredAsymmetry.invalidationReason,
-      targetLevel: chartAnchoredAsymmetry.targetLevel,
-      targetReason: chartAnchoredAsymmetry.targetReason,
-      riskDistance: chartAnchoredAsymmetry.riskDistance,
-      rewardDistance: chartAnchoredAsymmetry.rewardDistance,
-      actualRewardRiskRatio: chartAnchoredAsymmetry.actualRewardRiskRatio,
+      postConfirmationActualRewardRiskRatio: null,
+      postConfirmationAsymmetryTier: "unknown",
+      postConfirmationInvalLevel: null,
+      postConfirmationTargetLevel: null,
+      postConfirmationAsymmetryReason: null,
+      preReviewActualRewardRiskRatio: chartAnchoredAsymmetry.actualRewardRiskRatio,
+      preReviewInvalLevel: chartAnchoredAsymmetry.invalidationLevel,
+      preReviewInvalReason: chartAnchoredAsymmetry.invalidationReason,
+      preReviewTargetLevel: chartAnchoredAsymmetry.targetLevel,
+      preReviewTargetReason: chartAnchoredAsymmetry.targetReason,
+      preReviewRiskDistance: chartAnchoredAsymmetry.riskDistance,
+      preReviewRewardDistance: chartAnchoredAsymmetry.rewardDistance,
       asymmetryConsistencyReason:
         chartAnchoredAsymmetry.asymmetryConsistencyReason,
       consistencyWarning,
@@ -1236,7 +1277,10 @@ function buildFinalistNoTradeReasonPath(
           : item.conclusion === "confirmed"
             ? "confirmed"
             : formatFinalistReasonList(item.confirmationFailureReasons);
-      return `${item.symbol} (${item.direction ?? "n/a"}, ${item.reviewStatus}/${item.confirmationStatus}, confidence=${item.confidence ?? "n/a"}, reasons: ${reasons})`;
+      const outcomeLabel = item.candidateBlockedPostConfirmation
+        ? `${item.reviewStatus}/blocked_after_confirmation`
+        : `${item.reviewStatus}/${item.confirmationStatus}`;
+      return `${item.symbol} (${item.direction ?? "n/a"}, ${outcomeLabel}, confidence=${item.confidence ?? "n/a"}, reasons: ${reasons})`;
     })
     .join("; ");
 
@@ -5139,23 +5183,33 @@ async function runUniverseTierTradeStationScan(
             const item = stage3BySymbol.get(finalist.symbol);
             return item
               ? {
-                  stage3ReferencePrice:
+                  preReviewReferencePrice:
                     item.chartDiagnostics.roomToTargetDiagnostics
                       .referencePrice,
-                  confirmationReferencePrice:
-                    item.chartDiagnostics.chartAnchoredAsymmetry.referencePrice,
-                  invalidationLevel:
+                  preReviewInvalLevel:
                     item.chartDiagnostics.chartAnchoredAsymmetry
                       .invalidationLevel,
-                  targetLevel:
+                  preReviewTargetLevel:
                     item.chartDiagnostics.chartAnchoredAsymmetry.targetLevel,
-                  riskDistance:
+                  preReviewRiskDistance:
                     item.chartDiagnostics.chartAnchoredAsymmetry.riskDistance,
-                  rewardDistance:
+                  preReviewRewardDistance:
                     item.chartDiagnostics.chartAnchoredAsymmetry.rewardDistance,
-                  actualRewardRiskRatio:
+                  preReviewActualRewardRiskRatio:
                     item.chartDiagnostics.chartAnchoredAsymmetry
                       .actualRewardRiskRatio,
+                  preReviewAsymmetryTier:
+                    item.chartDiagnostics.chartAnchoredAsymmetry.actualRrTier,
+                  preReviewAsymmetryReason:
+                    item.chartDiagnostics.chartAnchoredAsymmetry.failureReason,
+                  postConfirmationReferencePrice: null,
+                  postConfirmationInvalLevel: null,
+                  postConfirmationTargetLevel: null,
+                  postConfirmationRiskDistance: null,
+                  postConfirmationRewardDistance: null,
+                  postConfirmationActualRewardRiskRatio: null,
+                  postConfirmationAsymmetryTier: "unknown",
+                  postConfirmationAsymmetryReason: null,
                   stage3RoomPct:
                     item.chartDiagnostics.chartAnchoredAsymmetry.stage3RoomPct,
                   asymmetryConsistencyFlag:
@@ -5252,16 +5306,37 @@ async function runUniverseTierTradeStationScan(
       })(),
       asymmetryDebug: reviewResult.confirmationDebug
         ? {
-            stage3ReferencePrice:
+            preReviewReferencePrice:
               reviewResult.confirmationDebug.stage3ReferencePrice,
-            confirmationReferencePrice:
+            preReviewInvalLevel: stage3Candidate?.chartDiagnostics.chartAnchoredAsymmetry.invalidationLevel ?? null,
+            preReviewTargetLevel: stage3Candidate?.chartDiagnostics.chartAnchoredAsymmetry.targetLevel ?? null,
+            preReviewRiskDistance: stage3Candidate?.chartDiagnostics.chartAnchoredAsymmetry.riskDistance ?? null,
+            preReviewRewardDistance: stage3Candidate?.chartDiagnostics.chartAnchoredAsymmetry.rewardDistance ?? null,
+            preReviewActualRewardRiskRatio:
+              stage3Candidate?.chartDiagnostics.chartAnchoredAsymmetry.actualRewardRiskRatio ?? null,
+            preReviewAsymmetryTier:
+              getMoreConservativeAsymmetryTier(
+                stage3Candidate?.chartDiagnostics.roomToTargetDiagnostics.roomTier ?? "unknown",
+                stage3Candidate?.chartDiagnostics.chartAnchoredAsymmetry.actualRrTier ?? "unknown",
+              ),
+            preReviewAsymmetryReason:
+              stage3Candidate?.chartDiagnostics.chartAnchoredAsymmetry.failureReason ?? null,
+            postConfirmationReferencePrice:
               reviewResult.confirmationDebug.confirmationReferencePrice,
-            invalidationLevel: reviewResult.confirmationDebug.invalidationLevel,
-            targetLevel: reviewResult.confirmationDebug.targetLevel,
-            riskDistance: reviewResult.confirmationDebug.riskDistance,
-            rewardDistance: reviewResult.confirmationDebug.rewardDistance,
-            actualRewardRiskRatio:
+            postConfirmationInvalLevel: reviewResult.confirmationDebug.invalidationLevel,
+            postConfirmationTargetLevel: reviewResult.confirmationDebug.targetLevel,
+            postConfirmationRiskDistance: reviewResult.confirmationDebug.riskDistance,
+            postConfirmationRewardDistance: reviewResult.confirmationDebug.rewardDistance,
+            postConfirmationActualRewardRiskRatio:
               reviewResult.confirmationDebug.actualRewardRiskRatio,
+            postConfirmationAsymmetryTier:
+              getRiskRewardTier(
+                reviewResult.confirmationDebug.actualRewardRiskRatio,
+              ),
+            postConfirmationAsymmetryReason:
+              reviewResult.confirmationDebug.topBlockingReasons.find((reason) =>
+                reason.includes("Chart-anchored levels do not support minimum tradable asymmetry"),
+              ) ?? null,
             stage3RoomPct: reviewResult.confirmationDebug.stage3RoomPct,
             asymmetryConsistencyFlag:
               stage3FinalConsistencyFlag ||
@@ -5303,6 +5378,44 @@ async function runUniverseTierTradeStationScan(
               blockedReason,
             ]),
           ];
+          if (
+            error instanceof Error &&
+            error.name === "TradeCardBlockedAfterConfirmationError"
+          ) {
+            const postConfirmationAsymmetry = (error as {
+              chartAnchoredAsymmetry?: {
+                referencePrice: number | null;
+                invalidationUnderlying: number | null;
+                targetUnderlying: number | null;
+                riskDistance: number | null;
+                rewardDistance: number | null;
+                rewardRiskRatio: number | null;
+                rrTier: RiskRewardTier | "unknown";
+                reason: string;
+              } | null;
+            }).chartAnchoredAsymmetry;
+            if (blockedOutcome.asymmetryDebug && postConfirmationAsymmetry) {
+              blockedOutcome.asymmetryDebug = {
+                ...blockedOutcome.asymmetryDebug,
+                postConfirmationReferencePrice:
+                  postConfirmationAsymmetry.referencePrice,
+                postConfirmationInvalLevel:
+                  postConfirmationAsymmetry.invalidationUnderlying,
+                postConfirmationTargetLevel:
+                  postConfirmationAsymmetry.targetUnderlying,
+                postConfirmationRiskDistance:
+                  postConfirmationAsymmetry.riskDistance,
+                postConfirmationRewardDistance:
+                  postConfirmationAsymmetry.rewardDistance,
+                postConfirmationActualRewardRiskRatio:
+                  postConfirmationAsymmetry.rewardRiskRatio,
+                postConfirmationAsymmetryTier:
+                  postConfirmationAsymmetry.rrTier,
+                postConfirmationAsymmetryReason:
+                  postConfirmationAsymmetry.reason,
+              };
+            }
+          }
         }
         continue;
       }
