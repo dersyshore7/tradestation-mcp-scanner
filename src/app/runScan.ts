@@ -1217,7 +1217,7 @@ function logFinalistReviewDebugSection(
         ? finalist.confirmationFailureReasons.join("; ")
         : "none";
     console.log(
-      `[scanner:debug] ${finalist.symbol}: dir=${finalist.direction ?? "n/a"} | status=${finalist.reviewStatus}/${finalist.confirmationStatus} | confidence=${finalist.confidence ?? "n/a"} | failureReasons=${failureReasons} | rankingScore=${finalist.rankingScore.toFixed(2)} | reviewConclusion=${finalist.conclusion} | selected=${selected} | room2R=${roomDetails} | reviewReason=${finalist.reason} | inputs=${JSON.stringify(stageInputs)}`,
+      `[scanner:debug] ${finalist.symbol}: dir=${finalist.direction ?? "n/a"} | status=${getFinalistOutcomeLabel(finalist)} | confidence=${finalist.confidence ?? "n/a"} | failureReasons=${failureReasons} | rankingScore=${finalist.rankingScore.toFixed(2)} | reviewConclusion=${finalist.conclusion} | selected=${selected} | room2R=${roomDetails} | reviewReason=${finalist.reason} | inputs=${JSON.stringify(stageInputs)}`,
     );
   }
 }
@@ -1232,6 +1232,46 @@ function formatFinalistReasonList(reasons: string[]): string {
   }
 
   return `${reasons.slice(0, -1).join(", ")} and ${reasons[reasons.length - 1]}`;
+}
+
+function getFinalistOutcomeLabel(finalist: {
+  reviewStatus: string;
+  confirmationStatus: "confirmed" | "rejected";
+  candidateBlockedPostConfirmation: boolean;
+}): string {
+  return finalist.candidateBlockedPostConfirmation
+    ? `${finalist.reviewStatus}/blocked_after_confirmation`
+    : `${finalist.reviewStatus}/${finalist.confirmationStatus}`;
+}
+
+function buildAsymmetryConsistencyTelemetry(
+  aligned: boolean,
+  context: {
+    symbol?: string;
+    actualRewardRiskRatio: number | null;
+    divergenceReason?: string | null;
+  },
+): { asymmetryConsistencyFlag: boolean; asymmetryConsistencyReason: string } {
+  if (aligned) {
+    return {
+      asymmetryConsistencyFlag: true,
+      asymmetryConsistencyReason:
+        "Stage 3 directional room and actual chart-anchored tradable asymmetry are aligned.",
+    };
+  }
+
+  const ratioText =
+    context.actualRewardRiskRatio === null
+      ? "n/a"
+      : context.actualRewardRiskRatio.toFixed(2);
+  const symbolPrefix = context.symbol ? `${context.symbol} ` : "";
+  const divergenceSuffix = context.divergenceReason
+    ? ` ${context.divergenceReason}`
+    : "";
+  return {
+    asymmetryConsistencyFlag: false,
+    asymmetryConsistencyReason: `${symbolPrefix}Stage 3 directional room and actual chart-anchored tradable asymmetry diverged between stages; post-review actual reward:risk was ${ratioText}.${divergenceSuffix}`.trim(),
+  };
 }
 
 function getTierLabelForKey(tierKey: ScanUniverseTierKey): string {
@@ -1277,9 +1317,7 @@ function buildFinalistNoTradeReasonPath(
           : item.conclusion === "confirmed"
             ? "confirmed"
             : formatFinalistReasonList(item.confirmationFailureReasons);
-      const outcomeLabel = item.candidateBlockedPostConfirmation
-        ? `${item.reviewStatus}/blocked_after_confirmation`
-        : `${item.reviewStatus}/${item.confirmationStatus}`;
+      const outcomeLabel = getFinalistOutcomeLabel(item);
       return `${item.symbol} (${item.direction ?? "n/a"}, ${outcomeLabel}, confidence=${item.confidence ?? "n/a"}, reasons: ${reasons})`;
     })
     .join("; ");
@@ -1321,7 +1359,7 @@ function buildFinalistConfirmedSummary(
         item.conclusion === "confirmed"
           ? "confirmed"
           : formatFinalistReasonList(item.confirmationFailureReasons);
-      return `${item.symbol} (${item.direction ?? "n/a"}, ${item.reviewStatus}/${item.confirmationStatus}, confidence=${item.confidence ?? "n/a"}, reasons: ${reasons})`;
+      return `${item.symbol} (${item.direction ?? "n/a"}, ${getFinalistOutcomeLabel(item)}, confidence=${item.confidence ?? "n/a"}, reasons: ${reasons})`;
     })
     .join("; ");
   const selectedClause = selectedFinalist
@@ -2286,7 +2324,7 @@ function getConfirmationStructureDebug(review: ChartReviewResult): {
         "actual chart-anchored asymmetry failed",
     );
   }
-  if (review.diagnostics.chartAnchoredAsymmetry.asymmetryConsistencyFlag) {
+  if (!review.diagnostics.chartAnchoredAsymmetry.asymmetryConsistencyFlag) {
     topBlockingReasons.push(
       review.diagnostics.chartAnchoredAsymmetry.asymmetryConsistencyReason ??
         "Stage 3 / confirmation asymmetry mismatch detected",
@@ -2439,8 +2477,8 @@ function getConfirmationRejectionReasons(review: ChartReviewResult): string[] {
   if (!review.diagnostics.chartAnchoredAsymmetry.actualTradablePass) {
     const primary = review.diagnostics.chartAnchoredAsymmetry
       .asymmetryConsistencyFlag
-      ? review.diagnostics.chartAnchoredAsymmetry.asymmetryConsistencyReason
-      : review.diagnostics.chartAnchoredAsymmetry.failureReason;
+      ? review.diagnostics.chartAnchoredAsymmetry.failureReason
+      : review.diagnostics.chartAnchoredAsymmetry.asymmetryConsistencyReason;
     const secondary = hasWeakExpansion
       ? `secondary weakness: weak expansion (${checkByName.get("expansion")?.reason ?? "expansion ratio unavailable"})`
       : null;
@@ -3300,14 +3338,18 @@ function runStage3ChartReview(
                 ? `Room ${roomPct.toFixed(2)}% is between 1.25R and 1.50R, so Prompt 1 should penalize it heavily and Prompt 2 should usually reject it.`
                 : `Room ${roomPct.toFixed(2)}% is below 1.25R, so Stage 3 treats it as obvious no-room for immediate trade planning.`,
     };
-  const asymmetryConsistencyFlag =
+  const asymmetryMismatch =
     higherTimeframe2RPass &&
     (chartAnchoredAsymmetry.rewardRiskRatio ?? Number.POSITIVE_INFINITY) < 0.75;
-  const asymmetryConsistencyReason = asymmetryConsistencyFlag
-    ? `Logic inconsistency: Stage 3 higher-timeframe 2R viability passed but chart-anchored actual reward:risk collapsed to ${(chartAnchoredAsymmetry.rewardRiskRatio ?? 0).toFixed(2)}.`
-    : !chartAnchoredAsymmetry.pass
-      ? chartAnchoredAsymmetry.reason
-      : "Stage 3 directional room and actual chart-anchored tradable asymmetry are aligned.";
+  const { asymmetryConsistencyFlag, asymmetryConsistencyReason } =
+    asymmetryMismatch
+      ? buildAsymmetryConsistencyTelemetry(false, {
+          actualRewardRiskRatio: chartAnchoredAsymmetry.rewardRiskRatio,
+          divergenceReason: `Stage 3 higher-timeframe 2R viability passed but chart-anchored actual reward:risk collapsed below the tradable threshold.`,
+        })
+      : buildAsymmetryConsistencyTelemetry(true, {
+          actualRewardRiskRatio: chartAnchoredAsymmetry.rewardRiskRatio,
+        });
   const higherTimeframeContextPresent =
     direction === "bullish"
       ? max3M !== null && max1Y !== null
@@ -5236,14 +5278,30 @@ async function runUniverseTierTradeStationScan(
       getStage3CheckPass(stage3Candidate, "higher-timeframe-2r-viability");
     const finalActualRewardRiskRatio =
       reviewResult.confirmationDebug?.actualRewardRiskRatio ?? null;
-    const stage3FinalConsistencyFlag =
+    const stage3FinalAsymmetryAligned =
+      !(
+        stage3SaidViable &&
+        finalActualRewardRiskRatio !== null &&
+        finalActualRewardRiskRatio < 0.75
+      );
+    const {
+      asymmetryConsistencyFlag: stage3FinalConsistencyFlag,
+      asymmetryConsistencyReason: stage3FinalConsistencyReason,
+    } = buildAsymmetryConsistencyTelemetry(stage3FinalAsymmetryAligned, {
+      symbol: finalist.symbol,
+      actualRewardRiskRatio: finalActualRewardRiskRatio,
+      divergenceReason:
+        stage3SaidViable &&
+        finalActualRewardRiskRatio !== null &&
+        finalActualRewardRiskRatio < 0.75
+          ? "Stage 3 marked the setup viable, but the final chart-anchored trade plan no longer supports that asymmetry."
+          : null,
+    });
+    const stage3FinalMismatch =
       stage3SaidViable &&
       finalActualRewardRiskRatio !== null &&
       finalActualRewardRiskRatio < 0.75;
-    const stage3FinalConsistencyReason = stage3FinalConsistencyFlag
-      ? `Logic inconsistency: Stage 3 marked ${finalist.symbol} higher-timeframe-2r-viability=true, but final chart-anchored actual reward:risk was only ${finalActualRewardRiskRatio.toFixed(2)}.`
-      : (reviewResult.confirmationDebug?.asymmetryConsistencyReason ?? null);
-    const confirmationFailureReasons = stage3FinalConsistencyFlag
+    const confirmationFailureReasons = stage3FinalMismatch
       ? [
           stage3FinalConsistencyReason ??
             "Stage 3 / confirmation asymmetry mismatch detected",
@@ -5339,9 +5397,11 @@ async function runUniverseTierTradeStationScan(
               ) ?? null,
             stage3RoomPct: reviewResult.confirmationDebug.stage3RoomPct,
             asymmetryConsistencyFlag:
-              stage3FinalConsistencyFlag ||
+              stage3FinalConsistencyFlag &&
               reviewResult.confirmationDebug.asymmetryConsistencyFlag,
-            asymmetryConsistencyReason: stage3FinalConsistencyReason,
+            asymmetryConsistencyReason: stage3FinalMismatch
+              ? stage3FinalConsistencyReason
+              : reviewResult.confirmationDebug.asymmetryConsistencyReason,
           }
         : null,
       conclusion: reviewResult.conclusion,
@@ -5395,6 +5455,20 @@ async function runUniverseTierTradeStationScan(
               } | null;
             }).chartAnchoredAsymmetry;
             if (blockedOutcome.asymmetryDebug && postConfirmationAsymmetry) {
+              const blockedAsymmetryTelemetry =
+                postConfirmationAsymmetry.rewardRiskRatio !== null &&
+                postConfirmationAsymmetry.rewardRiskRatio < 0.75
+                  ? buildAsymmetryConsistencyTelemetry(false, {
+                      symbol: blockedOutcome.symbol,
+                      actualRewardRiskRatio:
+                        postConfirmationAsymmetry.rewardRiskRatio,
+                      divergenceReason:
+                        "Prompt 2 confirmation passed, but the downstream trade-card check recalculated weaker chart-anchored asymmetry.",
+                    })
+                  : buildAsymmetryConsistencyTelemetry(true, {
+                      actualRewardRiskRatio:
+                        postConfirmationAsymmetry.rewardRiskRatio,
+                    });
               blockedOutcome.asymmetryDebug = {
                 ...blockedOutcome.asymmetryDebug,
                 postConfirmationReferencePrice:
@@ -5413,6 +5487,10 @@ async function runUniverseTierTradeStationScan(
                   postConfirmationAsymmetry.rrTier,
                 postConfirmationAsymmetryReason:
                   postConfirmationAsymmetry.reason,
+                asymmetryConsistencyFlag:
+                  blockedAsymmetryTelemetry.asymmetryConsistencyFlag,
+                asymmetryConsistencyReason:
+                  blockedAsymmetryTelemetry.asymmetryConsistencyReason,
               };
             }
           }
