@@ -886,7 +886,7 @@ function buildFinalistReviewSource(
       (directionalRoomTier === "acceptable_sub2r" ||
         directionalRoomTier === "preferred_2r_or_better") &&
       actualChartAsymmetryTier === "obvious_no_room"
-        ? `Directional room says ${directionalRoomTier}, but chart-anchored asymmetry collapsed to obvious_no_room.`
+        ? `Directional room says ${directionalRoomTier}, but chart-anchored asymmetry collapsed to obvious_no_room (invalidation=${chartAnchoredAsymmetry.invalidationLevel?.toFixed(2) ?? "n/a"} ${chartAnchoredAsymmetry.invalidationReason ?? "unknown"}, target=${chartAnchoredAsymmetry.targetLevel?.toFixed(2) ?? "n/a"} ${chartAnchoredAsymmetry.targetReason ?? "unknown"}, risk=${chartAnchoredAsymmetry.riskDistance?.toFixed(2) ?? "n/a"}, reward=${chartAnchoredAsymmetry.rewardDistance?.toFixed(2) ?? "n/a"}, actualR=${chartAnchoredAsymmetry.actualRewardRiskRatio?.toFixed(2) ?? "n/a"}).`
         : null;
     if (consistencyWarning) {
       warnings.push(`${finalist.symbol}: ${consistencyWarning}`);
