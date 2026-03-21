@@ -142,6 +142,109 @@ function selectMeaningfulTargetLevel(
   return levelMeetingMinimum ?? directionalCandidates[0] ?? null;
 }
 
+type CandidateAsymmetryLevels = {
+  invalidationUnderlying: number | null;
+  targetUnderlying: number | null;
+  invalidationReason: string | null;
+  targetReason: string | null;
+  riskDistance: number | null;
+  rewardDistance: number | null;
+  rewardRiskRatio: number | null;
+};
+
+function selectPracticalLevels(
+  direction: ScanDirection,
+  referencePrice: number,
+  invalidationCandidates: number[],
+  targetCandidates: number[],
+): CandidateAsymmetryLevels {
+  const directionalInvalidations = Array.from(new Set(invalidationCandidates))
+    .filter((value) =>
+      direction === "bullish" ? value < referencePrice : value > referencePrice,
+    )
+    .sort((a, b) =>
+      direction === "bullish"
+        ? b - a
+        : a - b,
+    );
+
+  let bestCandidate: CandidateAsymmetryLevels | null = null;
+
+  for (const invalidationUnderlying of directionalInvalidations) {
+    const riskDistance =
+      direction === "bullish"
+        ? referencePrice - invalidationUnderlying
+        : invalidationUnderlying - referencePrice;
+    const targetUnderlying = selectMeaningfulTargetLevel(
+      direction,
+      referencePrice,
+      riskDistance,
+      targetCandidates,
+    );
+
+    if (targetUnderlying === null || !(riskDistance > 0)) {
+      continue;
+    }
+
+    const rewardDistance =
+      direction === "bullish"
+        ? targetUnderlying - referencePrice
+        : referencePrice - targetUnderlying;
+    const rewardRiskRatio = rewardDistance / riskDistance;
+    const candidate: CandidateAsymmetryLevels = {
+      invalidationUnderlying,
+      targetUnderlying,
+      invalidationReason:
+        direction === "bullish"
+          ? `nearest recent daily support low that keeps chart asymmetry practical (${invalidationUnderlying.toFixed(2)})`
+          : `nearest recent daily resistance high that keeps chart asymmetry practical (${invalidationUnderlying.toFixed(2)})`,
+      targetReason:
+        direction === "bullish"
+          ? `nearest overhead 3M/1Y resistance chosen against that invalidation (${targetUnderlying.toFixed(2)})`
+          : `nearest downside 3M/1Y support chosen against that invalidation (${targetUnderlying.toFixed(2)})`,
+      riskDistance,
+      rewardDistance,
+      rewardRiskRatio,
+    };
+
+    if (
+      rewardDistance > 0 &&
+      rewardRiskRatio >= MINIMUM_TRADABLE_RISK_REWARD_RATIO
+    ) {
+      return candidate;
+    }
+
+    if (
+      bestCandidate === null ||
+      (candidate.rewardRiskRatio ?? 0) > (bestCandidate.rewardRiskRatio ?? 0)
+    ) {
+      bestCandidate = candidate;
+    }
+  }
+
+  return (
+    bestCandidate ?? {
+      invalidationUnderlying: directionalInvalidations[0] ?? null,
+      targetUnderlying: selectMeaningfulTargetLevel(
+        direction,
+        referencePrice,
+        0,
+        targetCandidates,
+      ),
+      invalidationReason:
+        directionalInvalidations.length === 0
+          ? null
+          : direction === "bullish"
+            ? `nearest recent daily support low (${(directionalInvalidations[0] ?? 0).toFixed(2)})`
+            : `nearest recent daily resistance high (${(directionalInvalidations[0] ?? 0).toFixed(2)})`,
+      targetReason: null,
+      riskDistance: null,
+      rewardDistance: null,
+      rewardRiskRatio: null,
+    }
+  );
+}
+
 export function evaluateChartAnchoredAsymmetryFromBars(
   symbol: string,
   direction: ScanDirection,
@@ -172,25 +275,15 @@ export function evaluateChartAnchoredAsymmetryFromBars(
     .filter((value): value is number => value !== null);
 
   if (direction === "bullish") {
-    const invalidationUnderlying =
-      recentLows.length > 0 ? Math.min(...recentLows) : null;
     const resistanceCandidates = [...highs3M, ...highs1Y];
-    const initialRiskDistance =
-      invalidationUnderlying === null ? null : referencePrice - invalidationUnderlying;
-    const targetUnderlying =
-      initialRiskDistance === null
-        ? selectMeaningfulTargetLevel(
-            direction,
-            referencePrice,
-            0,
-            resistanceCandidates,
-          )
-        : selectMeaningfulTargetLevel(
-            direction,
-            referencePrice,
-            initialRiskDistance,
-            resistanceCandidates,
-          );
+    const selectedLevels = selectPracticalLevels(
+      direction,
+      referencePrice,
+      recentLows,
+      resistanceCandidates,
+    );
+    const invalidationUnderlying = selectedLevels.invalidationUnderlying;
+    const targetUnderlying = selectedLevels.targetUnderlying;
 
     if (
       invalidationUnderlying === null ||
@@ -207,13 +300,9 @@ export function evaluateChartAnchoredAsymmetryFromBars(
         invalidationUnderlying,
         targetUnderlying,
         invalidationReason:
-          invalidationUnderlying === null
-            ? null
-            : `recent daily support low (${invalidationUnderlying.toFixed(2)})`,
+          selectedLevels.invalidationReason,
         targetReason:
-          targetUnderlying === null
-            ? null
-            : `nearest overhead 3M/1Y resistance that still preserves practical minimum asymmetry (${targetUnderlying.toFixed(2)})`,
+          selectedLevels.targetReason,
         riskDistance:
           invalidationUnderlying === null
             ? null
@@ -249,8 +338,8 @@ export function evaluateChartAnchoredAsymmetryFromBars(
         reason: `${CHART_ANCHORED_TWO_TO_ONE_FAILURE} for ${symbol} (actual R:R ${rewardRiskRatio.toFixed(2)}; tier=${rrTier}; minimum confirmable ${MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO.toFixed(2)}).`,
         invalidationUnderlying,
         targetUnderlying,
-        invalidationReason: `recent daily support low (${invalidationUnderlying.toFixed(2)})`,
-        targetReason: `nearest overhead 3M/1Y resistance that still preserves practical minimum asymmetry (${targetUnderlying.toFixed(2)})`,
+        invalidationReason: selectedLevels.invalidationReason,
+        targetReason: selectedLevels.targetReason,
         riskDistance,
         rewardDistance,
         rewardRiskRatio,
@@ -266,8 +355,8 @@ export function evaluateChartAnchoredAsymmetryFromBars(
       referencePrice,
       invalidationUnderlying,
       targetUnderlying,
-      invalidationReason: `recent daily support low (${invalidationUnderlying.toFixed(2)})`,
-      targetReason: `nearest overhead 3M/1Y resistance that still preserves practical minimum asymmetry (${targetUnderlying.toFixed(2)})`,
+      invalidationReason: selectedLevels.invalidationReason!,
+      targetReason: selectedLevels.targetReason!,
       riskDistance,
       rewardDistance,
       rewardRiskRatio,
@@ -278,25 +367,15 @@ export function evaluateChartAnchoredAsymmetryFromBars(
     };
   }
 
-  const invalidationUnderlying =
-    recentHighs.length > 0 ? Math.max(...recentHighs) : null;
   const supportCandidates = [...lows3M, ...lows1Y];
-  const bearishRiskDistance =
-    invalidationUnderlying === null ? null : invalidationUnderlying - referencePrice;
-  const targetUnderlying =
-    bearishRiskDistance === null
-      ? selectMeaningfulTargetLevel(
-          direction,
-          referencePrice,
-          0,
-          supportCandidates,
-        )
-      : selectMeaningfulTargetLevel(
-          direction,
-          referencePrice,
-          bearishRiskDistance,
-          supportCandidates,
-        );
+  const selectedLevels = selectPracticalLevels(
+    direction,
+    referencePrice,
+    recentHighs,
+    supportCandidates,
+  );
+  const invalidationUnderlying = selectedLevels.invalidationUnderlying;
+  const targetUnderlying = selectedLevels.targetUnderlying;
 
   if (
     invalidationUnderlying === null ||
@@ -313,13 +392,9 @@ export function evaluateChartAnchoredAsymmetryFromBars(
       invalidationUnderlying,
       targetUnderlying,
       invalidationReason:
-        invalidationUnderlying === null
-          ? null
-          : `recent daily resistance high (${invalidationUnderlying.toFixed(2)})`,
+        selectedLevels.invalidationReason,
       targetReason:
-        targetUnderlying === null
-          ? null
-          : `nearest downside 3M/1Y support that still preserves practical minimum asymmetry (${targetUnderlying.toFixed(2)})`,
+        selectedLevels.targetReason,
       riskDistance:
         invalidationUnderlying === null
           ? null
@@ -354,8 +429,8 @@ export function evaluateChartAnchoredAsymmetryFromBars(
       reason: `${CHART_ANCHORED_TWO_TO_ONE_FAILURE} for ${symbol} (actual R:R ${rewardRiskRatio.toFixed(2)}; tier=${rrTier}; minimum confirmable ${MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO.toFixed(2)}).`,
       invalidationUnderlying,
       targetUnderlying,
-      invalidationReason: `recent daily resistance high (${invalidationUnderlying.toFixed(2)})`,
-      targetReason: `nearest downside 3M/1Y support that still preserves practical minimum asymmetry (${targetUnderlying.toFixed(2)})`,
+      invalidationReason: selectedLevels.invalidationReason,
+      targetReason: selectedLevels.targetReason,
       riskDistance,
       rewardDistance,
       rewardRiskRatio,
@@ -371,8 +446,8 @@ export function evaluateChartAnchoredAsymmetryFromBars(
     referencePrice,
     invalidationUnderlying,
     targetUnderlying,
-    invalidationReason: `recent daily resistance high (${invalidationUnderlying.toFixed(2)})`,
-    targetReason: `nearest downside 3M/1Y support that still preserves practical minimum asymmetry (${targetUnderlying.toFixed(2)})`,
+    invalidationReason: selectedLevels.invalidationReason!,
+    targetReason: selectedLevels.targetReason!,
     riskDistance,
     rewardDistance,
     rewardRiskRatio,
