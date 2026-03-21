@@ -843,6 +843,8 @@ function buildStarterUniverseTelemetry(params: {
       postConfirmationTargetLevel: post?.postConfirmationTargetLevel ?? null,
       postConfirmationAsymmetryReason:
         post?.postConfirmationAsymmetryReason ?? null,
+      asymmetryConsistencyReason:
+        post?.asymmetryConsistencyReason ?? item.asymmetryConsistencyReason,
     };
   });
 
