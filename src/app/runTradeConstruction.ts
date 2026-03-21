@@ -1,6 +1,9 @@
 import { createTradeStationGetFetcher } from "../tradestation/client.js";
 import { type ScanConfidence, type ScanDirection } from "../scanner/scoring.js";
-import { evaluateChartAnchoredTradability } from "./chartAnchoredTradability.js";
+import {
+  evaluateChartAnchoredTradability,
+  type ChartAnchoredTradabilityResult,
+} from "./chartAnchoredTradability.js";
 import {
   buildDirectOptionSymbols,
   fetchFirstUsableDirectOptionQuote,
@@ -62,6 +65,20 @@ type TradeInputs = {
   totalReward: number;
   equitySource: string;
 };
+
+
+export class TradeCardBlockedAfterConfirmationError extends Error {
+  chartAnchoredAsymmetry: ChartAnchoredTradabilityResult | null;
+
+  constructor(
+    message: string,
+    chartAnchoredAsymmetry: ChartAnchoredTradabilityResult | null = null,
+  ) {
+    super(message);
+    this.name = "TradeCardBlockedAfterConfirmationError";
+    this.chartAnchoredAsymmetry = chartAnchoredAsymmetry;
+  }
+}
 
 type TradeConstructionDiagnostics = {
   selectedExpiration: string | null;
@@ -416,9 +433,18 @@ async function buildTradeInputs(
     const { equity, source } = await resolveAccountEquity(get);
     const allocation = equity * TARGET_ALLOCATION_PCT;
 
-    const chartLevels = await evaluateChartAnchoredTradability(get, symbol, direction, underlyingPrice);
+    const chartLevels = await evaluateChartAnchoredTradability(
+      get,
+      symbol,
+      direction,
+      underlyingPrice,
+    );
     if (!chartLevels.pass) {
-      throw new Error(chartLevels.reason);
+      diagnostics.failureReason = chartLevels.reason;
+      throw new TradeCardBlockedAfterConfirmationError(
+        chartLevels.reason,
+        chartLevels,
+      );
     }
     const { invalidationUnderlying, targetUnderlying } = chartLevels;
 
