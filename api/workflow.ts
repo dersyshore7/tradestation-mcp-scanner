@@ -1,4 +1,5 @@
 import {
+  extractFinalizedTradeGeometryFromTelemetry,
   mergeFinalizedAsymmetryIntoFinalistsReviewedDebug,
   runScan,
   type ScanInput,
@@ -92,10 +93,15 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
     }
 
     try {
+      const finalizedTradeGeometry = extractFinalizedTradeGeometryFromTelemetry(
+        telemetry,
+        scanResult.ticker,
+      );
       const tradeCard = await constructTradeCard({
         prompt: `build trade ${scanResult.ticker}`,
         confirmedDirection: scanResult.direction,
         confirmedConfidence: scanResult.confidence,
+        ...(finalizedTradeGeometry ? { finalizedTradeGeometry } : {}),
       });
 
       sendJson(res, 200, {

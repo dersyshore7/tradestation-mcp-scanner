@@ -3,6 +3,7 @@ import { type ScanConfidence, type ScanDirection } from "../scanner/scoring.js";
 import {
   evaluateChartAnchoredTradability,
   type ChartAnchoredTradabilityResult,
+  type RiskRewardTier,
 } from "./chartAnchoredTradability.js";
 import {
   buildDirectOptionSymbols,
@@ -23,10 +24,26 @@ type TradeConstructionPromptMatch = {
   symbol: string;
 };
 
+
+export type FinalizedTradeGeometry = {
+  referencePrice: number;
+  invalidationLevel: number;
+  targetLevel: number;
+  riskDistance: number;
+  rewardDistance: number;
+  rewardRiskRatio: number;
+  rrTier: RiskRewardTier | "unknown";
+  invalidationReason: string;
+  targetReason: string;
+  geometryReason: string;
+  geometrySource: string;
+};
+
 export type TradeConstructionInput = {
   prompt: string;
   confirmedDirection?: ScanDirection;
   confirmedConfidence?: ScanConfidence;
+  finalizedTradeGeometry?: FinalizedTradeGeometry;
 };
 
 export type TradeConstructionResult = {
@@ -44,6 +61,7 @@ export type TradeConstructionResult = {
 
 type TradeInputs = {
   underlyingPrice: number;
+  finalizedTradeGeometry: FinalizedTradeGeometry;
   strike: number;
   expirationDate: string;
   dte: number;
@@ -182,9 +200,12 @@ function computeThursdayBeforeExpiration(expirationDate: string): string | null 
 function buildExpectedTiming(
   direction: ScanDirection,
   confidence: ScanConfidence,
-  trade: Pick<TradeInputs, "dte" | "underlyingPrice" | "targetUnderlying" | "optionMid" | "optionAtTarget">,
+  trade: Pick<TradeInputs, "dte" | "optionMid" | "optionAtTarget" | "finalizedTradeGeometry">,
 ): string {
-  const targetMovePct = Math.abs((trade.targetUnderlying - trade.underlyingPrice) / trade.underlyingPrice);
+  const targetMovePct = Math.abs(
+    trade.finalizedTradeGeometry.rewardDistance /
+      trade.finalizedTradeGeometry.referencePrice,
+  );
   const optionFollowThroughPct = Math.abs((trade.optionAtTarget - trade.optionMid) / trade.optionMid);
 
   const momentumStrength = confidence === "93-97" || confidence === "85-92" ? "strong" : confidence === "75-84" ? "moderate" : "mixed";
@@ -337,6 +358,7 @@ async function resolveAccountEquity(get: (path: string) => Promise<Response>): P
 async function buildTradeInputs(
   symbol: string,
   direction: ScanDirection,
+  finalizedTradeGeometryOverride?: FinalizedTradeGeometry,
 ): Promise<{ tradeInputs: TradeInputs; diagnostics: TradeConstructionDiagnostics }> {
   const get = await createTradeStationGetFetcher();
 
@@ -433,12 +455,33 @@ async function buildTradeInputs(
     const { equity, source } = await resolveAccountEquity(get);
     const allocation = equity * TARGET_ALLOCATION_PCT;
 
-    const chartLevels = await evaluateChartAnchoredTradability(
-      get,
-      symbol,
-      direction,
-      underlyingPrice,
-    );
+    const chartLevels = finalizedTradeGeometryOverride
+      ? {
+          pass: true as const,
+          referencePrice: finalizedTradeGeometryOverride.referencePrice,
+          invalidationUnderlying: finalizedTradeGeometryOverride.invalidationLevel,
+          targetUnderlying: finalizedTradeGeometryOverride.targetLevel,
+          invalidationReason: finalizedTradeGeometryOverride.invalidationReason,
+          targetReason: finalizedTradeGeometryOverride.targetReason,
+          riskDistance: finalizedTradeGeometryOverride.riskDistance,
+          rewardDistance: finalizedTradeGeometryOverride.rewardDistance,
+          rewardRiskRatio: finalizedTradeGeometryOverride.rewardRiskRatio,
+          roomPct:
+            (finalizedTradeGeometryOverride.rewardDistance /
+              finalizedTradeGeometryOverride.referencePrice) *
+            100,
+          rrTier: finalizedTradeGeometryOverride.rrTier === "unknown"
+            ? "acceptable_sub2r"
+            : finalizedTradeGeometryOverride.rrTier,
+          preferred2R: finalizedTradeGeometryOverride.rewardRiskRatio >= 2,
+          minimumConfirmableRR: 1.5,
+        }
+      : await evaluateChartAnchoredTradability(
+          get,
+          symbol,
+          direction,
+          underlyingPrice,
+        );
     if (!chartLevels.pass) {
       diagnostics.failureReason = chartLevels.reason;
       throw new TradeCardBlockedAfterConfirmationError(
@@ -446,7 +489,20 @@ async function buildTradeInputs(
         chartLevels,
       );
     }
-    const { invalidationUnderlying, targetUnderlying } = chartLevels;
+    const finalizedTradeGeometry: FinalizedTradeGeometry = finalizedTradeGeometryOverride ?? {
+      referencePrice: chartLevels.referencePrice,
+      invalidationLevel: chartLevels.invalidationUnderlying,
+      targetLevel: chartLevels.targetUnderlying,
+      riskDistance: chartLevels.riskDistance,
+      rewardDistance: chartLevels.rewardDistance,
+      rewardRiskRatio: chartLevels.rewardRiskRatio,
+      rrTier: chartLevels.rrTier,
+      invalidationReason: chartLevels.invalidationReason,
+      targetReason: chartLevels.targetReason,
+      geometryReason: `Chart-anchored ${direction} geometry selected from confirmation review.`,
+      geometrySource: "trade_construction_chart_recompute",
+    };
+    const { invalidationLevel: invalidationUnderlying, targetLevel: targetUnderlying } = finalizedTradeGeometry;
 
     const deltaAssumption = 0.5;
     const invalidationMove = invalidationUnderlying - underlyingPrice;
@@ -463,6 +519,7 @@ async function buildTradeInputs(
 
     const tradeInputs: TradeInputs = {
       underlyingPrice,
+      finalizedTradeGeometry,
       strike: selectedStrike.strike,
       expirationDate: targetExpiration.date,
       dte: targetExpiration.dte,
@@ -509,9 +566,9 @@ export async function constructTradeCard(input: TradeConstructionInput): Promise
 
   const symbol = promptMatch.symbol;
   const { direction, confidence } = await resolveDirectionAndConfidence(symbol, input.confirmedDirection, input.confirmedConfidence);
-  const { tradeInputs: trade, diagnostics } = await buildTradeInputs(symbol, direction);
+  const { tradeInputs: trade, diagnostics } = await buildTradeInputs(symbol, direction, input.finalizedTradeGeometry);
 
-  const rrRatio = trade.totalRisk > 0 ? trade.totalReward / trade.totalRisk : 0;
+  const rrRatio = trade.finalizedTradeGeometry.rewardRiskRatio;
   const directionLabel = direction === "bullish" ? "Bullish" : "Bearish";
   const thursdayBeforeExpiration = computeThursdayBeforeExpiration(trade.expirationDate);
   const timeExitDate = thursdayBeforeExpiration ?? trade.expirationDate;
@@ -528,10 +585,10 @@ export async function constructTradeCard(input: TradeConstructionInput): Promise
     confidence,
     expectedTiming: buildExpectedTiming(direction, confidence, trade),
     buy: `${trade.contracts}x ${trade.optionSymbol} @ ${renderMoney(trade.optionMid)} limit (capital used ${renderMoney(trade.notional)} of 33% allocation target ${renderMoney(trade.allocation)} from equity ${renderMoney(trade.equity)})`,
-    invalidationExit: `Exit if ${symbol} breaks ${trade.invalidationUnderlying.toFixed(2)} (${trade.invalidationReason}; approx option ${renderMoney(trade.optionAtInvalidation)}).`,
-    takeProfitExit: `Take profit near ${symbol} ${trade.targetUnderlying.toFixed(2)} (${trade.targetReason}; approx option ${renderMoney(trade.optionAtTarget)}).`,
+    invalidationExit: `Exit if ${symbol} breaks ${trade.finalizedTradeGeometry.invalidationLevel.toFixed(2)} (${trade.finalizedTradeGeometry.invalidationReason}; approx option ${renderMoney(trade.optionAtInvalidation)}).`,
+    takeProfitExit: `Take profit near ${symbol} ${trade.finalizedTradeGeometry.targetLevel.toFixed(2)} (${trade.finalizedTradeGeometry.targetReason}; approx option ${renderMoney(trade.optionAtTarget)}).`,
     timeExit: `Exit on Thursday before expiration (${timeExitDate}), or sooner if option value decays by more than 25% from entry premium (${renderMoney(trade.optionMid)}).`,
-    rrMath: `Risk/contract ${renderMoney(trade.riskPerContract)}, reward/contract ${renderMoney(trade.rewardPerContract)}; total risk ${renderMoney(trade.totalRisk)} vs total reward ${renderMoney(trade.totalReward)} (~${rrRatio.toFixed(2)}:1 reward:risk).`,
-    rationale: `${directionLabel} setup follows confirmed review bias and uses nearest practical ATM ${trade.expirationDate} (${trade.dte} DTE) option with chart-anchored invalidation/target levels that keep the realized reward:risk at ~${rrRatio.toFixed(2)}:1. Pricing uses current premium plus a delta-based approximation; equity source: ${trade.equitySource}.`,
+    rrMath: `Chart-anchored risk ${trade.finalizedTradeGeometry.riskDistance.toFixed(2)} vs reward ${trade.finalizedTradeGeometry.rewardDistance.toFixed(2)} from ${trade.finalizedTradeGeometry.referencePrice.toFixed(2)} implies ~${rrRatio.toFixed(2)}:1 reward:risk. Option approximation: risk/contract ${renderMoney(trade.riskPerContract)}, reward/contract ${renderMoney(trade.rewardPerContract)}; total risk ${renderMoney(trade.totalRisk)} vs total reward ${renderMoney(trade.totalReward)}.`,
+    rationale: `${directionLabel} setup follows confirmed review bias and uses nearest practical ATM ${trade.expirationDate} (${trade.dte} DTE) option. Finalized trade geometry comes from ${trade.finalizedTradeGeometry.geometrySource} at ${trade.finalizedTradeGeometry.referencePrice.toFixed(2)}, with invalidation ${trade.finalizedTradeGeometry.invalidationLevel.toFixed(2)} and target ${trade.finalizedTradeGeometry.targetLevel.toFixed(2)} for ~${rrRatio.toFixed(2)}:1 chart-anchored reward:risk. ${trade.finalizedTradeGeometry.geometryReason} Pricing uses current premium plus a delta-based approximation; equity source: ${trade.equitySource}.`,
   };
 }
