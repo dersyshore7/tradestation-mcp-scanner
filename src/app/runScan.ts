@@ -20,6 +20,7 @@ import {
   getRiskRewardTier,
   type RiskRewardTier,
 } from "./chartAnchoredTradability.js";
+import type { FinalizedTradeGeometry } from "./runTradeConstruction.js";
 const FINAL_SCORE_TIE_TOLERANCE = 0.05;
 const YAHOO_FINANCE_BASE_URL = "https://query1.finance.yahoo.com";
 
@@ -314,6 +315,17 @@ type Stage3Evaluation = {
 };
 
 type FinalistAsymmetryDebug = {
+  finalizedTradeReferencePrice: number | null;
+  finalizedTradeInvalidationLevel: number | null;
+  finalizedTradeTargetLevel: number | null;
+  finalizedTradeRiskDistance: number | null;
+  finalizedTradeRewardDistance: number | null;
+  finalizedTradeRewardRiskRatio: number | null;
+  finalizedTradeInvalidationReason: string | null;
+  finalizedTradeTargetReason: string | null;
+  finalizedTradeGeometryReason: string | null;
+  finalizedTradeGeometrySource: string | null;
+  finalizedTradeGeometryTier: RiskRewardTier | "unknown";
   preReviewReferencePrice: number | null;
   preReviewInvalLevel: number | null;
   preReviewTargetLevel: number | null;
@@ -375,6 +387,7 @@ type FinalistReviewResult = {
 
 type ConfirmationDebug = {
   reviewStatus: "reviewed";
+  finalizedTradeGeometry: FinalizedTradeGeometry | null;
   confirmationStatus: "confirmed" | "rejected";
   confirmationFailureReasons: string[];
   continuationPass: boolean;
@@ -579,6 +592,72 @@ type FinalizedFinalistAsymmetrySource = {
     asymmetryConsistencyReason: string | null;
   } | null;
 };
+
+function buildFinalizedTradeGeometryFromConfirmationDebug(
+  confirmationDebug: ConfirmationDebug | undefined,
+): FinalizedTradeGeometry | null {
+  if (
+    !confirmationDebug?.finalizedTradeGeometry &&
+    (
+      confirmationDebug?.confirmationReferencePrice === null ||
+      confirmationDebug?.invalidationLevel === null ||
+      confirmationDebug?.targetLevel === null ||
+      confirmationDebug?.riskDistance === null ||
+      confirmationDebug?.rewardDistance === null ||
+      confirmationDebug?.actualRewardRiskRatio === null
+    )
+  ) {
+    return null;
+  }
+
+  return confirmationDebug?.finalizedTradeGeometry ?? null;
+}
+
+export function extractFinalizedTradeGeometryFromTelemetry(
+  telemetry: StarterUniverseTelemetry | null | undefined,
+  symbol: string | null | undefined,
+): FinalizedTradeGeometry | null {
+  if (!telemetry || !symbol) {
+    return null;
+  }
+
+  const matchedOutcome = telemetry.reviewedFinalistOutcomes.find(
+    (item) => item.symbol === symbol,
+  );
+  if (!matchedOutcome?.asymmetryDebug) {
+    return null;
+  }
+
+  const debug = matchedOutcome.asymmetryDebug;
+  if (
+    debug.finalizedTradeReferencePrice === null ||
+    debug.finalizedTradeInvalidationLevel === null ||
+    debug.finalizedTradeTargetLevel === null ||
+    debug.finalizedTradeRiskDistance === null ||
+    debug.finalizedTradeRewardDistance === null ||
+    debug.finalizedTradeRewardRiskRatio === null ||
+    !debug.finalizedTradeInvalidationReason ||
+    !debug.finalizedTradeTargetReason ||
+    !debug.finalizedTradeGeometryReason ||
+    !debug.finalizedTradeGeometrySource
+  ) {
+    return null;
+  }
+
+  return {
+    referencePrice: debug.finalizedTradeReferencePrice,
+    invalidationLevel: debug.finalizedTradeInvalidationLevel,
+    targetLevel: debug.finalizedTradeTargetLevel,
+    riskDistance: debug.finalizedTradeRiskDistance,
+    rewardDistance: debug.finalizedTradeRewardDistance,
+    rewardRiskRatio: debug.finalizedTradeRewardRiskRatio,
+    rrTier: debug.finalizedTradeGeometryTier,
+    invalidationReason: debug.finalizedTradeInvalidationReason,
+    targetReason: debug.finalizedTradeTargetReason,
+    geometryReason: debug.finalizedTradeGeometryReason,
+    geometrySource: debug.finalizedTradeGeometrySource,
+  };
+}
 
 export function mergeFinalizedAsymmetryIntoFinalistsReviewedDebug(
   debug: StarterUniverseTelemetry["finalistsReviewedDebug"],
@@ -2403,6 +2482,7 @@ function buildConfirmationDebug(
       reviewStatus: overrides?.reviewStatus ?? "reviewed",
       confirmationStatus,
       confirmationFailureReasons,
+      finalizedTradeGeometry: null,
       continuationPass: defaultStructure.continuationPass,
       higherTimeframeRoomPass: defaultStructure.higherTimeframeRoomPass,
       higherTimeframe2RPass: defaultStructure.higherTimeframe2RPass,
@@ -2438,6 +2518,30 @@ function buildConfirmationDebug(
     reviewStatus: overrides?.reviewStatus ?? "reviewed",
     confirmationStatus,
     confirmationFailureReasons,
+    finalizedTradeGeometry:
+      review.diagnostics.chartAnchoredAsymmetry.invalidationLevel !== null &&
+      review.diagnostics.chartAnchoredAsymmetry.targetLevel !== null &&
+      review.diagnostics.chartAnchoredAsymmetry.riskDistance !== null &&
+      review.diagnostics.chartAnchoredAsymmetry.rewardDistance !== null &&
+      review.diagnostics.chartAnchoredAsymmetry.actualRewardRiskRatio !== null &&
+      review.diagnostics.chartAnchoredAsymmetry.invalidationReason !== null &&
+      review.diagnostics.chartAnchoredAsymmetry.targetReason !== null
+        ? {
+            referencePrice: review.diagnostics.chartAnchoredAsymmetry.referencePrice,
+            invalidationLevel: review.diagnostics.chartAnchoredAsymmetry.invalidationLevel,
+            targetLevel: review.diagnostics.chartAnchoredAsymmetry.targetLevel,
+            riskDistance: review.diagnostics.chartAnchoredAsymmetry.riskDistance,
+            rewardDistance: review.diagnostics.chartAnchoredAsymmetry.rewardDistance,
+            rewardRiskRatio:
+              review.diagnostics.chartAnchoredAsymmetry.actualRewardRiskRatio,
+            rrTier: review.diagnostics.chartAnchoredAsymmetry.actualRrTier,
+            invalidationReason:
+              review.diagnostics.chartAnchoredAsymmetry.invalidationReason,
+            targetReason: review.diagnostics.chartAnchoredAsymmetry.targetReason,
+            geometryReason: `Confirmation review finalized ${review.direction ?? "neutral"} chart geometry using ${review.diagnostics.chartAnchoredAsymmetry.invalidationReason} -> ${review.diagnostics.chartAnchoredAsymmetry.targetReason}.`,
+            geometrySource: "prompt2_confirmation_chart_geometry",
+          }
+        : null,
     continuationPass: structureDebug.continuationPass,
     higherTimeframeRoomPass: structureDebug.higherTimeframeRoomPass,
     higherTimeframe2RPass: structureDebug.higherTimeframe2RPass,
@@ -5256,6 +5360,17 @@ async function runUniverseTierTradeStationScan(
             const item = stage3BySymbol.get(finalist.symbol);
             return item
               ? {
+                  finalizedTradeReferencePrice: null,
+                  finalizedTradeInvalidationLevel: null,
+                  finalizedTradeTargetLevel: null,
+                  finalizedTradeRiskDistance: null,
+                  finalizedTradeRewardDistance: null,
+                  finalizedTradeRewardRiskRatio: null,
+                  finalizedTradeInvalidationReason: null,
+                  finalizedTradeTargetReason: null,
+                  finalizedTradeGeometryReason: null,
+                  finalizedTradeGeometrySource: null,
+                  finalizedTradeGeometryTier: "unknown",
                   preReviewReferencePrice:
                     item.chartDiagnostics.roomToTargetDiagnostics
                       .referencePrice,
@@ -5395,6 +5510,41 @@ async function runUniverseTierTradeStationScan(
       })(),
       asymmetryDebug: reviewResult.confirmationDebug
         ? {
+            finalizedTradeReferencePrice:
+              reviewResult.confirmationDebug.finalizedTradeGeometry?.referencePrice ??
+              reviewResult.confirmationDebug.confirmationReferencePrice,
+            finalizedTradeInvalidationLevel:
+              reviewResult.confirmationDebug.finalizedTradeGeometry?.invalidationLevel ??
+              reviewResult.confirmationDebug.invalidationLevel,
+            finalizedTradeTargetLevel:
+              reviewResult.confirmationDebug.finalizedTradeGeometry?.targetLevel ??
+              reviewResult.confirmationDebug.targetLevel,
+            finalizedTradeRiskDistance:
+              reviewResult.confirmationDebug.finalizedTradeGeometry?.riskDistance ??
+              reviewResult.confirmationDebug.riskDistance,
+            finalizedTradeRewardDistance:
+              reviewResult.confirmationDebug.finalizedTradeGeometry?.rewardDistance ??
+              reviewResult.confirmationDebug.rewardDistance,
+            finalizedTradeRewardRiskRatio:
+              reviewResult.confirmationDebug.finalizedTradeGeometry?.rewardRiskRatio ??
+              reviewResult.confirmationDebug.actualRewardRiskRatio,
+            finalizedTradeInvalidationReason:
+              reviewResult.confirmationDebug.finalizedTradeGeometry?.invalidationReason ??
+              null,
+            finalizedTradeTargetReason:
+              reviewResult.confirmationDebug.finalizedTradeGeometry?.targetReason ??
+              null,
+            finalizedTradeGeometryReason:
+              reviewResult.confirmationDebug.finalizedTradeGeometry?.geometryReason ??
+              null,
+            finalizedTradeGeometrySource:
+              reviewResult.confirmationDebug.finalizedTradeGeometry?.geometrySource ??
+              null,
+            finalizedTradeGeometryTier:
+              reviewResult.confirmationDebug.finalizedTradeGeometry?.rrTier ??
+              getRiskRewardTier(
+                reviewResult.confirmationDebug.actualRewardRiskRatio,
+              ),
             preReviewReferencePrice:
               reviewResult.confirmationDebug.stage3ReferencePrice,
             preReviewInvalLevel: stage3Candidate?.chartDiagnostics.chartAnchoredAsymmetry.invalidationLevel ?? null,
@@ -5447,10 +5597,16 @@ async function runUniverseTierTradeStationScan(
     ) {
       try {
         const { constructTradeCard } = await import("./runTradeConstruction.js");
+        const finalizedTradeGeometry = buildFinalizedTradeGeometryFromConfirmationDebug(
+          reviewResult.confirmationDebug,
+        );
         await constructTradeCard({
           prompt: `build trade ${reviewResult.ticker}`,
           confirmedDirection: reviewResult.direction,
           confirmedConfidence: reviewResult.confidence,
+          ...(finalizedTradeGeometry
+            ? { finalizedTradeGeometry }
+            : {}),
         });
       } catch (error) {
         const blockedReason =
@@ -5502,6 +5658,24 @@ async function runUniverseTierTradeStationScan(
                     });
               blockedOutcome.asymmetryDebug = {
                 ...blockedOutcome.asymmetryDebug,
+                finalizedTradeReferencePrice:
+                  postConfirmationAsymmetry.referencePrice,
+                finalizedTradeInvalidationLevel:
+                  postConfirmationAsymmetry.invalidationUnderlying,
+                finalizedTradeTargetLevel:
+                  postConfirmationAsymmetry.targetUnderlying,
+                finalizedTradeRiskDistance:
+                  postConfirmationAsymmetry.riskDistance,
+                finalizedTradeRewardDistance:
+                  postConfirmationAsymmetry.rewardDistance,
+                finalizedTradeRewardRiskRatio:
+                  postConfirmationAsymmetry.rewardRiskRatio,
+                finalizedTradeInvalidationReason: postConfirmationAsymmetry.reason,
+                finalizedTradeTargetReason: postConfirmationAsymmetry.reason,
+                finalizedTradeGeometryReason: postConfirmationAsymmetry.reason,
+                finalizedTradeGeometrySource:
+                  "trade_construction_chart_recompute",
+                finalizedTradeGeometryTier: postConfirmationAsymmetry.rrTier,
                 postConfirmationReferencePrice:
                   postConfirmationAsymmetry.referencePrice,
                 postConfirmationInvalLevel:
