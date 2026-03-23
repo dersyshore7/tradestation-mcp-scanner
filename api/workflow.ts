@@ -4,6 +4,7 @@ import {
   runScan,
   type ScanInput,
 } from "../src/app/runScan.js";
+import { buildWorkflowPresentationSummary } from "../src/app/resultPresentation.js";
 import { constructTradeCard } from "../src/app/runTradeConstruction.js";
 import { CHART_ANCHORED_TWO_TO_ONE_FAILURE } from "../src/app/chartAnchoredTradability.js";
 import { DEFAULT_SCAN_PROMPT } from "../src/config/defaultScanPrompt.js";
@@ -88,6 +89,11 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
         scan: scanResult,
         tradeCard: null,
         telemetry,
+        presentationSummary: buildWorkflowPresentationSummary({
+          scan: scanResult,
+          telemetry,
+          tradeCard: null,
+        }),
       });
       return;
     }
@@ -109,6 +115,11 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
         scan: scanResult,
         tradeCard,
         telemetry,
+        presentationSummary: buildWorkflowPresentationSummary({
+          scan: scanResult,
+          telemetry,
+          tradeCard,
+        }),
       });
       return;
     } catch (error) {
@@ -168,15 +179,22 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
         console.warn("Unexpected trade-card reward:risk blocker after confirmation; returning no_trade_today for safety.");
       }
 
+      const blockedScanResult = {
+        ...scanResult,
+        conclusion: "no_trade_today" as const,
+        reason: blockerMessage,
+      };
+
       sendJson(res, 200, {
         prompt: scanInput.prompt,
-        scan: {
-          ...scanResult,
-          conclusion: "no_trade_today",
-          reason: blockerMessage,
-        },
+        scan: blockedScanResult,
         tradeCard: null,
         telemetry: telemetryWithTradeBlock,
+        presentationSummary: buildWorkflowPresentationSummary({
+          scan: blockedScanResult,
+          telemetry: telemetryWithTradeBlock,
+          tradeCard: null,
+        }),
       });
       return;
     }
