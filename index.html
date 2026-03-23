@@ -115,6 +115,22 @@
       #advancedPromptFields {
         margin-top: 10px;
       }
+
+      .summary-section {
+        margin-bottom: 16px;
+      }
+      .summary-section ul {
+        margin: 8px 0 0 18px;
+        padding: 0;
+      }
+      .pill {
+        display: inline-block;
+        border-radius: 999px;
+        padding: 4px 10px;
+        background: #eef2ff;
+        color: #243b7a;
+        font-weight: 600;
+      }
     </style>
   </head>
   <body>
@@ -245,10 +261,77 @@
         `;
       }
 
-      function renderNoTrade(scan, telemetry) {
+      function renderReviewLadder(items) {
+        if (!Array.isArray(items) || items.length === 0) {
+          return '<div class="muted">No ranked finalists were reviewed.</div>';
+        }
+
+        return `
+          <ul>
+            ${items.map((item, index) => `<li>${escapeHtml(item.symbol)} — ranked #${index + 1} — Stage 3 rank score ${escapeHtml(renderMaybe(Number.isFinite(item.stage3RankScore) ? Number(item.stage3RankScore).toFixed(2) : item.stage3RankScore))} — ${escapeHtml(renderMaybe(item.outcome))}${item.detail ? ` <span class="muted">(${escapeHtml(item.detail)})</span>` : ''}</li>`).join('')}
+          </ul>
+        `;
+      }
+
+      function renderPresentationSummary(summary) {
+        if (!summary) {
+          return '';
+        }
+
+        const geometry = summary.finalChartGeometry;
+        const tradeCard = summary.tradeCard;
+
+        return `
+          <div class="summary-section">
+            <div class="row"><strong>Outcome:</strong> <span class="pill">${escapeHtml(renderMaybe(summary.outcomeLabel))}</span></div>
+          </div>
+
+          <div class="summary-section">
+            <h3>Review ladder</h3>
+            ${renderReviewLadder(summary.reviewLadder)}
+          </div>
+
+          <div class="summary-section">
+            <h3>Why this ticker won</h3>
+            <div class="row">${escapeHtml(renderMaybe(summary.whyThisWon))}</div>
+          </div>
+
+          <div class="summary-section">
+            <h3>Concise reasoning</h3>
+            <div class="row">${escapeHtml(renderMaybe(summary.conciseReasoning))}</div>
+          </div>
+
+          <div class="summary-section">
+            <h3>Final chart geometry</h3>
+            ${geometry ? `
+              <div class="row"><strong>Direction:</strong> ${escapeHtml(renderMaybe(geometry.direction))}</div>
+              <div class="row"><strong>Reference:</strong> ${escapeHtml(renderMaybe(geometry.reference))}</div>
+              <div class="row"><strong>Invalidation:</strong> ${escapeHtml(renderMaybe(geometry.invalidation))}</div>
+              <div class="row"><strong>Target:</strong> ${escapeHtml(renderMaybe(geometry.target))}</div>
+              <div class="row"><strong>Final chart R:R:</strong> ${escapeHtml(renderMaybe(geometry.finalChartRewardRisk))}</div>
+              <div class="row"><strong>Structure:</strong> ${escapeHtml(renderMaybe(geometry.structure))}</div>
+            ` : '<div class="muted">No finalized trade geometry was available.</div>'}
+          </div>
+
+          <div class="summary-section">
+            <h3>Trade card</h3>
+            ${tradeCard ? `
+              <div class="row"><strong>Option chosen:</strong> ${escapeHtml(renderMaybe(tradeCard.optionChosen))}</div>
+              <div class="row"><strong>Contract count / capital used:</strong> ${escapeHtml(renderMaybe(tradeCard.contractCapital))}</div>
+              <div class="row"><strong>Expected timing:</strong> ${escapeHtml(renderMaybe(tradeCard.expectedTiming))}</div>
+              <div class="row"><strong>Invalidation exit:</strong> ${escapeHtml(renderMaybe(tradeCard.invalidationExit))}</div>
+              <div class="row"><strong>Take-profit exit:</strong> ${escapeHtml(renderMaybe(tradeCard.takeProfitExit))}</div>
+              <div class="row"><strong>Time exit:</strong> ${escapeHtml(renderMaybe(tradeCard.timeExit))}</div>
+              <div class="row"><strong>Option-value approximation:</strong> ${escapeHtml(renderMaybe(tradeCard.optionValueApproximation))}</div>
+              <div class="row"><strong>Rationale:</strong> ${escapeHtml(renderMaybe(tradeCard.rationale))}</div>
+            ` : '<div class="muted">No trade card was produced.</div>'}
+          </div>
+        `;
+      }
+
+      function renderNoTrade(scan, telemetry, presentationSummary) {
         resultArea.innerHTML = `
-          <div class="row"><strong>Outcome:</strong> no_trade_today</div>
-          <div class="row"><strong>Reason:</strong> ${escapeHtml(renderMaybe(scan.reason))}</div>
+          ${renderPresentationSummary(presentationSummary)}
 
           <hr class="hr" />
           <h3>Calibration Debug Summary</h3>
@@ -282,30 +365,11 @@
         `;
       }
 
-      function renderTrade(scan, tradeCard) {
+      function renderTrade(scan, tradeCard, presentationSummary) {
         resultArea.innerHTML = `
-          <div class="row"><strong>Outcome:</strong> confirmed trade setup</div>
-          <div class="row"><strong>Ticker:</strong> ${escapeHtml(renderMaybe(scan.ticker))}</div>
-          <div class="row"><strong>Direction:</strong> ${escapeHtml(renderMaybe(scan.direction))}</div>
-          <div class="row"><strong>Confidence:</strong> ${escapeHtml(renderMaybe(scan.confidence))}</div>
+          ${renderPresentationSummary(presentationSummary)}
 
           <hr class="hr" />
-          <h3>Reasoning</h3>
-          <div class="row"><strong>Scan reasoning:</strong> ${escapeHtml(renderMaybe(scan.reason))}</div>
-          <div class="row"><strong>Confirmation reasoning:</strong> ${escapeHtml(renderMaybe(scan.reason))}</div>
-
-          <hr class="hr" />
-          <h3>Trade Card</h3>
-          <div class="row"><strong>Ticker:</strong> ${escapeHtml(renderMaybe(tradeCard.ticker))}</div>
-          <div class="row"><strong>Direction:</strong> ${escapeHtml(renderMaybe(tradeCard.direction))}</div>
-          <div class="row"><strong>Confidence:</strong> ${escapeHtml(renderMaybe(tradeCard.confidence))}</div>
-          <div class="row"><strong>Expected Timing:</strong> ${escapeHtml(renderMaybe(tradeCard.expectedTiming))}</div>
-          <div class="row"><strong>Buy:</strong> ${escapeHtml(renderMaybe(tradeCard.buy))}</div>
-          <div class="row"><strong>Invalidation Exit:</strong> ${escapeHtml(renderMaybe(tradeCard.invalidationExit))}</div>
-          <div class="row"><strong>Take-Profit Exit:</strong> ${escapeHtml(renderMaybe(tradeCard.takeProfitExit))}</div>
-          <div class="row"><strong>Time Exit:</strong> ${escapeHtml(renderMaybe(tradeCard.timeExit))}</div>
-          <div class="row"><strong>R:R Math:</strong> ${escapeHtml(renderMaybe(tradeCard.rrMath))}</div>
-          <div class="row"><strong>Rationale:</strong> ${escapeHtml(renderMaybe(tradeCard.rationale))}</div>
           <div style="margin-top: 12px;">
             <button id="tookTradeButton">I took this trade</button>
           </div>
@@ -367,11 +431,11 @@
           }
 
           if (!data.tradeCard) {
-            renderNoTrade(data.scan, data.telemetry || null);
+            renderNoTrade(data.scan, data.telemetry || null, data.presentationSummary || null);
             return;
           }
 
-          renderTrade(data.scan, data.tradeCard);
+          renderTrade(data.scan, data.tradeCard, data.presentationSummary || null);
         } catch (error) {
           resultArea.textContent = error instanceof Error ? error.message : "Unexpected error.";
         } finally {
