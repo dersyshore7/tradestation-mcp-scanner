@@ -203,9 +203,26 @@ A minimal UI is available at the project root (`/`) for running the existing sca
 - Click **Run Scan** to call `POST /api/workflow`.
 - The API reuses existing engine functions (`runScan` and `constructTradeCard`) without changing scan/trade logic.
 - If no confirmed setup exists, the UI shows `no_trade_today`.
-- If confirmed, it shows the scan reasoning and full trade card plus an **I took this trade** local-only capture form.
+- If confirmed, it shows the scan reasoning and full trade card plus an **I took this trade** modal that persists to Supabase via `POST /api/journal`.
 
-This UI is intentionally thin and does not place orders or persist a journal yet.
+This UI is intentionally thin and does not place orders.
+
+## Supabase trade journal (Phase 1)
+
+Phase 1 adds durable server-side journal persistence using Supabase Postgres.
+
+- `POST /api/journal` validates and stores an initial journal trade entry.
+- `GET /api/journal` returns recent entries.
+- `GET /api/journal/:id` returns one entry.
+- Schema migrations live in `supabase/migrations`.
+
+Required env vars:
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=...
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=... # optional for future browser auth/client usage
+SUPABASE_SERVICE_ROLE_KEY=...            # server-only; never expose in browser code
+```
 
 ## Local MCP server (still works)
 

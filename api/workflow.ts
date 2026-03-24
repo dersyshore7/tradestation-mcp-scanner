@@ -34,6 +34,9 @@ function isChartAnchoredTwoToOneBlocker(error: unknown): boolean {
   return message.includes(CHART_ANCHORED_TWO_TO_ONE_FAILURE);
 }
 
+function buildScanRunId(): string {
+  return `scan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
 
 function toSerializableJsonValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -75,6 +78,7 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
 
   try {
     const scanInput = normalizeInput(req.body);
+    const scanRunId = buildScanRunId();
     const scanResult = await runScan(scanInput);
     const telemetry = scanResult.telemetry ?? null;
 
@@ -85,6 +89,7 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
       !scanResult.confidence
     ) {
       sendJson(res, 200, {
+        scan_run_id: scanRunId,
         prompt: scanInput.prompt,
         scan: scanResult,
         tradeCard: null,
@@ -111,9 +116,11 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
       });
 
       sendJson(res, 200, {
+        scan_run_id: scanRunId,
         prompt: scanInput.prompt,
         scan: scanResult,
         tradeCard,
+        journalPlannedTrade: tradeCard.plannedJournalFields,
         telemetry,
         presentationSummary: buildWorkflowPresentationSummary({
           scan: scanResult,
@@ -186,6 +193,7 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
       };
 
       sendJson(res, 200, {
+        scan_run_id: scanRunId,
         prompt: scanInput.prompt,
         scan: blockedScanResult,
         tradeCard: null,

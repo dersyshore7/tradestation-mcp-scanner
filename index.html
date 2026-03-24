@@ -41,6 +41,7 @@
         font: inherit;
       }
       input,
+      select,
       textarea {
         width: 100%;
         box-sizing: border-box;
@@ -165,11 +166,24 @@
         <label for="quantity">Quantity / contracts</label>
         <input id="quantity" type="number" step="1" placeholder="e.g. 3" />
 
+        <label for="entryDate">Entry date</label>
+        <input id="entryDate" type="date" />
+
+        <label for="entryTime">Optional entry time</label>
+        <input id="entryTime" type="time" />
+
+        <label for="accountMode">Account mode</label>
+        <select id="accountMode">
+          <option value="paper">paper</option>
+          <option value="live">live</option>
+        </select>
+
         <label for="note">Optional note</label>
         <textarea id="note" rows="3" placeholder="Optional execution note"></textarea>
+        <div id="tradeModalStatus" class="muted"></div>
 
         <div class="actions">
-          <button id="saveTradeLog">Save locally</button>
+          <button id="saveTradeLog">Save journal entry</button>
           <button id="closeModal" class="secondary">Close</button>
         </div>
       </div>
@@ -185,6 +199,10 @@
       const tradeModal = document.getElementById("tradeModal");
       const closeModalButton = document.getElementById("closeModal");
       const saveTradeLogButton = document.getElementById("saveTradeLog");
+      const tradeModalStatus = document.getElementById("tradeModalStatus");
+      const entryDateInput = document.getElementById("entryDate");
+      const entryTimeInput = document.getElementById("entryTime");
+      const accountModeInput = document.getElementById("accountMode");
 
       let latestTradeLog = null;
       if (defaultPromptText) {
@@ -223,6 +241,12 @@
       }
 
       function openModal() {
+        if (entryDateInput && !entryDateInput.value) {
+          entryDateInput.value = new Date().toISOString().slice(0, 10);
+        }
+        if (tradeModalStatus) {
+          tradeModalStatus.textContent = "";
+        }
         tradeModal.style.display = "flex";
       }
 
@@ -366,6 +390,16 @@
       }
 
       function renderTrade(scan, tradeCard, presentationSummary) {
+        const planned = latestBackendData?.journalPlannedTrade || null;
+        const contractsMatch = (latestBackendData?.tradeCard?.buy || "").match(/^(\d+)x/i);
+        const contractsFromCard = contractsMatch ? contractsMatch[1] : "";
+        if (document.getElementById("quantity") && !document.getElementById("quantity").value) {
+          document.getElementById("quantity").value = contractsFromCard;
+        }
+        if (entryDateInput && !entryDateInput.value) {
+          entryDateInput.value = new Date().toISOString().slice(0, 10);
+        }
+
         resultArea.innerHTML = `
           ${renderPresentationSummary(presentationSummary)}
 
@@ -373,6 +407,7 @@
           <div style="margin-top: 12px;">
             <button id="tookTradeButton">I took this trade</button>
           </div>
+          ${planned ? `<div class="muted">Prefilled plan: ${escapeHtml(planned.symbol)} ${escapeHtml(planned.direction)} / ${escapeHtml(planned.setup_type)}</div>` : ""}
           <div id="localTradeCapture"></div>
 
           ${renderDebugDetailsPanel()}
@@ -453,20 +488,65 @@
       loadDefaults();
 
       saveTradeLogButton.addEventListener("click", () => {
-        latestTradeLog = {
-          actualEntryPrice: document.getElementById("actualEntry").value,
-          quantityOrContracts: document.getElementById("quantity").value,
-          note: document.getElementById("note").value,
-          capturedAt: new Date().toISOString(),
-        };
+        (async () => {
+          try {
+            saveTradeLogButton.disabled = true;
+            if (tradeModalStatus) {
+              tradeModalStatus.textContent = "Saving...";
+            }
 
-        console.log("Local trade capture (no persistence):", latestTradeLog);
-        closeModal();
+            const plannedTrade = latestBackendData?.journalPlannedTrade;
+            if (!plannedTrade) {
+              throw new Error("No planned trade data was available from workflow response.");
+            }
 
-        const holder = document.getElementById("localTradeCapture");
-        if (holder) {
-          holder.innerHTML = `<h4>Local capture</h4><pre>${escapeHtml(JSON.stringify(latestTradeLog, null, 2))}</pre>`;
-        }
+            const payload = {
+              account_mode: accountModeInput.value,
+              entry_date: entryDateInput.value,
+              entry_time: entryTimeInput.value || null,
+              contracts: document.getElementById("quantity").value || null,
+              option_entry_price: document.getElementById("actualEntry").value || null,
+              entry_notes: document.getElementById("note").value || null,
+              planned_trade: {
+                ...plannedTrade,
+                scan_run_id: latestBackendData?.scan_run_id || null,
+                symbol: plannedTrade.symbol || latestBackendData?.scan?.ticker,
+                direction: plannedTrade.direction || latestBackendData?.scan?.direction,
+                setup_type: plannedTrade.setup_type || "scanner_trade",
+              },
+              signal_snapshot_json: {
+                scan: latestBackendData?.scan || null,
+                tradeCard: latestBackendData?.tradeCard || null,
+              },
+            };
+
+            const response = await fetch("/api/journal", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            const data = await response.json();
+            if (!response.ok) {
+              throw new Error(data?.message || "Failed to save journal trade.");
+            }
+
+            latestTradeLog = data.trade;
+            if (tradeModalStatus) {
+              tradeModalStatus.textContent = "Saved successfully.";
+            }
+            closeModal();
+            const holder = document.getElementById("localTradeCapture");
+            if (holder) {
+              holder.innerHTML = `<h4>Journal entry</h4><pre>${escapeHtml(JSON.stringify(latestTradeLog, null, 2))}</pre>`;
+            }
+          } catch (error) {
+            if (tradeModalStatus) {
+              tradeModalStatus.textContent = error instanceof Error ? error.message : "Unexpected save error.";
+            }
+          } finally {
+            saveTradeLogButton.disabled = false;
+          }
+        })();
       });
     </script>
   </body>

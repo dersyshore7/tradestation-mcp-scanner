@@ -57,6 +57,20 @@ export type TradeConstructionResult = {
   timeExit: string;
   rrMath: string;
   rationale: string;
+  plannedJournalFields: {
+    symbol: string;
+    direction: "CALL" | "PUT";
+    expiration_date: string;
+    dte_at_entry: number;
+    position_cost_usd: number;
+    underlying_entry_price: number;
+    planned_risk_usd: number;
+    planned_profit_usd: number;
+    setup_type: string;
+    confidence_bucket: ScanConfidence;
+    intended_stop_underlying: number;
+    intended_target_underlying: number;
+  };
 };
 
 type TradeInputs = {
@@ -570,6 +584,7 @@ export async function constructTradeCard(input: TradeConstructionInput): Promise
 
   const rrRatio = trade.finalizedTradeGeometry.rewardRiskRatio;
   const directionLabel = direction === "bullish" ? "Bullish" : "Bearish";
+  const setupType = direction === "bullish" ? "bullish_continuation" : "bearish_continuation";
   const thursdayBeforeExpiration = computeThursdayBeforeExpiration(trade.expirationDate);
   const timeExitDate = thursdayBeforeExpiration ?? trade.expirationDate;
 
@@ -590,5 +605,19 @@ export async function constructTradeCard(input: TradeConstructionInput): Promise
     timeExit: `Exit on Thursday before expiration (${timeExitDate}), or sooner if option value decays by more than 25% from entry premium (${renderMoney(trade.optionMid)}).`,
     rrMath: `Chart-anchored risk ${trade.finalizedTradeGeometry.riskDistance.toFixed(2)} vs reward ${trade.finalizedTradeGeometry.rewardDistance.toFixed(2)} from ${trade.finalizedTradeGeometry.referencePrice.toFixed(2)} implies ~${rrRatio.toFixed(2)}:1 reward:risk. Option approximation: risk/contract ${renderMoney(trade.riskPerContract)}, reward/contract ${renderMoney(trade.rewardPerContract)}; total risk ${renderMoney(trade.totalRisk)} vs total reward ${renderMoney(trade.totalReward)}.`,
     rationale: `${directionLabel} setup follows confirmed review bias and uses nearest practical ATM ${trade.expirationDate} (${trade.dte} DTE) option. Finalized trade geometry comes from ${trade.finalizedTradeGeometry.geometrySource} at ${trade.finalizedTradeGeometry.referencePrice.toFixed(2)}, with invalidation ${trade.finalizedTradeGeometry.invalidationLevel.toFixed(2)} and target ${trade.finalizedTradeGeometry.targetLevel.toFixed(2)} for ~${rrRatio.toFixed(2)}:1 chart-anchored reward:risk. ${trade.finalizedTradeGeometry.geometryReason} Pricing uses current premium plus a delta-based approximation; equity source: ${trade.equitySource}.`,
+    plannedJournalFields: {
+      symbol,
+      direction: direction === "bullish" ? "CALL" : "PUT",
+      expiration_date: trade.expirationDate,
+      dte_at_entry: trade.dte,
+      position_cost_usd: trade.notional,
+      underlying_entry_price: trade.underlyingPrice,
+      planned_risk_usd: trade.totalRisk,
+      planned_profit_usd: trade.totalReward,
+      setup_type: setupType,
+      confidence_bucket: confidence,
+      intended_stop_underlying: trade.finalizedTradeGeometry.invalidationLevel,
+      intended_target_underlying: trade.finalizedTradeGeometry.targetLevel,
+    },
   };
 }
