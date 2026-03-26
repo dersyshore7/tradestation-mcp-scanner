@@ -345,6 +345,12 @@ type FinalistAsymmetryDebug = {
   stage3RoomPct: number | null;
   asymmetryConsistencyFlag: boolean;
   asymmetryConsistencyReason: string | null;
+  optionFitTier: "strong" | "acceptable" | "fragile" | "poor" | null;
+  optionPainMismatch: boolean | null;
+  stockStopTooWideForOption: boolean | null;
+  expectedOptionPainPctBeforeInvalidation: number | null;
+  practicalImmediateEntryFitPass: boolean | null;
+  practicalImmediateEntryFitReason: string | null;
 };
 
 type FinalistReviewResult = {
@@ -5406,6 +5412,12 @@ async function runUniverseTierTradeStationScan(
                   asymmetryConsistencyReason:
                     item.chartDiagnostics.chartAnchoredAsymmetry
                       .asymmetryConsistencyReason,
+                  optionFitTier: null,
+                  optionPainMismatch: null,
+                  stockStopTooWideForOption: null,
+                  expectedOptionPainPctBeforeInvalidation: null,
+                  practicalImmediateEntryFitPass: null,
+                  practicalImmediateEntryFitReason: null,
                 }
               : null;
           })(),
@@ -5583,6 +5595,12 @@ async function runUniverseTierTradeStationScan(
             asymmetryConsistencyReason: stage3FinalMismatch
               ? stage3FinalConsistencyReason
               : reviewResult.confirmationDebug.asymmetryConsistencyReason,
+            optionFitTier: null,
+            optionPainMismatch: null,
+            stockStopTooWideForOption: null,
+            expectedOptionPainPctBeforeInvalidation: null,
+            practicalImmediateEntryFitPass: null,
+            practicalImmediateEntryFitReason: null,
           }
         : null,
       conclusion: reviewResult.conclusion,
@@ -5640,7 +5658,25 @@ async function runUniverseTierTradeStationScan(
                 rrTier: RiskRewardTier | "unknown";
                 reason: string;
               } | null;
+              practicalOptionFit?: {
+                optionFitTier: "strong" | "acceptable" | "fragile" | "poor";
+                optionPainMismatch: boolean;
+                stockStopTooWideForOption: boolean;
+                expectedOptionPainPctBeforeInvalidation: number;
+                practicalImmediateEntryFitPass: boolean;
+                practicalImmediateEntryFitReason: string;
+              } | null;
             }).chartAnchoredAsymmetry;
+            const practicalOptionFit = (error as {
+              practicalOptionFit?: {
+                optionFitTier: "strong" | "acceptable" | "fragile" | "poor";
+                optionPainMismatch: boolean;
+                stockStopTooWideForOption: boolean;
+                expectedOptionPainPctBeforeInvalidation: number;
+                practicalImmediateEntryFitPass: boolean;
+                practicalImmediateEntryFitReason: string;
+              } | null;
+            }).practicalOptionFit;
             if (blockedOutcome.asymmetryDebug && postConfirmationAsymmetry) {
               const blockedAsymmetryTelemetry =
                 postConfirmationAsymmetry.rewardRiskRatio !== null &&
@@ -5696,6 +5732,33 @@ async function runUniverseTierTradeStationScan(
                   blockedAsymmetryTelemetry.asymmetryConsistencyFlag,
                 asymmetryConsistencyReason:
                   blockedAsymmetryTelemetry.asymmetryConsistencyReason,
+                optionFitTier: practicalOptionFit?.optionFitTier ?? null,
+                optionPainMismatch:
+                  practicalOptionFit?.optionPainMismatch ?? null,
+                stockStopTooWideForOption:
+                  practicalOptionFit?.stockStopTooWideForOption ?? null,
+                expectedOptionPainPctBeforeInvalidation:
+                  practicalOptionFit?.expectedOptionPainPctBeforeInvalidation ??
+                  null,
+                practicalImmediateEntryFitPass:
+                  practicalOptionFit?.practicalImmediateEntryFitPass ?? null,
+                practicalImmediateEntryFitReason:
+                  practicalOptionFit?.practicalImmediateEntryFitReason ?? null,
+              };
+            }
+            if (blockedOutcome.asymmetryDebug && practicalOptionFit) {
+              blockedOutcome.asymmetryDebug = {
+                ...blockedOutcome.asymmetryDebug,
+                optionFitTier: practicalOptionFit.optionFitTier,
+                optionPainMismatch: practicalOptionFit.optionPainMismatch,
+                stockStopTooWideForOption:
+                  practicalOptionFit.stockStopTooWideForOption,
+                expectedOptionPainPctBeforeInvalidation:
+                  practicalOptionFit.expectedOptionPainPctBeforeInvalidation,
+                practicalImmediateEntryFitPass:
+                  practicalOptionFit.practicalImmediateEntryFitPass,
+                practicalImmediateEntryFitReason:
+                  practicalOptionFit.practicalImmediateEntryFitReason,
               };
             }
           }
