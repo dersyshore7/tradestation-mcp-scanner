@@ -98,17 +98,44 @@ type TradeInputs = {
   equitySource: string;
 };
 
+type ExpectedTimingBucket =
+  | "today_next_session"
+  | "next_1_3_days"
+  | "next_1_2_weeks"
+  | "slower_swing";
+
+type ExpectedTimingSummary = {
+  bucket: ExpectedTimingBucket;
+  label: string;
+  setupPace: "immediate" | "slower-developing";
+  targetMovePct: number;
+  optionFollowThroughPct: number;
+};
+
+type OptionFitTier = "strong" | "acceptable" | "fragile" | "poor";
+
+type PracticalOptionFitTelemetry = {
+  optionFitTier: OptionFitTier;
+  optionPainMismatch: boolean;
+  stockStopTooWideForOption: boolean;
+  expectedOptionPainPctBeforeInvalidation: number;
+  practicalImmediateEntryFitPass: boolean;
+  practicalImmediateEntryFitReason: string;
+};
 
 export class TradeCardBlockedAfterConfirmationError extends Error {
   chartAnchoredAsymmetry: ChartAnchoredTradabilityResult | null;
+  practicalOptionFit: PracticalOptionFitTelemetry | null;
 
   constructor(
     message: string,
     chartAnchoredAsymmetry: ChartAnchoredTradabilityResult | null = null,
+    practicalOptionFit: PracticalOptionFitTelemetry | null = null,
   ) {
     super(message);
     this.name = "TradeCardBlockedAfterConfirmationError";
     this.chartAnchoredAsymmetry = chartAnchoredAsymmetry;
+    this.practicalOptionFit = practicalOptionFit;
   }
 }
 
@@ -211,34 +238,110 @@ function computeThursdayBeforeExpiration(expirationDate: string): string | null 
   return formatIsoDate(thursdayBefore);
 }
 
-function buildExpectedTiming(
-  direction: ScanDirection,
+function classifyExpectedTiming(
   confidence: ScanConfidence,
   trade: Pick<TradeInputs, "dte" | "optionMid" | "optionAtTarget" | "finalizedTradeGeometry">,
-): string {
+): ExpectedTimingSummary {
   const targetMovePct = Math.abs(
     trade.finalizedTradeGeometry.rewardDistance /
       trade.finalizedTradeGeometry.referencePrice,
   );
   const optionFollowThroughPct = Math.abs((trade.optionAtTarget - trade.optionMid) / trade.optionMid);
+  const setupPace = confidence === "93-97" || (confidence === "85-92" && trade.dte <= 21) ? "immediate" : "slower-developing";
 
+  let bucket: ExpectedTimingBucket = "slower_swing";
+  let label = "Slower swing / may take most of DTE";
+  if (confidence === "93-97" && trade.dte <= 21 && targetMovePct <= 0.03) {
+    bucket = "today_next_session";
+    label = "Today / next session";
+  } else if ((confidence === "93-97" || confidence === "85-92") && trade.dte <= 28 && targetMovePct <= 0.04) {
+    bucket = "next_1_3_days";
+    label = "Next 1–3 trading days";
+  } else if (confidence === "85-92" || (confidence === "75-84" && trade.dte <= 35)) {
+    bucket = "next_1_2_weeks";
+    label = "Next 1–2 weeks";
+  }
+
+  return {
+    bucket,
+    label,
+    setupPace,
+    targetMovePct,
+    optionFollowThroughPct,
+  };
+}
+
+function buildExpectedTiming(
+  direction: ScanDirection,
+  confidence: ScanConfidence,
+  trade: Pick<TradeInputs, "dte" | "optionMid" | "optionAtTarget" | "finalizedTradeGeometry">,
+): string {
+  const timing = classifyExpectedTiming(confidence, trade);
   const momentumStrength = confidence === "93-97" || confidence === "85-92" ? "strong" : confidence === "75-84" ? "moderate" : "mixed";
   const volumeConfirmation = confidence === "93-97" || confidence === "85-92" ? "confirmed" : "adequate";
   const continuationStructure = confidence === "93-97" ? "clean" : confidence === "85-92" ? "mostly clean" : "developing";
-  const setupPace = confidence === "93-97" || (confidence === "85-92" && trade.dte <= 21) ? "immediate" : "slower-developing";
 
-  let timingBucket = "Unclear timing";
-  if (confidence === "93-97" && trade.dte <= 21 && targetMovePct <= 0.03) {
-    timingBucket = "Today / next session";
-  } else if ((confidence === "93-97" || confidence === "85-92") && trade.dte <= 28 && targetMovePct <= 0.04) {
-    timingBucket = "Next 1–3 trading days";
-  } else if (confidence === "85-92" || (confidence === "75-84" && trade.dte <= 35)) {
-    timingBucket = "Next 1–2 weeks";
-  } else if (trade.dte > 21 || confidence === "65-74") {
-    timingBucket = "Slower swing / may take most of DTE";
-  }
+  return `${timing.label} (${direction} bias; momentum ${momentumStrength}, volume ${volumeConfirmation}, continuation ${continuationStructure}, target distance ${(timing.targetMovePct * 100).toFixed(1)}%, DTE ${trade.dte}, setup ${timing.setupPace}, est. option follow-through ${(timing.optionFollowThroughPct * 100).toFixed(0)}%).`;
+}
 
-  return `${timingBucket} (${direction} bias; momentum ${momentumStrength}, volume ${volumeConfirmation}, continuation ${continuationStructure}, target distance ${(targetMovePct * 100).toFixed(1)}%, DTE ${trade.dte}, setup ${setupPace}, est. option follow-through ${(optionFollowThroughPct * 100).toFixed(0)}%).`;
+function evaluatePracticalImmediateEntryOptionFit(
+  confidence: ScanConfidence,
+  trade: Pick<TradeInputs, "dte" | "optionMid" | "optionAtInvalidation" | "finalizedTradeGeometry" | "optionSymbol">,
+  timing: ExpectedTimingSummary,
+): PracticalOptionFitTelemetry {
+  const stockInvalidationPct =
+    (Math.abs(trade.finalizedTradeGeometry.riskDistance) /
+      trade.finalizedTradeGeometry.referencePrice) *
+    100;
+  const optionPainPctBeforeInvalidation =
+    trade.optionMid > 0
+      ? Math.max(
+          0,
+          ((trade.optionMid - trade.optionAtInvalidation) / trade.optionMid) * 100,
+        )
+      : 100;
+  const basePainTolerancePct =
+    timing.bucket === "today_next_session"
+      ? 30
+      : timing.bucket === "next_1_3_days"
+        ? 35
+        : timing.bucket === "next_1_2_weeks"
+          ? 45
+          : 50;
+  const confidenceBuffer = confidence === "93-97" ? 5 : confidence === "85-92" ? 0 : -5;
+  const maxPracticalPainPct = basePainTolerancePct + confidenceBuffer;
+  const optionPainMismatch = optionPainPctBeforeInvalidation > maxPracticalPainPct;
+  const stockStopTooWideForOption =
+    stockInvalidationPct >= 3.25 ||
+    (stockInvalidationPct >= 2.75 && optionPainPctBeforeInvalidation >= 35);
+
+  const slowerTimingFragility =
+    timing.bucket === "slower_swing" &&
+    (optionPainPctBeforeInvalidation >= 45 ||
+      optionPainMismatch ||
+      stockStopTooWideForOption);
+  const practicalImmediateEntryFitPass =
+    !optionPainMismatch && !stockStopTooWideForOption && !slowerTimingFragility;
+  const optionFitTier: OptionFitTier = !practicalImmediateEntryFitPass
+    ? optionPainPctBeforeInvalidation >= 55 || slowerTimingFragility
+      ? "poor"
+      : "fragile"
+    : optionPainPctBeforeInvalidation <= 25 && stockInvalidationPct <= 2
+      ? "strong"
+      : "acceptable";
+
+  const practicalImmediateEntryFitReason = practicalImmediateEntryFitPass
+    ? `Option structure is practical for immediate-entry follow-through today (expected option pain ~${optionPainPctBeforeInvalidation.toFixed(1)}% before stock invalidation; stock invalidation distance ${stockInvalidationPct.toFixed(2)}%; timing ${timing.label}).`
+    : `Stock structure is directionally valid, but the option fit is poor for an immediate-entry trade today: chart invalidation is ${stockInvalidationPct.toFixed(2)}% from reference and implies ~${optionPainPctBeforeInvalidation.toFixed(1)}% option pain before invalidation (timing ${timing.label}; option ${trade.optionSymbol}).`;
+
+  return {
+    optionFitTier,
+    optionPainMismatch,
+    stockStopTooWideForOption,
+    expectedOptionPainPctBeforeInvalidation: optionPainPctBeforeInvalidation,
+    practicalImmediateEntryFitPass,
+    practicalImmediateEntryFitReason,
+  };
 }
 
 async function resolveDirectionAndConfidence(
@@ -581,6 +684,19 @@ export async function constructTradeCard(input: TradeConstructionInput): Promise
   const symbol = promptMatch.symbol;
   const { direction, confidence } = await resolveDirectionAndConfidence(symbol, input.confirmedDirection, input.confirmedConfidence);
   const { tradeInputs: trade, diagnostics } = await buildTradeInputs(symbol, direction, input.finalizedTradeGeometry);
+  const timing = classifyExpectedTiming(confidence, trade);
+  const practicalOptionFit = evaluatePracticalImmediateEntryOptionFit(
+    confidence,
+    trade,
+    timing,
+  );
+  if (!practicalOptionFit.practicalImmediateEntryFitPass) {
+    throw new TradeCardBlockedAfterConfirmationError(
+      practicalOptionFit.practicalImmediateEntryFitReason,
+      null,
+      practicalOptionFit,
+    );
+  }
 
   const rrRatio = trade.finalizedTradeGeometry.rewardRiskRatio;
   const directionLabel = direction === "bullish" ? "Bullish" : "Bearish";
