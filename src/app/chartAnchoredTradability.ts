@@ -1,4 +1,10 @@
 import { type ScanDirection } from "../scanner/scoring.js";
+import {
+  findCandidateLevels,
+  selectTradeGeometryFromLevels,
+  validateTradeGeometry,
+  type Candle,
+} from "../scanner/geometry.js";
 
 export const PREFERRED_RISK_REWARD_RATIO = 2;
 export const MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO = 1.5;
@@ -108,141 +114,24 @@ function readNumber(
   return null;
 }
 
-function selectMeaningfulTargetLevel(
-  direction: ScanDirection,
-  referencePrice: number,
-  riskDistance: number,
-  candidates: number[],
-): number | null {
-  const directionalCandidates = candidates
-    .filter((value) =>
-      direction === "bullish" ? value > referencePrice : value < referencePrice,
-    )
-    .sort((a, b) => (direction === "bullish" ? a - b : b - a));
-
-  if (directionalCandidates.length === 0) {
-    return null;
-  }
-
-  if (!(riskDistance > 0)) {
-    return directionalCandidates[0] ?? null;
-  }
-
-  const minimumMeaningfulTarget =
-    direction === "bullish"
-      ? referencePrice + riskDistance * MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO
-      : referencePrice - riskDistance * MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO;
-
-  const levelMeetingMinimum = directionalCandidates.find((value) =>
-    direction === "bullish"
-      ? value >= minimumMeaningfulTarget
-      : value <= minimumMeaningfulTarget,
-  );
-
-  return levelMeetingMinimum ?? directionalCandidates[0] ?? null;
-}
-
-type CandidateAsymmetryLevels = {
-  invalidationUnderlying: number | null;
-  targetUnderlying: number | null;
-  invalidationReason: string | null;
-  targetReason: string | null;
-  riskDistance: number | null;
-  rewardDistance: number | null;
-  rewardRiskRatio: number | null;
-};
-
-function selectPracticalLevels(
-  direction: ScanDirection,
-  referencePrice: number,
-  invalidationCandidates: number[],
-  targetCandidates: number[],
-): CandidateAsymmetryLevels {
-  const directionalInvalidations = Array.from(new Set(invalidationCandidates))
-    .filter((value) =>
-      direction === "bullish" ? value < referencePrice : value > referencePrice,
-    )
-    .sort((a, b) =>
-      direction === "bullish"
-        ? b - a
-        : a - b,
+function toCandles(bars: Record<string, unknown>[]): Candle[] {
+  return bars
+    .map((bar) => {
+      const open = readNumber(bar, ["Open"]);
+      return {
+        high: readNumber(bar, ["High"]) ?? Number.NaN,
+        low: readNumber(bar, ["Low"]) ?? Number.NaN,
+        close: readNumber(bar, ["Close", "Last"]) ?? Number.NaN,
+        ...(open === null ? {} : { open }),
+        volume: readNumber(bar, ["TotalVolume", "Volume"]),
+      };
+    })
+    .filter(
+      (bar) =>
+        Number.isFinite(bar.high) &&
+        Number.isFinite(bar.low) &&
+        Number.isFinite(bar.close),
     );
-
-  let bestCandidate: CandidateAsymmetryLevels | null = null;
-
-  for (const invalidationUnderlying of directionalInvalidations) {
-    const riskDistance =
-      direction === "bullish"
-        ? referencePrice - invalidationUnderlying
-        : invalidationUnderlying - referencePrice;
-    const targetUnderlying = selectMeaningfulTargetLevel(
-      direction,
-      referencePrice,
-      riskDistance,
-      targetCandidates,
-    );
-
-    if (targetUnderlying === null || !(riskDistance > 0)) {
-      continue;
-    }
-
-    const rewardDistance =
-      direction === "bullish"
-        ? targetUnderlying - referencePrice
-        : referencePrice - targetUnderlying;
-    const rewardRiskRatio = rewardDistance / riskDistance;
-    const candidate: CandidateAsymmetryLevels = {
-      invalidationUnderlying,
-      targetUnderlying,
-      invalidationReason:
-        direction === "bullish"
-          ? `nearest recent daily support low that keeps chart asymmetry practical (${invalidationUnderlying.toFixed(2)})`
-          : `nearest recent daily resistance high that keeps chart asymmetry practical (${invalidationUnderlying.toFixed(2)})`,
-      targetReason:
-        direction === "bullish"
-          ? `nearest overhead 3M/1Y resistance chosen against that invalidation (${targetUnderlying.toFixed(2)})`
-          : `nearest downside 3M/1Y support chosen against that invalidation (${targetUnderlying.toFixed(2)})`,
-      riskDistance,
-      rewardDistance,
-      rewardRiskRatio,
-    };
-
-    if (
-      rewardDistance > 0 &&
-      rewardRiskRatio >= MINIMUM_TRADABLE_RISK_REWARD_RATIO
-    ) {
-      return candidate;
-    }
-
-    if (
-      bestCandidate === null ||
-      (candidate.rewardRiskRatio ?? 0) > (bestCandidate.rewardRiskRatio ?? 0)
-    ) {
-      bestCandidate = candidate;
-    }
-  }
-
-  return (
-    bestCandidate ?? {
-      invalidationUnderlying: directionalInvalidations[0] ?? null,
-      targetUnderlying: selectMeaningfulTargetLevel(
-        direction,
-        referencePrice,
-        0,
-        targetCandidates,
-      ),
-      invalidationReason:
-        directionalInvalidations.length === 0
-          ? null
-          : direction === "bullish"
-            ? `nearest recent daily support low (${(directionalInvalidations[0] ?? 0).toFixed(2)})`
-            : `nearest recent daily resistance high (${(directionalInvalidations[0] ?? 0).toFixed(2)})`,
-      targetReason: null,
-      riskDistance: null,
-      rewardDistance: null,
-      rewardRiskRatio: null,
-    }
-  );
 }
 
 export function evaluateChartAnchoredAsymmetryFromBars(
@@ -253,184 +142,59 @@ export function evaluateChartAnchoredAsymmetryFromBars(
   bars3M: Record<string, unknown>[],
   bars1Y: Record<string, unknown>[],
 ): ChartAnchoredTradabilityResult {
-  const recentBars = dailyBars.slice(-6);
-  const recentLows = recentBars
-    .map((bar) => readNumber(bar, ["Low"]))
-    .filter((value): value is number => value !== null);
-  const recentHighs = recentBars
-    .map((bar) => readNumber(bar, ["High"]))
-    .filter((value): value is number => value !== null);
-
-  const highs3M = bars3M
-    .map((bar) => readNumber(bar, ["High"]))
-    .filter((value): value is number => value !== null);
-  const highs1Y = bars1Y
-    .map((bar) => readNumber(bar, ["High"]))
-    .filter((value): value is number => value !== null);
-  const lows3M = bars3M
-    .map((bar) => readNumber(bar, ["Low"]))
-    .filter((value): value is number => value !== null);
-  const lows1Y = bars1Y
-    .map((bar) => readNumber(bar, ["Low"]))
-    .filter((value): value is number => value !== null);
-
-  if (direction === "bullish") {
-    const resistanceCandidates = [...highs3M, ...highs1Y];
-    const selectedLevels = selectPracticalLevels(
-      direction,
-      referencePrice,
-      recentLows,
-      resistanceCandidates,
-    );
-    const invalidationUnderlying = selectedLevels.invalidationUnderlying;
-    const targetUnderlying = selectedLevels.targetUnderlying;
-
-    if (
-      invalidationUnderlying === null ||
-      targetUnderlying === null ||
-      !(
-        invalidationUnderlying < referencePrice &&
-        targetUnderlying > referencePrice
-      )
-    ) {
-      return {
-        pass: false,
-        referencePrice,
-        reason: `Could not derive clean bullish chart-anchored invalidation/target levels for ${symbol}.`,
-        invalidationUnderlying,
-        targetUnderlying,
-        invalidationReason:
-          selectedLevels.invalidationReason,
-        targetReason:
-          selectedLevels.targetReason,
-        riskDistance:
-          invalidationUnderlying === null
-            ? null
-            : Math.max(0, referencePrice - invalidationUnderlying),
-        rewardDistance:
-          targetUnderlying === null
-            ? null
-            : Math.max(0, targetUnderlying - referencePrice),
-        rewardRiskRatio: null,
-        roomPct:
-          targetUnderlying === null
-            ? null
-            : ((targetUnderlying - referencePrice) / referencePrice) * 100,
-        rrTier: "unknown",
-        preferred2R: false,
-        minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
-      };
-    }
-
-    const riskDistance = referencePrice - invalidationUnderlying;
-    const rewardDistance = targetUnderlying - referencePrice;
-    const rewardRiskRatio =
-      riskDistance > 0 ? rewardDistance / riskDistance : 0;
-    const roomPct = (rewardDistance / referencePrice) * 100;
-    const rrTier = getRiskRewardTier(rewardRiskRatio) as RiskRewardTier;
-    if (
-      riskDistance <= 0 ||
-      rewardRiskRatio < MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO
-    ) {
-      return {
-        pass: false,
-        referencePrice,
-        reason: `${CHART_ANCHORED_TWO_TO_ONE_FAILURE} for ${symbol} (actual R:R ${rewardRiskRatio.toFixed(2)}; tier=${rrTier}; minimum confirmable ${MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO.toFixed(2)}).`,
-        invalidationUnderlying,
-        targetUnderlying,
-        invalidationReason: selectedLevels.invalidationReason,
-        targetReason: selectedLevels.targetReason,
-        riskDistance,
-        rewardDistance,
-        rewardRiskRatio,
-        roomPct,
-        rrTier,
-        preferred2R: rewardRiskRatio >= PREFERRED_RISK_REWARD_RATIO,
-        minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
-      };
-    }
-
-    return {
-      pass: true,
-      referencePrice,
-      invalidationUnderlying,
-      targetUnderlying,
-      invalidationReason: selectedLevels.invalidationReason!,
-      targetReason: selectedLevels.targetReason!,
-      riskDistance,
-      rewardDistance,
-      rewardRiskRatio,
-      roomPct,
-      rrTier,
-      preferred2R: rewardRiskRatio >= PREFERRED_RISK_REWARD_RATIO,
-      minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
-    };
-  }
-
-  const supportCandidates = [...lows3M, ...lows1Y];
-  const selectedLevels = selectPracticalLevels(
+  const candidates = findCandidateLevels({
+    "1D": toCandles(dailyBars),
+    "4H": toCandles(bars3M.slice(-80)),
+    "1W": toCandles(bars1Y),
+  });
+  const selection = selectTradeGeometryFromLevels(
     direction,
     referencePrice,
-    recentHighs,
-    supportCandidates,
+    candidates,
   );
-  const invalidationUnderlying = selectedLevels.invalidationUnderlying;
-  const targetUnderlying = selectedLevels.targetUnderlying;
-
-  if (
-    invalidationUnderlying === null ||
-    targetUnderlying === null ||
-    !(
-      invalidationUnderlying > referencePrice &&
-      targetUnderlying < referencePrice
-    )
-  ) {
+  if (!selection.geometry) {
     return {
       pass: false,
       referencePrice,
-      reason: `Could not derive clean bearish chart-anchored invalidation/target levels for ${symbol}.`,
-      invalidationUnderlying,
-      targetUnderlying,
-      invalidationReason:
-        selectedLevels.invalidationReason,
-      targetReason:
-        selectedLevels.targetReason,
-      riskDistance:
-        invalidationUnderlying === null
-          ? null
-          : Math.max(0, invalidationUnderlying - referencePrice),
-      rewardDistance:
-        targetUnderlying === null
-          ? null
-          : Math.max(0, referencePrice - targetUnderlying),
+      reason: `Could not derive clean ${direction} chart-anchored invalidation/target levels for ${symbol}: ${selection.reason}`,
+      invalidationUnderlying: null,
+      targetUnderlying: null,
+      invalidationReason: null,
+      targetReason: null,
+      riskDistance: null,
+      rewardDistance: null,
       rewardRiskRatio: null,
-      roomPct:
-        targetUnderlying === null
-          ? null
-          : ((referencePrice - targetUnderlying) / referencePrice) * 100,
+      roomPct: null,
       rrTier: "unknown",
       preferred2R: false,
       minimumConfirmableRR: MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO,
     };
   }
 
-  const riskDistance = invalidationUnderlying - referencePrice;
-  const rewardDistance = referencePrice - targetUnderlying;
-  const rewardRiskRatio = riskDistance > 0 ? rewardDistance / riskDistance : 0;
+  const geometryValidation = validateTradeGeometry(
+    direction,
+    referencePrice,
+    selection.geometry,
+  );
+  const invalidationUnderlying = selection.geometry.invalidation.price;
+  const targetUnderlying = selection.geometry.target.price;
+  const riskDistance = selection.geometry.riskDistance;
+  const rewardDistance = selection.geometry.rewardDistance;
+  const rewardRiskRatio = selection.geometry.rewardRiskRatio;
   const roomPct = (rewardDistance / referencePrice) * 100;
-  const rrTier = getRiskRewardTier(rewardRiskRatio) as RiskRewardTier;
+  const rrTier = selection.geometry.rrTier as RiskRewardTier;
   if (
-    riskDistance <= 0 ||
-    rewardRiskRatio < MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO
+    !geometryValidation.pass ||
+    riskDistance <= 0
   ) {
     return {
       pass: false,
       referencePrice,
-      reason: `${CHART_ANCHORED_TWO_TO_ONE_FAILURE} for ${symbol} (actual R:R ${rewardRiskRatio.toFixed(2)}; tier=${rrTier}; minimum confirmable ${MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO.toFixed(2)}).`,
+      reason: `${CHART_ANCHORED_TWO_TO_ONE_FAILURE} for ${symbol} (${geometryValidation.reason}; actual R:R ${rewardRiskRatio.toFixed(2)}; tier=${rrTier}; minimum confirmable ${MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO.toFixed(2)}).`,
       invalidationUnderlying,
       targetUnderlying,
-      invalidationReason: selectedLevels.invalidationReason,
-      targetReason: selectedLevels.targetReason,
+      invalidationReason: selection.geometry.invalidationReason,
+      targetReason: selection.geometry.targetReason,
       riskDistance,
       rewardDistance,
       rewardRiskRatio,
@@ -446,8 +210,8 @@ export function evaluateChartAnchoredAsymmetryFromBars(
     referencePrice,
     invalidationUnderlying,
     targetUnderlying,
-    invalidationReason: selectedLevels.invalidationReason!,
-    targetReason: selectedLevels.targetReason!,
+    invalidationReason: selection.geometry.invalidationReason,
+    targetReason: selection.geometry.targetReason,
     riskDistance,
     rewardDistance,
     rewardRiskRatio,
