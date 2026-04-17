@@ -1,7 +1,9 @@
 import {
   ACCOUNT_MODES,
+  JOURNAL_EXIT_REASONS,
   TRADE_DIRECTIONS,
   TRADE_STATUSES,
+  type JournalTradeCloseInput,
   type JournalTradeCreateInput,
   type PlannedTradeSnapshot,
 } from "./types.js";
@@ -51,6 +53,17 @@ function optionalPositiveNumber(value: unknown, field: string): number | null {
   const parsed = parseNumber(value, field);
   if (parsed <= 0) {
     throw new Error(`${field} must be > 0.`);
+  }
+  return parsed;
+}
+
+function optionalNonNegativeNumber(value: unknown, field: string): number | null {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  const parsed = parseNumber(value, field);
+  if (parsed < 0) {
+    throw new Error(`${field} must be >= 0.`);
   }
   return parsed;
 }
@@ -141,6 +154,43 @@ function parsePositiveMoney(value: unknown, field: string): number {
   return parsed;
 }
 
+function parseIsoTimestamp(value: unknown, field: string): string {
+  const normalized = readString(value, field, false);
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`${field} must be a valid ISO timestamp.`);
+  }
+  return parsed.toISOString();
+}
+
+function normalizeExitReason(value: unknown): (typeof JOURNAL_EXIT_REASONS)[number] {
+  const raw = readString(value, "exit_reason", false).toLowerCase();
+  if (JOURNAL_EXIT_REASONS.includes(raw as (typeof JOURNAL_EXIT_REASONS)[number])) {
+    return raw as (typeof JOURNAL_EXIT_REASONS)[number];
+  }
+
+  const aliases: Record<string, (typeof JOURNAL_EXIT_REASONS)[number]> = {
+    target: "target_hit",
+    stop: "stop_hit",
+    target_hit: "target_hit",
+    stop_hit: "stop_hit",
+    time_exit: "time_exit",
+    manual_win: "manual_early_exit",
+    manual_loss: "manual_early_exit",
+    manual_early_exit: "manual_early_exit",
+    rule_violation: "rule_violation",
+    partial_profit: "partial_profit",
+    other: "other",
+  };
+
+  const mapped = aliases[raw];
+  if (!mapped) {
+    throw new Error("exit_reason must be a supported exit reason.");
+  }
+
+  return mapped;
+}
+
 export function validateJournalTradeCreatePayload(payload: unknown): JournalTradeCreateInput {
   const input = asRecord(payload);
   const accountMode = readString(input.account_mode, "account_mode", false).toLowerCase();
@@ -169,5 +219,28 @@ export function validateJournalTradeCreatePayload(payload: unknown): JournalTrad
         ? (input.signal_snapshot_json as Record<string, unknown>)
         : null,
     status: statusRaw as "open" | "closed",
+  };
+}
+
+export function validateJournalTradeClosePayload(payload: unknown): JournalTradeCloseInput {
+  const input = asRecord(payload);
+  const optionExitPrice = optionalPositiveNumber(input.option_exit_price, "option_exit_price");
+  const soldForUsd = optionalPositiveNumber(input.sold_for_usd, "sold_for_usd");
+
+  if (optionExitPrice === null && soldForUsd === null) {
+    throw new Error("option_exit_price is required.");
+  }
+
+  return {
+    option_exit_price: optionExitPrice,
+    sold_for_usd: soldForUsd,
+    exit_reason: normalizeExitReason(input.exit_reason),
+    exit_timestamp: parseIsoTimestamp(input.exit_timestamp, "exit_timestamp"),
+    quantity_closed: optionalIntegerGreaterThanZero(input.quantity_closed, "quantity_closed"),
+    fees_usd: optionalNonNegativeNumber(input.fees_usd, "fees_usd"),
+    slippage_usd: optionalNonNegativeNumber(input.slippage_usd, "slippage_usd"),
+    exit_notes: optionalString(input.exit_notes, "exit_notes"),
+    lessons_learned: optionalString(input.lessons_learned, "lessons_learned"),
+    review_notes: optionalString(input.review_notes, "review_notes"),
   };
 }

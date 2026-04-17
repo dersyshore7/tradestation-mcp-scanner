@@ -1,4 +1,4 @@
-import { createJournalTrade, listRecentJournalTrades } from "../src/journal/repository.js";
+import { createJournalTrade, getJournalTradeById, listRecentJournalTrades } from "../src/journal/repository.js";
 import { validateJournalTradeCreatePayload } from "../src/journal/validation.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
@@ -19,7 +19,8 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
     try {
       const payload = validateJournalTradeCreatePayload(req.body);
       const created = await createJournalTrade(payload);
-      sendJson(res, 201, { trade: created });
+      const hydratedTrade = await getJournalTradeById(created.id);
+      sendJson(res, 201, { trade: hydratedTrade ?? created });
       return;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Invalid journal payload.";

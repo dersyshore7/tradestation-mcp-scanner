@@ -1,5 +1,21 @@
-import { supabaseInsertAndSelectOne, supabaseSelect } from "../supabase/serverClient.js";
-import type { JournalTradeCreateInput, JournalTradeListItem, JournalTradeRecord } from "./types.js";
+import { buildJournalInsights } from "./insights.js";
+import {
+  supabaseDelete,
+  supabaseInsertAndSelectOne,
+  supabaseSelect,
+  supabaseUpdateAndSelectOne,
+  supabaseUpsertAndSelectOne,
+} from "../supabase/serverClient.js";
+import type {
+  JournalInsights,
+  JournalTradeCloseInput,
+  JournalTradeCreateInput,
+  JournalTradeDetail,
+  JournalTradeExitRecord,
+  JournalTradeListItem,
+  JournalTradeRecord,
+  JournalTradeReviewRecord,
+} from "./types.js";
 
 function buildEntryWeek(entryDate: string): string {
   const date = new Date(`${entryDate}T00:00:00Z`);
@@ -14,8 +30,181 @@ function buildEntryDay(entryDate: string): string {
   return new Date(`${entryDate}T00:00:00Z`).toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" });
 }
 
+function toNumber(value: string | null): number | null {
+  if (value === null) {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatMoneyString(value: number | null): string | null {
+  return value === null ? null : value.toFixed(2);
+}
+
+function buildInFilter(field: string, ids: string[]): string {
+  return `${field}=in.(${ids.join(",")})`;
+}
+
+function buildSoldForUsd(latestExit: JournalTradeExitRecord | null): string | null {
+  if (!latestExit) {
+    return null;
+  }
+
+  const optionExitPrice = toNumber(latestExit.option_exit_price);
+  if (optionExitPrice === null) {
+    return null;
+  }
+
+  return formatMoneyString(optionExitPrice * latestExit.quantity_closed * 100);
+}
+
+function buildTradeDetail(
+  trade: JournalTradeRecord,
+  exitsByTradeId: Map<string, JournalTradeExitRecord[]>,
+  reviewByTradeId: Map<string, JournalTradeReviewRecord>,
+): JournalTradeDetail {
+  const exits = exitsByTradeId.get(trade.id) ?? [];
+  const latestExit = exits[0] ?? null;
+  const review = reviewByTradeId.get(trade.id) ?? null;
+
+  return {
+    ...trade,
+    entry_day: buildEntryDay(trade.entry_date),
+    entry_week: buildEntryWeek(trade.entry_date),
+    exits,
+    latest_exit: latestExit,
+    review,
+    sold_for_usd: buildSoldForUsd(latestExit),
+  };
+}
+
+async function fetchTradeExits(tradeIds: string[]): Promise<JournalTradeExitRecord[]> {
+  if (tradeIds.length === 0) {
+    return [];
+  }
+
+  return await supabaseSelect<JournalTradeExitRecord>({
+    table: "journal_exits",
+    select: "*",
+    filters: [buildInFilter("trade_id", tradeIds)],
+    order: ["exit_time.desc"],
+  });
+}
+
+async function fetchTradeReviews(tradeIds: string[]): Promise<JournalTradeReviewRecord[]> {
+  if (tradeIds.length === 0) {
+    return [];
+  }
+
+  return await supabaseSelect<JournalTradeReviewRecord>({
+    table: "journal_reviews",
+    select: "*",
+    filters: [buildInFilter("trade_id", tradeIds)],
+  });
+}
+
+async function hydrateJournalTrades(trades: JournalTradeRecord[]): Promise<JournalTradeDetail[]> {
+  if (trades.length === 0) {
+    return [];
+  }
+
+  const tradeIds = trades.map((trade) => trade.id);
+  const [exits, reviews] = await Promise.all([
+    fetchTradeExits(tradeIds),
+    fetchTradeReviews(tradeIds),
+  ]);
+
+  const exitsByTradeId = exits.reduce((map, exit) => {
+    const existing = map.get(exit.trade_id) ?? [];
+    existing.push(exit);
+    map.set(exit.trade_id, existing);
+    return map;
+  }, new Map<string, JournalTradeExitRecord[]>());
+  const reviewByTradeId = reviews.reduce((map, review) => {
+    map.set(review.trade_id, review);
+    return map;
+  }, new Map<string, JournalTradeReviewRecord>());
+
+  return trades.map((trade) => buildTradeDetail(trade, exitsByTradeId, reviewByTradeId));
+}
+
+function toListItem(detail: JournalTradeDetail): JournalTradeListItem {
+  return {
+    id: detail.id,
+    created_at: detail.created_at,
+    entry_date: detail.entry_date,
+    symbol: detail.symbol,
+    direction: detail.direction,
+    setup_type: detail.setup_type,
+    status: detail.status,
+    account_mode: detail.account_mode,
+    position_cost_usd: detail.position_cost_usd,
+    option_entry_price: detail.option_entry_price,
+    contracts: detail.contracts,
+    entry_day: detail.entry_day,
+    entry_week: detail.entry_week,
+    exit_option_price: detail.latest_exit?.option_exit_price ?? null,
+    sold_for_usd: detail.sold_for_usd,
+    realized_pl_usd: detail.review?.realized_pl_usd ?? null,
+    realized_r_multiple: detail.review?.realized_r_multiple ?? null,
+    realized_return_pct: detail.review?.realized_return_pct ?? null,
+    winner: detail.review?.winner ?? null,
+    latest_exit_reason: detail.latest_exit?.exit_reason ?? null,
+  };
+}
+
+async function listJournalTradeRecords(limit = 50): Promise<JournalTradeRecord[]> {
+  return await supabaseSelect<JournalTradeRecord>({
+    table: "journal_trades",
+    select: "*",
+    order: ["entry_date.desc", "created_at.desc"],
+    limit,
+  });
+}
+
+function inferQuantityClosed(trade: JournalTradeRecord, requestedQuantity: number | null | undefined): number {
+  if (typeof requestedQuantity === "number" && requestedQuantity > 0) {
+    return requestedQuantity;
+  }
+
+  if (typeof trade.contracts === "number" && trade.contracts > 0) {
+    return trade.contracts;
+  }
+
+  const optionEntryPrice = toNumber(trade.option_entry_price);
+  const positionCostUsd = toNumber(trade.position_cost_usd);
+  if (optionEntryPrice !== null && optionEntryPrice > 0 && positionCostUsd !== null && positionCostUsd > 0) {
+    const derivedContracts = Math.round(positionCostUsd / (optionEntryPrice * 100));
+    if (derivedContracts > 0) {
+      return derivedContracts;
+    }
+  }
+
+  throw new Error("Could not infer quantity_closed for this trade. Please provide it explicitly.");
+}
+
+function resolvePositionCostUsd(
+  contracts: number | null | undefined,
+  optionEntryPrice: number | null | undefined,
+  plannedPositionCostUsd: number,
+): number {
+  if (
+    typeof contracts === "number"
+    && contracts > 0
+    && typeof optionEntryPrice === "number"
+    && optionEntryPrice > 0
+  ) {
+    return contracts * optionEntryPrice * 100;
+  }
+
+  return plannedPositionCostUsd;
+}
+
 export async function createJournalTrade(input: JournalTradeCreateInput): Promise<JournalTradeRecord> {
   const { planned_trade: planned, signal_snapshot_json, ...entry } = input;
+  const positionCostUsd = resolvePositionCostUsd(entry.contracts, entry.option_entry_price, planned.position_cost_usd);
 
   const insertPayload = {
     scan_run_id: planned.scan_run_id ?? null,
@@ -27,7 +216,7 @@ export async function createJournalTrade(input: JournalTradeCreateInput): Promis
     expiration_date: planned.expiration_date ?? null,
     dte_at_entry: planned.dte_at_entry ?? null,
     contracts: entry.contracts ?? null,
-    position_cost_usd: planned.position_cost_usd,
+    position_cost_usd: positionCostUsd,
     underlying_entry_price: planned.underlying_entry_price ?? null,
     option_entry_price: entry.option_entry_price ?? null,
     planned_risk_usd: planned.planned_risk_usd ?? null,
@@ -50,26 +239,117 @@ export async function createJournalTrade(input: JournalTradeCreateInput): Promis
 }
 
 export async function listRecentJournalTrades(limit = 50): Promise<JournalTradeListItem[]> {
-  const data = await supabaseSelect<Omit<JournalTradeListItem, "entry_day" | "entry_week">>({
-    table: "journal_trades",
-    select: "id,created_at,entry_date,symbol,direction,setup_type,status,account_mode,position_cost_usd,option_entry_price",
-    order: ["entry_date.desc", "created_at.desc"],
-    limit,
-  });
-
-  return (data ?? []).map((trade) => ({
-    ...(trade as Omit<JournalTradeListItem, "entry_day" | "entry_week">),
-    entry_day: buildEntryDay(String(trade.entry_date)),
-    entry_week: buildEntryWeek(String(trade.entry_date)),
-  }));
+  const trades = await listJournalTradeRecords(limit);
+  const details = await hydrateJournalTrades(trades);
+  return details.map(toListItem);
 }
 
-export async function getJournalTradeById(id: string): Promise<JournalTradeRecord | null> {
+export async function listJournalTradeDetails(limit = 200): Promise<JournalTradeDetail[]> {
+  const trades = await listJournalTradeRecords(limit);
+  return await hydrateJournalTrades(trades);
+}
+
+export async function getJournalTradeById(id: string): Promise<JournalTradeDetail | null> {
   const data = await supabaseSelect<JournalTradeRecord>({
     table: "journal_trades",
     select: "*",
     filters: [`id=eq.${id}`],
     single: "maybeSingle",
   });
-  return data[0] ?? null;
+  const trade = data[0] ?? null;
+  if (!trade) {
+    return null;
+  }
+
+  const hydrated = await hydrateJournalTrades([trade]);
+  return hydrated[0] ?? null;
+}
+
+export async function closeJournalTrade(id: string, input: JournalTradeCloseInput): Promise<JournalTradeDetail> {
+  const trade = await getJournalTradeById(id);
+  if (!trade) {
+    throw new Error("Journal trade not found.");
+  }
+
+  const quantityClosed = inferQuantityClosed(trade, input.quantity_closed);
+  const optionExitPrice = input.option_exit_price ?? (
+    input.sold_for_usd !== null && input.sold_for_usd !== undefined
+      ? input.sold_for_usd / (quantityClosed * 100)
+      : null
+  );
+  if (optionExitPrice === null || optionExitPrice <= 0) {
+    throw new Error("option_exit_price is required to close a trade.");
+  }
+
+  const soldForUsd = optionExitPrice * quantityClosed * 100;
+  const feesUsd = input.fees_usd ?? 0;
+  const slippageUsd = input.slippage_usd ?? 0;
+  const positionCostUsd = toNumber(trade.position_cost_usd) ?? 0;
+  const plannedRiskUsd = toNumber(trade.planned_risk_usd);
+  const realizedPlUsd = soldForUsd - positionCostUsd - feesUsd - slippageUsd;
+  const realizedRMultiple = plannedRiskUsd !== null && plannedRiskUsd > 0
+    ? realizedPlUsd / plannedRiskUsd
+    : null;
+  const realizedReturnPct = positionCostUsd > 0 ? (realizedPlUsd / positionCostUsd) * 100 : null;
+
+  await supabaseInsertAndSelectOne<JournalTradeExitRecord>({
+    table: "journal_exits",
+    values: {
+      trade_id: id,
+      exit_time: input.exit_timestamp,
+      option_exit_price: optionExitPrice,
+      quantity_closed: quantityClosed,
+      exit_reason: input.exit_reason,
+      fees_usd: feesUsd,
+      slippage_usd: slippageUsd,
+      exit_notes: input.exit_notes ?? null,
+    },
+  });
+
+  await supabaseUpsertAndSelectOne<JournalTradeReviewRecord>({
+    table: "journal_reviews",
+    onConflict: "trade_id",
+    values: {
+      trade_id: id,
+      winner: realizedPlUsd > 0,
+      realized_pl_usd: realizedPlUsd,
+      realized_r_multiple: realizedRMultiple,
+      realized_return_pct: realizedReturnPct,
+      rule_break_tags: [],
+      lessons_learned: input.lessons_learned ?? null,
+      review_notes: input.review_notes ?? null,
+    },
+  });
+
+  await supabaseUpdateAndSelectOne<JournalTradeRecord>({
+    table: "journal_trades",
+    filters: [`id=eq.${id}`],
+    values: {
+      status: "closed",
+    },
+  });
+
+  const refreshedTrade = await getJournalTradeById(id);
+  if (!refreshedTrade) {
+    throw new Error("Closed trade could not be reloaded.");
+  }
+
+  return refreshedTrade;
+}
+
+export async function deleteJournalTrade(id: string): Promise<void> {
+  const trade = await getJournalTradeById(id);
+  if (!trade) {
+    throw new Error("Journal trade not found.");
+  }
+
+  await supabaseDelete({
+    table: "journal_trades",
+    filters: [`id=eq.${id}`],
+  });
+}
+
+export async function getJournalInsights(limit = 500): Promise<JournalInsights> {
+  const details = await listJournalTradeDetails(limit);
+  return buildJournalInsights(details);
 }
