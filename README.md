@@ -204,17 +204,27 @@ A minimal UI is available at the project root (`/`) for running the existing sca
 - The API reuses existing engine functions (`runScan` and `constructTradeCard`) without changing scan/trade logic.
 - If no confirmed setup exists, the UI shows `no_trade_today`.
 - If confirmed, it shows the scan reasoning and full trade card plus an **I took this trade** modal that persists to Supabase via `POST /api/journal`.
+- The page now also shows journal insights, recent journal trades, and lets you close a trade with realized P/L and review notes.
 
 This UI is intentionally thin and does not place orders.
 
-## Supabase trade journal (Phase 1)
+## Supabase trade journal
 
-Phase 1 adds durable server-side journal persistence using Supabase Postgres.
+The journal uses durable server-side persistence in Supabase Postgres.
 
 - `POST /api/journal` validates and stores an initial journal trade entry.
 - `GET /api/journal` returns recent entries.
 - `GET /api/journal/:id` returns one entry.
+- `PATCH /api/journal/:id` stores a trade closeout and review summary.
+- `GET /api/journal/insights` returns journal analytics such as win rate, weekday profitability, setup performance, and recent winner/loser reasoning comparisons.
 - Schema migrations live in `supabase/migrations`.
+
+Saved journal entries now keep richer scanner context in `signal_snapshot_json`, including:
+
+- scan result and scan reasoning
+- workflow presentation summary
+- trade-card rationale and expected timing
+- a journal-friendly reasoning snapshot for later winner/loser comparisons
 
 Required env vars:
 

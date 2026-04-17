@@ -132,6 +132,70 @@
         color: #243b7a;
         font-weight: 600;
       }
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+        gap: 12px;
+      }
+      .stat-card {
+        border: 1px solid #e5e5e5;
+        border-radius: 8px;
+        padding: 12px;
+        background: #fafafa;
+      }
+      .stat-label {
+        color: #555;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+      .stat-value {
+        font-size: 22px;
+        font-weight: 700;
+        margin-top: 6px;
+      }
+      .section-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 16px;
+      }
+      .journal-trade,
+      .comparison-card {
+        border: 1px solid #e5e5e5;
+        border-radius: 8px;
+        padding: 12px;
+        margin-top: 12px;
+        background: #fafafa;
+      }
+      .status-chip {
+        display: inline-block;
+        padding: 3px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .status-open {
+        background: #eef6ea;
+        color: #285c2b;
+      }
+      .status-closed {
+        background: #e8f0fb;
+        color: #23426d;
+      }
+      .inline-actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 10px;
+      }
+      .comparison-card h4,
+      .journal-trade h4 {
+        margin-bottom: 8px;
+      }
+      .mono {
+        font-family: Menlo, Monaco, Consolas, monospace;
+        font-size: 12px;
+      }
     </style>
   </head>
   <body>
@@ -154,6 +218,22 @@
       <div class="card">
         <h2>Result</h2>
         <div id="resultArea">No run yet.</div>
+      </div>
+
+      <div class="card">
+        <div class="actions" style="justify-content: space-between; align-items: center;">
+          <h2 style="margin-bottom: 0;">Journal Insights</h2>
+          <button id="refreshInsightsButton" class="secondary">Refresh Insights</button>
+        </div>
+        <div id="journalInsightsArea" class="muted">Loading insights...</div>
+      </div>
+
+      <div class="card">
+        <div class="actions" style="justify-content: space-between; align-items: center;">
+          <h2 style="margin-bottom: 0;">Journal Trades</h2>
+          <button id="refreshJournalButton" class="secondary">Refresh Trades</button>
+        </div>
+        <div id="journalTradesArea" class="muted">Loading trades...</div>
       </div>
     </main>
 
@@ -189,8 +269,55 @@
       </div>
     </div>
 
+    <div class="modal" id="closeTradeModal" role="dialog" aria-modal="true" aria-label="Close trade">
+      <div class="modal-content">
+        <h3 id="closeTradeTitle">Close trade</h3>
+
+        <label for="closeQuantity">Quantity closed</label>
+        <input id="closeQuantity" type="number" step="1" placeholder="e.g. 3" />
+
+        <label for="closeSoldFor">Sold for (total USD proceeds)</label>
+        <input id="closeSoldFor" type="number" step="0.01" placeholder="e.g. 1480" />
+
+        <label for="closeExitDate">Exit date</label>
+        <input id="closeExitDate" type="date" />
+
+        <label for="closeExitTime">Exit time</label>
+        <input id="closeExitTime" type="time" />
+
+        <label for="closeExitReason">Exit reason</label>
+        <select id="closeExitReason">
+          <option value="target_hit">Target</option>
+          <option value="stop_hit">Stop</option>
+          <option value="time_exit">Time Exit</option>
+          <option value="manual_early_exit">Manual Exit</option>
+          <option value="rule_violation">Rule Violation</option>
+          <option value="partial_profit">Partial Profit</option>
+          <option value="other">Other</option>
+        </select>
+
+        <label for="closeLessonsLearned">Lessons learned</label>
+        <textarea id="closeLessonsLearned" rows="3" placeholder="What stood out about this trade?"></textarea>
+
+        <label for="closeReviewNotes">Review notes</label>
+        <textarea id="closeReviewNotes" rows="3" placeholder="Anything to remember next time"></textarea>
+
+        <div id="closeTradeStatus" class="muted"></div>
+
+        <div class="actions">
+          <button id="saveCloseTrade">Save closeout</button>
+          <button id="closeCloseTradeModal" class="secondary">Close</button>
+        </div>
+      </div>
+    </div>
+
     <script>
       let defaultScanPrompt = "";
+      let latestTradeLog = null;
+      let latestBackendData = null;
+      let journalTrades = [];
+      let journalInsights = null;
+      let selectedTradeToClose = null;
 
       const runScanButton = document.getElementById("runScanButton");
       const promptInput = document.getElementById("prompt");
@@ -203,12 +330,26 @@
       const entryDateInput = document.getElementById("entryDate");
       const entryTimeInput = document.getElementById("entryTime");
       const accountModeInput = document.getElementById("accountMode");
+      const journalInsightsArea = document.getElementById("journalInsightsArea");
+      const journalTradesArea = document.getElementById("journalTradesArea");
+      const refreshInsightsButton = document.getElementById("refreshInsightsButton");
+      const refreshJournalButton = document.getElementById("refreshJournalButton");
+      const closeTradeModal = document.getElementById("closeTradeModal");
+      const closeTradeTitle = document.getElementById("closeTradeTitle");
+      const closeQuantityInput = document.getElementById("closeQuantity");
+      const closeSoldForInput = document.getElementById("closeSoldFor");
+      const closeExitDateInput = document.getElementById("closeExitDate");
+      const closeExitTimeInput = document.getElementById("closeExitTime");
+      const closeExitReasonInput = document.getElementById("closeExitReason");
+      const closeLessonsLearnedInput = document.getElementById("closeLessonsLearned");
+      const closeReviewNotesInput = document.getElementById("closeReviewNotes");
+      const closeTradeStatus = document.getElementById("closeTradeStatus");
+      const saveCloseTradeButton = document.getElementById("saveCloseTrade");
+      const closeCloseTradeModalButton = document.getElementById("closeCloseTradeModal");
 
-      let latestTradeLog = null;
       if (defaultPromptText) {
         defaultPromptText.textContent = "Loading...";
       }
-      let latestBackendData = null;
 
       function escapeHtml(value) {
         return String(value)
@@ -221,6 +362,41 @@
 
       function renderMaybe(value, fallback = "n/a") {
         return value === null || value === undefined || value === "" ? fallback : String(value);
+      }
+
+      function asNumber(value) {
+        if (typeof value === "number" && Number.isFinite(value)) {
+          return value;
+        }
+        if (typeof value === "string" && value.trim().length > 0) {
+          const parsed = Number(value.replaceAll(",", ""));
+          return Number.isFinite(parsed) ? parsed : null;
+        }
+        return null;
+      }
+
+      function formatMoney(value) {
+        const parsed = asNumber(value);
+        if (parsed === null) {
+          return renderMaybe(value);
+        }
+        return `$${parsed.toFixed(2)}`;
+      }
+
+      function formatPercent(value, digits = 1) {
+        const parsed = asNumber(value);
+        if (parsed === null) {
+          return "n/a";
+        }
+        return `${(parsed * (Math.abs(parsed) <= 1 ? 100 : 1)).toFixed(digits)}%`;
+      }
+
+      function formatRatio(value) {
+        const parsed = asNumber(value);
+        if (parsed === null) {
+          return "n/a";
+        }
+        return `${parsed.toFixed(2)}R`;
       }
 
       function renderList(items) {
@@ -236,11 +412,11 @@
           return "<div class=\"muted\">None</div>";
         }
         return entries
-          .map(([key, value]) => `<div class=\"row\"><strong>${escapeHtml(key)}:</strong> ${escapeHtml(String(value))}</div>`)
+          .map(([key, value]) => `<div class="row"><strong>${escapeHtml(key)}:</strong> ${escapeHtml(String(value))}</div>`)
           .join("");
       }
 
-      function openModal() {
+      function openTradeEntryModal() {
         if (entryDateInput && !entryDateInput.value) {
           entryDateInput.value = new Date().toISOString().slice(0, 10);
         }
@@ -250,8 +426,56 @@
         tradeModal.style.display = "flex";
       }
 
-      function closeModal() {
+      function closeTradeEntryModal() {
+        if (tradeModalStatus) {
+          tradeModalStatus.textContent = "";
+        }
         tradeModal.style.display = "none";
+      }
+
+      function openCloseTradeModal(tradeId) {
+        selectedTradeToClose = journalTrades.find((trade) => trade.id === tradeId) || null;
+        if (!selectedTradeToClose) {
+          return;
+        }
+
+        if (closeTradeTitle) {
+          closeTradeTitle.textContent = `Close ${selectedTradeToClose.symbol}`;
+        }
+        if (closeQuantityInput) {
+          closeQuantityInput.value = selectedTradeToClose.contracts ? String(selectedTradeToClose.contracts) : "";
+        }
+        if (closeSoldForInput) {
+          closeSoldForInput.value = "";
+        }
+        if (closeLessonsLearnedInput) {
+          closeLessonsLearnedInput.value = "";
+        }
+        if (closeReviewNotesInput) {
+          closeReviewNotesInput.value = "";
+        }
+        if (closeExitReasonInput) {
+          closeExitReasonInput.value = "target_hit";
+        }
+        const now = new Date();
+        if (closeExitDateInput) {
+          closeExitDateInput.value = now.toISOString().slice(0, 10);
+        }
+        if (closeExitTimeInput) {
+          closeExitTimeInput.value = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+        }
+        if (closeTradeStatus) {
+          closeTradeStatus.textContent = "";
+        }
+        closeTradeModal.style.display = "flex";
+      }
+
+      function closeTradeReviewModal() {
+        selectedTradeToClose = null;
+        if (closeTradeStatus) {
+          closeTradeStatus.textContent = "";
+        }
+        closeTradeModal.style.display = "none";
       }
 
       async function loadDefaults() {
@@ -270,6 +494,50 @@
             defaultPromptText.textContent = "Unavailable";
           }
         }
+      }
+
+      async function loadJournalTrades() {
+        if (journalTradesArea) {
+          journalTradesArea.innerHTML = '<div class="muted">Loading trades...</div>';
+        }
+
+        try {
+          const response = await fetch("/api/journal");
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data?.message || "Failed to load journal trades.");
+          }
+          journalTrades = Array.isArray(data.trades) ? data.trades : [];
+          renderJournalTrades();
+        } catch (error) {
+          if (journalTradesArea) {
+            journalTradesArea.innerHTML = `<div class="muted">${escapeHtml(error instanceof Error ? error.message : "Failed to load journal trades.")}</div>`;
+          }
+        }
+      }
+
+      async function loadJournalInsights() {
+        if (journalInsightsArea) {
+          journalInsightsArea.innerHTML = '<div class="muted">Loading insights...</div>';
+        }
+
+        try {
+          const response = await fetch("/api/journal/insights");
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data?.message || "Failed to load journal insights.");
+          }
+          journalInsights = data?.insights || null;
+          renderJournalInsights();
+        } catch (error) {
+          if (journalInsightsArea) {
+            journalInsightsArea.innerHTML = `<div class="muted">${escapeHtml(error instanceof Error ? error.message : "Failed to load journal insights.")}</div>`;
+          }
+        }
+      }
+
+      async function refreshJournalData() {
+        await Promise.all([loadJournalTrades(), loadJournalInsights()]);
       }
 
       function renderDebugDetailsPanel() {
@@ -292,14 +560,14 @@
 
         return `
           <ul>
-            ${items.map((item, index) => `<li>${escapeHtml(item.symbol)} — ranked #${index + 1} — Stage 3 rank score ${escapeHtml(renderMaybe(Number.isFinite(item.stage3RankScore) ? Number(item.stage3RankScore).toFixed(2) : item.stage3RankScore))} — ${escapeHtml(renderMaybe(item.outcome))}${item.detail ? ` <span class="muted">(${escapeHtml(item.detail)})</span>` : ''}</li>`).join('')}
+            ${items.map((item, index) => `<li>${escapeHtml(item.symbol)} - ranked #${index + 1} - Stage 3 rank score ${escapeHtml(renderMaybe(Number.isFinite(item.stage3RankScore) ? Number(item.stage3RankScore).toFixed(2) : item.stage3RankScore))} - ${escapeHtml(renderMaybe(item.outcome))}${item.detail ? ` <span class="muted">(${escapeHtml(item.detail)})</span>` : ""}</li>`).join("")}
           </ul>
         `;
       }
 
       function renderPresentationSummary(summary) {
         if (!summary) {
-          return '';
+          return "";
         }
 
         const geometry = summary.finalChartGeometry;
@@ -393,8 +661,9 @@
         const planned = latestBackendData?.journalPlannedTrade || null;
         const contractsMatch = (latestBackendData?.tradeCard?.buy || "").match(/^(\d+)x/i);
         const contractsFromCard = contractsMatch ? contractsMatch[1] : "";
-        if (document.getElementById("quantity") && !document.getElementById("quantity").value) {
-          document.getElementById("quantity").value = contractsFromCard;
+        const quantityInput = document.getElementById("quantity");
+        if (quantityInput && !quantityInput.value) {
+          quantityInput.value = contractsFromCard;
         }
         if (entryDateInput && !entryDateInput.value) {
           entryDateInput.value = new Date().toISOString().slice(0, 10);
@@ -414,14 +683,189 @@
         `;
 
         const tookTradeButton = document.getElementById("tookTradeButton");
-        tookTradeButton?.addEventListener("click", openModal);
+        tookTradeButton?.addEventListener("click", openTradeEntryModal);
 
         if (latestTradeLog) {
           const holder = document.getElementById("localTradeCapture");
           if (holder) {
-            holder.innerHTML = `<h4>Local capture</h4><pre>${escapeHtml(JSON.stringify(latestTradeLog, null, 2))}</pre>`;
+            holder.innerHTML = `<h4>Saved journal entry</h4><pre>${escapeHtml(JSON.stringify(latestTradeLog, null, 2))}</pre>`;
           }
         }
+      }
+
+      function buildSavedReasoningSnapshot() {
+        const symbol = latestBackendData?.scan?.ticker || latestBackendData?.journalPlannedTrade?.symbol || null;
+        const telemetry = latestBackendData?.telemetry || latestBackendData?.scan?.telemetry || null;
+        const stage3PassedDetail = Array.isArray(telemetry?.stage3PassedDetails)
+          ? telemetry.stage3PassedDetails.find((item) => item?.symbol === symbol)
+          : null;
+        const rankingDetail = Array.isArray(telemetry?.finalRankingDebug)
+          ? telemetry.finalRankingDebug.find((item) => item?.symbol === symbol)
+          : null;
+        const reviewedOutcome = Array.isArray(telemetry?.reviewedFinalistOutcomes)
+          ? telemetry.reviewedFinalistOutcomes.find((item) => item?.symbol === symbol)
+          : null;
+
+        return {
+          scan_reason: latestBackendData?.scan?.reason || null,
+          concise_reasoning: latestBackendData?.presentationSummary?.conciseReasoning || null,
+          why_this_won: latestBackendData?.presentationSummary?.whyThisWon || null,
+          chart_geometry: latestBackendData?.presentationSummary?.finalChartGeometry || null,
+          review_ladder: latestBackendData?.presentationSummary?.reviewLadder || [],
+          stage3_summary: stage3PassedDetail?.summary || null,
+          stage3_why_passed: stage3PassedDetail?.whyPassed || null,
+          review_outcome_reason: reviewedOutcome?.reason || null,
+          confirmation_failure_reasons: reviewedOutcome?.confirmationFailureReasons || [],
+          volume_ratio: rankingDetail?.scoreInputs?.volumeRatio ?? null,
+          chart_review_score: rankingDetail?.scoreInputs?.chartReviewScore ?? null,
+          expected_timing: latestBackendData?.tradeCard?.expectedTiming || null,
+          trade_rationale: latestBackendData?.tradeCard?.rationale || null,
+        };
+      }
+
+      function renderInsightBucketList(title, buckets, formatter) {
+        if (!Array.isArray(buckets) || buckets.length === 0) {
+          return `
+            <div class="comparison-card">
+              <h4>${escapeHtml(title)}</h4>
+              <div class="muted">No data yet.</div>
+            </div>
+          `;
+        }
+
+        return `
+          <div class="comparison-card">
+            <h4>${escapeHtml(title)}</h4>
+            <ul>
+              ${buckets.map((bucket) => `<li>${escapeHtml(bucket.label)} - ${escapeHtml(formatter(bucket))}</li>`).join("")}
+            </ul>
+          </div>
+        `;
+      }
+
+      function renderReasoningExamples(title, items) {
+        if (!Array.isArray(items) || items.length === 0) {
+          return `
+            <div class="comparison-card">
+              <h4>${escapeHtml(title)}</h4>
+              <div class="muted">No closed trades in this bucket yet.</div>
+            </div>
+          `;
+        }
+
+        return `
+          <div class="comparison-card">
+            <h4>${escapeHtml(title)}</h4>
+            ${items.map((item) => `
+              <div class="journal-trade">
+                <div class="row"><strong>${escapeHtml(renderMaybe(item.symbol))}</strong> | ${escapeHtml(renderMaybe(item.entry_date))} | ${escapeHtml(renderMaybe(item.setup_type))}</div>
+                <div class="row"><strong>P/L:</strong> ${escapeHtml(formatMoney(item.realized_pl_usd))} | <strong>Realized:</strong> ${escapeHtml(formatRatio(item.realized_r_multiple))}</div>
+                <div class="row"><strong>Exit reason:</strong> ${escapeHtml(renderMaybe(item.exit_reason))}</div>
+                <div class="row"><strong>Concise reasoning:</strong> ${escapeHtml(renderMaybe(item.reasoning?.concise_reasoning))}</div>
+                <div class="row"><strong>Stage 3 summary:</strong> ${escapeHtml(renderMaybe(item.reasoning?.stage3_summary))}</div>
+                <div class="row"><strong>Trade rationale:</strong> ${escapeHtml(renderMaybe(item.reasoning?.trade_rationale))}</div>
+                <div class="row"><strong>Notes:</strong> ${escapeHtml(renderMaybe(item.review_notes || item.entry_notes, "n/a"))}</div>
+              </div>
+            `).join("")}
+          </div>
+        `;
+      }
+
+      function renderJournalInsights() {
+        if (!journalInsightsArea) {
+          return;
+        }
+
+        if (!journalInsights) {
+          journalInsightsArea.innerHTML = '<div class="muted">No insight data yet.</div>';
+          return;
+        }
+
+        const totals = journalInsights.totals || {};
+        journalInsightsArea.innerHTML = `
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-label">Total Trades</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(totals.total_trades, "0"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Closed Trades</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(totals.closed_trades, "0"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Win Rate</div>
+              <div class="stat-value">${escapeHtml(formatPercent(totals.win_rate, 1))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Net P/L</div>
+              <div class="stat-value">${escapeHtml(formatMoney(totals.total_realized_pl_usd))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Average R</div>
+              <div class="stat-value">${escapeHtml(formatRatio(totals.average_r_multiple))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Best Day</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(totals.best_day_of_week))}</div>
+            </div>
+          </div>
+
+          <div class="section-grid" style="margin-top: 16px;">
+            ${renderInsightBucketList("Profitability by Day", journalInsights.by_day_of_week, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`)}
+            ${renderInsightBucketList("Performance by Setup", journalInsights.by_setup_type, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)}`)}
+            ${renderInsightBucketList("Best Symbols", journalInsights.by_symbol, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`)}
+          </div>
+
+          <div class="section-grid" style="margin-top: 16px;">
+            ${renderReasoningExamples("Recent Winner Reasoning", journalInsights.recent_winners)}
+            ${renderReasoningExamples("Recent Loser Reasoning", journalInsights.recent_losers)}
+          </div>
+        `;
+      }
+
+      function renderJournalTrades() {
+        if (!journalTradesArea) {
+          return;
+        }
+
+        if (!Array.isArray(journalTrades) || journalTrades.length === 0) {
+          journalTradesArea.innerHTML = '<div class="muted">No journal trades yet.</div>';
+          return;
+        }
+
+        journalTradesArea.innerHTML = journalTrades.map((trade) => `
+          <div class="journal-trade">
+            <div class="row">
+              <strong>${escapeHtml(renderMaybe(trade.symbol))}</strong>
+              <span class="status-chip ${trade.status === "closed" ? "status-closed" : "status-open"}">${escapeHtml(renderMaybe(trade.status))}</span>
+            </div>
+            <div class="row"><strong>Entry:</strong> ${escapeHtml(renderMaybe(trade.entry_date))} (${escapeHtml(renderMaybe(trade.entry_day))}) | <strong>Setup:</strong> ${escapeHtml(renderMaybe(trade.setup_type))}</div>
+            <div class="row"><strong>Direction:</strong> ${escapeHtml(renderMaybe(trade.direction))} | <strong>Contracts:</strong> ${escapeHtml(renderMaybe(trade.contracts))}</div>
+            <div class="row"><strong>Position:</strong> ${escapeHtml(formatMoney(trade.position_cost_usd))} | <strong>Entry option price:</strong> ${escapeHtml(formatMoney(trade.option_entry_price))}</div>
+            <div class="row"><strong>Sold for:</strong> ${escapeHtml(formatMoney(trade.sold_for_usd))} | <strong>P/L:</strong> ${escapeHtml(formatMoney(trade.realized_pl_usd))} | <strong>Realized:</strong> ${escapeHtml(formatRatio(trade.realized_r_multiple))}</div>
+            <div class="row"><strong>Winner:</strong> ${escapeHtml(renderMaybe(trade.winner, "n/a"))} | <strong>Exit reason:</strong> ${escapeHtml(renderMaybe(trade.latest_exit_reason))}</div>
+            ${trade.status === "open" ? `
+              <div class="inline-actions">
+                <button class="secondary" data-close-trade-id="${escapeHtml(trade.id)}">Close and review</button>
+              </div>
+            ` : ""}
+          </div>
+        `).join("");
+      }
+
+      function buildExitTimestamp() {
+        const dateValue = closeExitDateInput?.value || "";
+        const timeValue = closeExitTimeInput?.value || "15:55";
+        if (!dateValue) {
+          throw new Error("Exit date is required.");
+        }
+
+        const localTimestamp = new Date(`${dateValue}T${timeValue}:00`);
+        if (Number.isNaN(localTimestamp.getTime())) {
+          throw new Error("Exit date/time is invalid.");
+        }
+
+        return localTimestamp.toISOString();
       }
 
       runScanButton.addEventListener("click", async () => {
@@ -441,13 +885,9 @@
           const contentType = response.headers.get("content-type") || "";
           const isJsonResponse = contentType.toLowerCase().includes("application/json");
 
-          console.log("[workflow] response status:", response.status);
-          console.log("[workflow] content-type:", contentType || "(missing)");
-
           if (!isJsonResponse) {
             const text = await response.text();
             const preview = text.slice(0, 200);
-            console.log("[workflow] unexpected text response preview:", preview || "(empty)");
             resultArea.textContent = `Workflow request failed: ${preview || "Empty response from server."}`;
             return;
           }
@@ -456,9 +896,9 @@
           latestBackendData = data;
 
           if (!response.ok) {
-            const message = data && typeof data.message === "string"
+            const message = typeof data?.message === "string"
               ? data.message
-              : data && typeof data.error === "string"
+              : typeof data?.error === "string"
                 ? data.error
                 : "Request failed.";
             resultArea.textContent = message;
@@ -478,75 +918,150 @@
         }
       });
 
-      closeModalButton.addEventListener("click", closeModal);
+      closeModalButton.addEventListener("click", closeTradeEntryModal);
       tradeModal.addEventListener("click", (event) => {
         if (event.target === tradeModal) {
-          closeModal();
+          closeTradeEntryModal();
         }
       });
 
+      closeCloseTradeModalButton.addEventListener("click", closeTradeReviewModal);
+      closeTradeModal.addEventListener("click", (event) => {
+        if (event.target === closeTradeModal) {
+          closeTradeReviewModal();
+        }
+      });
+
+      refreshInsightsButton?.addEventListener("click", loadJournalInsights);
+      refreshJournalButton?.addEventListener("click", loadJournalTrades);
+      journalTradesArea?.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) {
+          return;
+        }
+
+        const closeButton = target.closest("[data-close-trade-id]");
+        if (!closeButton) {
+          return;
+        }
+
+        openCloseTradeModal(closeButton.getAttribute("data-close-trade-id"));
+      });
+
       loadDefaults();
+      refreshJournalData();
 
-      saveTradeLogButton.addEventListener("click", () => {
-        (async () => {
-          try {
-            saveTradeLogButton.disabled = true;
-            if (tradeModalStatus) {
-              tradeModalStatus.textContent = "Saving...";
-            }
-
-            const plannedTrade = latestBackendData?.journalPlannedTrade;
-            if (!plannedTrade) {
-              throw new Error("No planned trade data was available from workflow response.");
-            }
-
-            const payload = {
-              account_mode: accountModeInput.value,
-              entry_date: entryDateInput.value,
-              entry_time: entryTimeInput.value || null,
-              contracts: document.getElementById("quantity").value || null,
-              option_entry_price: document.getElementById("actualEntry").value || null,
-              entry_notes: document.getElementById("note").value || null,
-              planned_trade: {
-                ...plannedTrade,
-                scan_run_id: latestBackendData?.scan_run_id || null,
-                symbol: plannedTrade.symbol || latestBackendData?.scan?.ticker,
-                direction: plannedTrade.direction || latestBackendData?.scan?.direction,
-                setup_type: plannedTrade.setup_type || "scanner_trade",
-              },
-              signal_snapshot_json: {
-                scan: latestBackendData?.scan || null,
-                tradeCard: latestBackendData?.tradeCard || null,
-              },
-            };
-
-            const response = await fetch("/api/journal", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify(payload),
-            });
-            const data = await response.json();
-            if (!response.ok) {
-              throw new Error(data?.message || "Failed to save journal trade.");
-            }
-
-            latestTradeLog = data.trade;
-            if (tradeModalStatus) {
-              tradeModalStatus.textContent = "Saved successfully.";
-            }
-            closeModal();
-            const holder = document.getElementById("localTradeCapture");
-            if (holder) {
-              holder.innerHTML = `<h4>Journal entry</h4><pre>${escapeHtml(JSON.stringify(latestTradeLog, null, 2))}</pre>`;
-            }
-          } catch (error) {
-            if (tradeModalStatus) {
-              tradeModalStatus.textContent = error instanceof Error ? error.message : "Unexpected save error.";
-            }
-          } finally {
-            saveTradeLogButton.disabled = false;
+      saveTradeLogButton.addEventListener("click", async () => {
+        try {
+          saveTradeLogButton.disabled = true;
+          if (tradeModalStatus) {
+            tradeModalStatus.textContent = "Saving...";
           }
-        })();
+
+          const plannedTrade = latestBackendData?.journalPlannedTrade;
+          if (!plannedTrade) {
+            throw new Error("No planned trade data was available from workflow response.");
+          }
+
+          const payload = {
+            account_mode: accountModeInput.value,
+            entry_date: entryDateInput.value,
+            entry_time: entryTimeInput.value || null,
+            contracts: document.getElementById("quantity").value || null,
+            option_entry_price: document.getElementById("actualEntry").value || null,
+            entry_notes: document.getElementById("note").value || null,
+            planned_trade: {
+              ...plannedTrade,
+              scan_run_id: latestBackendData?.scan_run_id || null,
+              symbol: plannedTrade.symbol || latestBackendData?.scan?.ticker,
+              direction: plannedTrade.direction || latestBackendData?.scan?.direction,
+              setup_type: plannedTrade.setup_type || "scanner_trade",
+            },
+            signal_snapshot_json: {
+              scan: latestBackendData?.scan || null,
+              telemetry: latestBackendData?.telemetry || latestBackendData?.scan?.telemetry || null,
+              tradeCard: latestBackendData?.tradeCard || null,
+              presentationSummary: latestBackendData?.presentationSummary || null,
+              reasoningSnapshot: buildSavedReasoningSnapshot(),
+            },
+          };
+
+          const response = await fetch("/api/journal", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data?.message || "Failed to save journal trade.");
+          }
+
+          latestTradeLog = data.trade;
+          closeTradeEntryModal();
+          await refreshJournalData();
+
+          const holder = document.getElementById("localTradeCapture");
+          if (holder) {
+            holder.innerHTML = `<h4>Journal entry</h4><pre>${escapeHtml(JSON.stringify(latestTradeLog, null, 2))}</pre>`;
+          }
+        } catch (error) {
+          if (tradeModalStatus) {
+            tradeModalStatus.textContent = error instanceof Error ? error.message : "Unexpected save error.";
+          }
+        } finally {
+          saveTradeLogButton.disabled = false;
+        }
+      });
+
+      saveCloseTradeButton.addEventListener("click", async () => {
+        try {
+          if (!selectedTradeToClose) {
+            throw new Error("Select a trade to close first.");
+          }
+
+          const soldForUsd = Number(closeSoldForInput.value);
+          const quantityClosed = closeQuantityInput.value ? Number(closeQuantityInput.value) : null;
+          if (!Number.isFinite(soldForUsd) || soldForUsd <= 0) {
+            throw new Error("Sold for must be a positive number.");
+          }
+          if (quantityClosed !== null && (!Number.isFinite(quantityClosed) || quantityClosed <= 0)) {
+            throw new Error("Quantity closed must be a positive whole number.");
+          }
+
+          saveCloseTradeButton.disabled = true;
+          if (closeTradeStatus) {
+            closeTradeStatus.textContent = "Saving closeout...";
+          }
+
+          const payload = {
+            sold_for_usd: soldForUsd,
+            exit_reason: closeExitReasonInput.value,
+            exit_timestamp: buildExitTimestamp(),
+            quantity_closed: quantityClosed,
+            lessons_learned: closeLessonsLearnedInput.value || null,
+            review_notes: closeReviewNotesInput.value || null,
+          };
+
+          const response = await fetch(`/api/journal/${encodeURIComponent(selectedTradeToClose.id)}`, {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data?.message || "Failed to close journal trade.");
+          }
+
+          latestTradeLog = data.trade;
+          closeTradeReviewModal();
+          await refreshJournalData();
+        } catch (error) {
+          if (closeTradeStatus) {
+            closeTradeStatus.textContent = error instanceof Error ? error.message : "Unexpected closeout error.";
+          }
+        } finally {
+          saveCloseTradeButton.disabled = false;
+        }
       });
     </script>
   </body>
