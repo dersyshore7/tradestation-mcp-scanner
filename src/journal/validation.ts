@@ -224,9 +224,16 @@ export function validateJournalTradeCreatePayload(payload: unknown): JournalTrad
 
 export function validateJournalTradeClosePayload(payload: unknown): JournalTradeCloseInput {
   const input = asRecord(payload);
+  const optionExitPrice = optionalPositiveNumber(input.option_exit_price, "option_exit_price");
+  const soldForUsd = optionalPositiveNumber(input.sold_for_usd, "sold_for_usd");
+
+  if (optionExitPrice === null && soldForUsd === null) {
+    throw new Error("option_exit_price is required.");
+  }
 
   return {
-    sold_for_usd: parsePositiveMoney(input.sold_for_usd, "sold_for_usd"),
+    option_exit_price: optionExitPrice,
+    sold_for_usd: soldForUsd,
     exit_reason: normalizeExitReason(input.exit_reason),
     exit_timestamp: parseIsoTimestamp(input.exit_timestamp, "exit_timestamp"),
     quantity_closed: optionalIntegerGreaterThanZero(input.quantity_closed, "quantity_closed"),

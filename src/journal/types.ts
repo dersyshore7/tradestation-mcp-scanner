@@ -47,7 +47,8 @@ export type JournalTradeCreateInput = {
 };
 
 export type JournalTradeCloseInput = {
-  sold_for_usd: number;
+  option_exit_price?: number | null;
+  sold_for_usd?: number | null;
   exit_reason: JournalExitReason;
   exit_timestamp: string;
   quantity_closed?: number | null;
@@ -128,6 +129,7 @@ export type JournalTradeListItem = Pick<
 > & {
   entry_day: string;
   entry_week: string;
+  exit_option_price: string | null;
   sold_for_usd: string | null;
   realized_pl_usd: string | null;
   realized_r_multiple: string | null;

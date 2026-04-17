@@ -5,29 +5,78 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>TradeStation Scanner UI</title>
     <style>
+      :root {
+        --bg: #f3f5ef;
+        --bg-accent: #e7efe6;
+        --card: rgba(255, 255, 255, 0.92);
+        --card-strong: #ffffff;
+        --border: #d6ddd2;
+        --border-strong: #b8c5bb;
+        --text: #172117;
+        --muted-text: #5b675d;
+        --accent: #215c45;
+        --accent-soft: #edf7f1;
+        --accent-border: #b8d7c5;
+        --danger: #9a4037;
+        --danger-soft: #fbe9e5;
+        --danger-border: #efc7bf;
+        --neutral-soft: #f6f8f5;
+        --info-soft: #ebf1fb;
+        --shadow: 0 14px 38px rgba(27, 41, 29, 0.08);
+      }
       body {
-        font-family: Arial, sans-serif;
+        font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
         margin: 0;
-        background: #f7f7f8;
-        color: #111;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top left, var(--bg-accent) 0, transparent 34%),
+          linear-gradient(180deg, #fafcf8 0%, var(--bg) 100%);
+        color: var(--text);
       }
       main {
-        max-width: 860px;
-        margin: 40px auto;
-        padding: 0 16px;
+        max-width: 1040px;
+        margin: 48px auto 72px;
+        padding: 0 20px;
+      }
+      .page-header {
+        margin-bottom: 22px;
+      }
+      .page-kicker {
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-bottom: 10px;
+      }
+      .page-subtitle {
+        max-width: 760px;
+        color: var(--muted-text);
+        margin: 10px 0 0;
+        line-height: 1.55;
       }
       .card {
-        background: white;
-        border: 1px solid #ddd;
-        border-radius: 8px;
-        padding: 16px;
-        margin-bottom: 16px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 20px;
+        margin-bottom: 18px;
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(8px);
       }
       h1,
       h2,
       h3,
       h4 {
         margin-top: 0;
+      }
+      h1 {
+        font-size: clamp(2rem, 4vw, 3rem);
+        letter-spacing: -0.03em;
+        margin-bottom: 0;
+      }
+      h2 {
+        margin-bottom: 4px;
       }
       label {
         display: block;
@@ -45,22 +94,38 @@
       textarea {
         width: 100%;
         box-sizing: border-box;
-        border: 1px solid #ccc;
-        border-radius: 6px;
-        padding: 8px;
+        border: 1px solid var(--border-strong);
+        border-radius: 10px;
+        padding: 10px 12px;
         margin-bottom: 12px;
+        background: rgba(255, 255, 255, 0.96);
+        color: var(--text);
+      }
+      input:focus,
+      select:focus,
+      textarea:focus {
+        outline: 2px solid rgba(33, 92, 69, 0.15);
+        border-color: var(--accent);
       }
       button {
-        border: 1px solid #222;
-        border-radius: 6px;
-        background: #111;
+        border: 1px solid #163628;
+        border-radius: 10px;
+        background: linear-gradient(180deg, #173b2d 0%, #0e241b 100%);
         color: #fff;
-        padding: 8px 12px;
+        padding: 10px 14px;
+        font-weight: 600;
         cursor: pointer;
+        transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+      }
+      button:hover:not(:disabled) {
+        transform: translateY(-1px);
+        box-shadow: 0 10px 24px rgba(14, 36, 27, 0.18);
       }
       button.secondary {
-        background: white;
-        color: #111;
+        background: rgba(255, 255, 255, 0.88);
+        color: var(--text);
+        border-color: var(--border-strong);
+        box-shadow: none;
       }
       button:disabled {
         opacity: 0.6;
@@ -68,40 +133,65 @@
       }
       .row {
         margin-bottom: 8px;
+        line-height: 1.5;
       }
       .muted {
-        color: #555;
+        color: var(--muted-text);
       }
       .hr {
         border: 0;
-        border-top: 1px solid #eee;
-        margin: 12px 0;
+        border-top: 1px solid var(--border);
+        margin: 16px 0;
       }
       .modal {
         position: fixed;
         inset: 0;
-        background: rgba(0, 0, 0, 0.45);
+        background: rgba(14, 20, 16, 0.58);
         display: none;
         align-items: center;
         justify-content: center;
         padding: 16px;
+        backdrop-filter: blur(8px);
       }
       .modal-content {
         width: 100%;
-        max-width: 480px;
-        background: white;
-        border-radius: 8px;
-        border: 1px solid #ddd;
-        padding: 16px;
+        max-width: 560px;
+        background: var(--card-strong);
+        border-radius: 20px;
+        border: 1px solid var(--border);
+        padding: 22px;
+        box-shadow: 0 24px 60px rgba(12, 18, 14, 0.22);
+        max-height: calc(100vh - 32px);
+        overflow-y: auto;
       }
       .actions {
         display: flex;
         gap: 8px;
+        flex-wrap: wrap;
+      }
+      .panel-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+      .section-description {
+        color: var(--muted-text);
+        margin: 0;
+        font-size: 14px;
+      }
+      .field-note {
+        margin: -4px 0 12px;
+        color: var(--muted-text);
+        font-size: 13px;
+        line-height: 1.45;
       }
       pre {
-        background: #fafafa;
-        border: 1px solid #e5e5e5;
-        border-radius: 6px;
+        background: #f8faf7;
+        border: 1px solid var(--border);
+        border-radius: 12px;
         padding: 12px;
         overflow-x: auto;
         margin: 8px 0;
@@ -112,6 +202,7 @@
       summary {
         cursor: pointer;
         font-weight: 600;
+        color: var(--text);
       }
       #advancedPromptFields {
         margin-top: 10px;
@@ -119,17 +210,29 @@
 
       .summary-section {
         margin-bottom: 16px;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 14px;
+        background: rgba(251, 252, 249, 0.92);
       }
       .summary-section ul {
-        margin: 8px 0 0 18px;
+        margin: 8px 0 0 0;
         padding: 0;
+        list-style: none;
+      }
+      .summary-section li {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: #fff;
+        padding: 10px 12px;
+        margin-top: 8px;
       }
       .pill {
         display: inline-block;
         border-radius: 999px;
-        padding: 4px 10px;
-        background: #eef2ff;
-        color: #243b7a;
+        padding: 5px 10px;
+        background: var(--accent-soft);
+        color: var(--accent);
         font-weight: 600;
       }
       .stats-grid {
@@ -138,13 +241,21 @@
         gap: 12px;
       }
       .stat-card {
-        border: 1px solid #e5e5e5;
-        border-radius: 8px;
-        padding: 12px;
-        background: #fafafa;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 14px;
+        background: linear-gradient(180deg, #ffffff 0%, var(--neutral-soft) 100%);
+      }
+      .stat-card.tone-positive {
+        background: linear-gradient(180deg, #ffffff 0%, var(--accent-soft) 100%);
+        border-color: var(--accent-border);
+      }
+      .stat-card.tone-negative {
+        background: linear-gradient(180deg, #ffffff 0%, var(--danger-soft) 100%);
+        border-color: var(--danger-border);
       }
       .stat-label {
-        color: #555;
+        color: var(--muted-text);
         font-size: 12px;
         text-transform: uppercase;
         letter-spacing: 0.03em;
@@ -154,33 +265,137 @@
         font-weight: 700;
         margin-top: 6px;
       }
+      .tone-positive {
+        color: var(--accent);
+      }
+      .tone-negative {
+        color: var(--danger);
+      }
+      .tone-neutral {
+        color: var(--text);
+      }
       .section-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-        gap: 16px;
+        gap: 18px;
       }
       .journal-trade,
       .comparison-card {
-        border: 1px solid #e5e5e5;
-        border-radius: 8px;
-        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 14px;
         margin-top: 12px;
-        background: #fafafa;
+        background: rgba(251, 252, 249, 0.94);
+      }
+      .comparison-card {
+        margin-top: 0;
       }
       .status-chip {
         display: inline-block;
-        padding: 3px 8px;
+        padding: 4px 9px;
         border-radius: 999px;
         font-size: 12px;
         font-weight: 700;
       }
       .status-open {
-        background: #eef6ea;
-        color: #285c2b;
+        background: var(--accent-soft);
+        color: var(--accent);
       }
       .status-closed {
-        background: #e8f0fb;
-        color: #23426d;
+        background: var(--info-soft);
+        color: #27486f;
+      }
+      .winner-chip {
+        display: inline-block;
+        padding: 4px 9px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .chip-positive {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+      .chip-negative {
+        background: var(--danger-soft);
+        color: var(--danger);
+      }
+      .chip-neutral {
+        background: #eef1ef;
+        color: #4d5a51;
+      }
+      .trade-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+      }
+      .trade-title {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 6px;
+      }
+      .trade-symbol {
+        font-size: 18px;
+      }
+      .trade-caption {
+        color: var(--muted-text);
+      }
+      .trade-metrics {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+        gap: 10px;
+        margin: 12px 0;
+      }
+      .metric-card {
+        border: 1px solid var(--border);
+        border-radius: 13px;
+        background: #fff;
+        padding: 10px 12px;
+      }
+      .metric-eyebrow {
+        color: var(--muted-text);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .metric-value {
+        font-size: 16px;
+        font-weight: 700;
+        margin-top: 4px;
+      }
+      .metric-note {
+        margin-top: 4px;
+        color: var(--muted-text);
+        font-size: 13px;
+      }
+      .trade-footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-top: 12px;
+      }
+      .trade-footer-copy {
+        flex: 1 1 280px;
+      }
+      .bucket-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: grid;
+        gap: 8px;
+      }
+      .bucket-list li {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: #fff;
+        padding: 10px 12px;
       }
       .inline-actions {
         display: flex;
@@ -196,11 +411,49 @@
         font-family: Menlo, Monaco, Consolas, monospace;
         font-size: 12px;
       }
+      .empty-state {
+        border: 1px dashed var(--border-strong);
+        border-radius: 14px;
+        padding: 16px;
+        background: rgba(255, 255, 255, 0.7);
+        color: var(--muted-text);
+      }
+      @media (max-width: 680px) {
+        main {
+          margin-top: 28px;
+          padding: 0 14px 24px;
+        }
+        .card,
+        .modal-content {
+          padding: 16px;
+        }
+        .panel-header {
+          align-items: stretch;
+        }
+        .panel-header .actions,
+        .actions {
+          width: 100%;
+        }
+        button,
+        button.secondary {
+          flex: 1 1 auto;
+          justify-content: center;
+        }
+        .trade-header,
+        .trade-footer {
+          align-items: stretch;
+        }
+      }
     </style>
   </head>
   <body>
     <main>
-      <h1>Scanner Workflow</h1>
+      <section class="page-header">
+        <div class="page-kicker">Trade Review Workspace</div>
+        <h1>Scanner Workflow</h1>
+        <p class="page-subtitle">Run the scanner, capture the exact trade you actually took, and compare winners against losers with the saved reasoning and technical context that led to the setup.</p>
+      </section>
+
       <div class="card">
         <div class="row muted">Run the standard weekly scan with one click.</div>
         <div class="row"><strong>Default prompt:</strong> <code id="defaultPromptText"></code></div>
@@ -216,22 +469,37 @@
       </div>
 
       <div class="card">
-        <h2>Result</h2>
+        <div class="panel-header">
+          <div>
+            <h2>Result</h2>
+            <p class="section-description">Latest scan output, chosen setup, and any local trade capture from this session.</p>
+          </div>
+        </div>
         <div id="resultArea">No run yet.</div>
       </div>
 
       <div class="card">
-        <div class="actions" style="justify-content: space-between; align-items: center;">
-          <h2 style="margin-bottom: 0;">Journal Insights</h2>
-          <button id="refreshInsightsButton" class="secondary">Refresh Insights</button>
+        <div class="panel-header">
+          <div>
+            <h2>Journal Insights</h2>
+            <p class="section-description">Quick readouts on trade quality, outcomes, and the reasoning patterns behind winners and losers.</p>
+          </div>
+          <div class="actions">
+            <button id="refreshInsightsButton" class="secondary">Refresh Insights</button>
+          </div>
         </div>
         <div id="journalInsightsArea" class="muted">Loading insights...</div>
       </div>
 
       <div class="card">
-        <div class="actions" style="justify-content: space-between; align-items: center;">
-          <h2 style="margin-bottom: 0;">Journal Trades</h2>
-          <button id="refreshJournalButton" class="secondary">Refresh Trades</button>
+        <div class="panel-header">
+          <div>
+            <h2>Journal Trades</h2>
+            <p class="section-description">Recent trades with actual fills, exits, and a fast way to close or delete entries.</p>
+          </div>
+          <div class="actions">
+            <button id="refreshJournalButton" class="secondary">Refresh Trades</button>
+          </div>
         </div>
         <div id="journalTradesArea" class="muted">Loading trades...</div>
       </div>
@@ -242,6 +510,7 @@
         <h3>I took this trade</h3>
         <label for="actualEntry">Actual entry price</label>
         <input id="actualEntry" type="number" step="0.01" placeholder="e.g. 2.15" />
+        <div class="field-note">Use the actual option premium you paid per contract so the journal math matches your real fill.</div>
 
         <label for="quantity">Quantity / contracts</label>
         <input id="quantity" type="number" step="1" placeholder="e.g. 3" />
@@ -276,8 +545,9 @@
         <label for="closeQuantity">Quantity closed</label>
         <input id="closeQuantity" type="number" step="1" placeholder="e.g. 3" />
 
-        <label for="closeSoldFor">Sold for (total USD proceeds)</label>
-        <input id="closeSoldFor" type="number" step="0.01" placeholder="e.g. 1480" />
+        <label for="closeSoldFor">Exit option price (per contract)</label>
+        <input id="closeSoldFor" type="number" step="0.01" placeholder="e.g. 3.20" />
+        <div class="field-note">Enter the option premium you sold at per contract. Total proceeds are calculated automatically.</div>
 
         <label for="closeExitDate">Exit date</label>
         <input id="closeExitDate" type="date" />
@@ -397,6 +667,55 @@
           return "n/a";
         }
         return `${parsed.toFixed(2)}R`;
+      }
+
+      function numberToneClass(value) {
+        const parsed = asNumber(value);
+        if (parsed === null || parsed === 0) {
+          return "tone-neutral";
+        }
+        return parsed > 0 ? "tone-positive" : "tone-negative";
+      }
+
+      function winRateToneClass(value) {
+        const parsed = asNumber(value);
+        if (parsed === null) {
+          return "tone-neutral";
+        }
+        const percent = Math.abs(parsed) <= 1 ? parsed * 100 : parsed;
+        if (percent <= 0) {
+          return "tone-negative";
+        }
+        if (percent >= 50) {
+          return "tone-positive";
+        }
+        return "tone-neutral";
+      }
+
+      function tradeOutcomeLabel(trade) {
+        if (trade.status !== "closed") {
+          return "Open";
+        }
+        if (trade.winner === true) {
+          return "Win";
+        }
+        if (trade.winner === false) {
+          return "Loss";
+        }
+        return "Closed";
+      }
+
+      function tradeOutcomeClass(trade) {
+        if (trade.status !== "closed") {
+          return "chip-neutral";
+        }
+        if (trade.winner === true) {
+          return "chip-positive";
+        }
+        if (trade.winner === false) {
+          return "chip-negative";
+        }
+        return "chip-neutral";
       }
 
       function renderList(items) {
@@ -754,7 +1073,7 @@
           return `
             <div class="comparison-card">
               <h4>${escapeHtml(title)}</h4>
-              <div class="muted">No data yet.</div>
+              <div class="empty-state">No data yet.</div>
             </div>
           `;
         }
@@ -762,7 +1081,7 @@
         return `
           <div class="comparison-card">
             <h4>${escapeHtml(title)}</h4>
-            <ul>
+            <ul class="bucket-list">
               ${buckets.map((bucket) => `<li>${escapeHtml(bucket.label)} - ${escapeHtml(formatter(bucket))}</li>`).join("")}
             </ul>
           </div>
@@ -774,7 +1093,7 @@
           return `
             <div class="comparison-card">
               <h4>${escapeHtml(title)}</h4>
-              <div class="muted">No closed trades in this bucket yet.</div>
+              <div class="empty-state">No closed trades in this bucket yet.</div>
             </div>
           `;
         }
@@ -820,11 +1139,14 @@
         }
 
         if (!journalInsights) {
-          journalInsightsArea.innerHTML = '<div class="muted">No insight data yet.</div>';
+          journalInsightsArea.innerHTML = '<div class="empty-state">No insight data yet.</div>';
           return;
         }
 
         const totals = journalInsights.totals || {};
+        const netPlTone = numberToneClass(totals.total_realized_pl_usd);
+        const avgRTone = numberToneClass(totals.average_r_multiple);
+        const winRateTone = winRateToneClass(totals.win_rate);
         journalInsightsArea.innerHTML = `
           <div class="stats-grid">
             <div class="stat-card">
@@ -832,20 +1154,28 @@
               <div class="stat-value">${escapeHtml(renderMaybe(totals.total_trades, "0"))}</div>
             </div>
             <div class="stat-card">
+              <div class="stat-label">Open Trades</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(totals.open_trades, "0"))}</div>
+            </div>
+            <div class="stat-card">
               <div class="stat-label">Closed Trades</div>
               <div class="stat-value">${escapeHtml(renderMaybe(totals.closed_trades, "0"))}</div>
             </div>
-            <div class="stat-card">
+            <div class="stat-card ${escapeHtml(winRateTone)}">
               <div class="stat-label">Win Rate</div>
-              <div class="stat-value">${escapeHtml(formatPercent(totals.win_rate, 1))}</div>
+              <div class="stat-value ${escapeHtml(winRateTone)}">${escapeHtml(formatPercent(totals.win_rate, 1))}</div>
             </div>
-            <div class="stat-card">
+            <div class="stat-card ${escapeHtml(netPlTone)}">
               <div class="stat-label">Net P/L</div>
-              <div class="stat-value">${escapeHtml(formatMoney(totals.total_realized_pl_usd))}</div>
+              <div class="stat-value ${escapeHtml(netPlTone)}">${escapeHtml(formatMoney(totals.total_realized_pl_usd))}</div>
+            </div>
+            <div class="stat-card ${escapeHtml(avgRTone)}">
+              <div class="stat-label">Average R</div>
+              <div class="stat-value ${escapeHtml(avgRTone)}">${escapeHtml(formatRatio(totals.average_r_multiple))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Average R</div>
-              <div class="stat-value">${escapeHtml(formatRatio(totals.average_r_multiple))}</div>
+              <div class="stat-label">Winners</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(totals.winners, "0"))}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Best Day</div>
@@ -872,27 +1202,64 @@
         }
 
         if (!Array.isArray(journalTrades) || journalTrades.length === 0) {
-          journalTradesArea.innerHTML = '<div class="muted">No journal trades yet.</div>';
+          journalTradesArea.innerHTML = '<div class="empty-state">No journal trades yet.</div>';
           return;
         }
 
-        journalTradesArea.innerHTML = journalTrades.map((trade) => `
-          <div class="journal-trade">
-            <div class="row">
-              <strong>${escapeHtml(renderMaybe(trade.symbol))}</strong>
-              <span class="status-chip ${trade.status === "closed" ? "status-closed" : "status-open"}">${escapeHtml(renderMaybe(trade.status))}</span>
+        journalTradesArea.innerHTML = journalTrades.map((trade) => {
+          const outcomeLabel = tradeOutcomeLabel(trade);
+          const outcomeClass = tradeOutcomeClass(trade);
+          const plTone = numberToneClass(trade.realized_pl_usd);
+
+          return `
+            <div class="journal-trade">
+              <div class="trade-header">
+                <div>
+                  <div class="trade-title">
+                    <strong class="trade-symbol">${escapeHtml(renderMaybe(trade.symbol))}</strong>
+                    <span class="status-chip ${trade.status === "closed" ? "status-closed" : "status-open"}">${escapeHtml(renderMaybe(trade.status))}</span>
+                    <span class="winner-chip ${escapeHtml(outcomeClass)}">${escapeHtml(outcomeLabel)}</span>
+                  </div>
+                  <div class="trade-caption">Entry ${escapeHtml(renderMaybe(trade.entry_date))} (${escapeHtml(renderMaybe(trade.entry_day))}) • ${escapeHtml(renderMaybe(trade.setup_type))}</div>
+                </div>
+                <div class="mono">${escapeHtml(renderMaybe(trade.direction))} • ${escapeHtml(renderMaybe(trade.account_mode))}</div>
+              </div>
+
+              <div class="trade-metrics">
+                <div class="metric-card">
+                  <div class="metric-eyebrow">Position</div>
+                  <div class="metric-value">${escapeHtml(formatMoney(trade.position_cost_usd))}</div>
+                  <div class="metric-note">${escapeHtml(renderMaybe(trade.contracts))} contract(s)</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-eyebrow">Entry Option Price</div>
+                  <div class="metric-value">${escapeHtml(formatMoney(trade.option_entry_price))}</div>
+                  <div class="metric-note">Actual fill per contract</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-eyebrow">Exit Option Price</div>
+                  <div class="metric-value">${escapeHtml(formatMoney(trade.exit_option_price))}</div>
+                  <div class="metric-note">${trade.status === "closed" ? `Sold for total ${escapeHtml(formatMoney(trade.sold_for_usd))}` : "Exit pending"}</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-eyebrow">P/L</div>
+                  <div class="metric-value ${escapeHtml(plTone)}">${escapeHtml(formatMoney(trade.realized_pl_usd))}</div>
+                  <div class="metric-note">Realized ${escapeHtml(formatRatio(trade.realized_r_multiple))}</div>
+                </div>
+              </div>
+
+              <div class="trade-footer">
+                <div class="trade-footer-copy">
+                  <div class="row"><strong>Exit reason:</strong> ${escapeHtml(renderMaybe(trade.latest_exit_reason, trade.status === "open" ? "not closed yet" : "n/a"))}</div>
+                </div>
+                <div class="inline-actions">
+                  ${trade.status === "open" ? `<button class="secondary" data-close-trade-id="${escapeHtml(trade.id)}">Close and review</button>` : ""}
+                  <button class="secondary" data-delete-trade-id="${escapeHtml(trade.id)}">Delete trade</button>
+                </div>
+              </div>
             </div>
-            <div class="row"><strong>Entry:</strong> ${escapeHtml(renderMaybe(trade.entry_date))} (${escapeHtml(renderMaybe(trade.entry_day))}) | <strong>Setup:</strong> ${escapeHtml(renderMaybe(trade.setup_type))}</div>
-            <div class="row"><strong>Direction:</strong> ${escapeHtml(renderMaybe(trade.direction))} | <strong>Contracts:</strong> ${escapeHtml(renderMaybe(trade.contracts))}</div>
-            <div class="row"><strong>Position:</strong> ${escapeHtml(formatMoney(trade.position_cost_usd))} | <strong>Entry option price:</strong> ${escapeHtml(formatMoney(trade.option_entry_price))}</div>
-            <div class="row"><strong>Sold for:</strong> ${escapeHtml(formatMoney(trade.sold_for_usd))} | <strong>P/L:</strong> ${escapeHtml(formatMoney(trade.realized_pl_usd))} | <strong>Realized:</strong> ${escapeHtml(formatRatio(trade.realized_r_multiple))}</div>
-            <div class="row"><strong>Winner:</strong> ${escapeHtml(renderMaybe(trade.winner, "n/a"))} | <strong>Exit reason:</strong> ${escapeHtml(renderMaybe(trade.latest_exit_reason))}</div>
-            <div class="inline-actions">
-              ${trade.status === "open" ? `<button class="secondary" data-close-trade-id="${escapeHtml(trade.id)}">Close and review</button>` : ""}
-              <button class="secondary" data-delete-trade-id="${escapeHtml(trade.id)}">Delete trade</button>
-            </div>
-          </div>
-        `).join("");
+          `;
+        }).join("");
       }
 
       function buildExitTimestamp() {
@@ -1096,10 +1463,10 @@
             throw new Error("Select a trade to close first.");
           }
 
-          const soldForUsd = Number(closeSoldForInput.value);
+          const optionExitPrice = Number(closeSoldForInput.value);
           const quantityClosed = closeQuantityInput.value ? Number(closeQuantityInput.value) : null;
-          if (!Number.isFinite(soldForUsd) || soldForUsd <= 0) {
-            throw new Error("Sold for must be a positive number.");
+          if (!Number.isFinite(optionExitPrice) || optionExitPrice <= 0) {
+            throw new Error("Exit option price must be a positive number.");
           }
           if (quantityClosed !== null && (!Number.isFinite(quantityClosed) || quantityClosed <= 0)) {
             throw new Error("Quantity closed must be a positive whole number.");
@@ -1111,7 +1478,7 @@
           }
 
           const payload = {
-            sold_for_usd: soldForUsd,
+            option_exit_price: optionExitPrice,
             exit_reason: closeExitReasonInput.value,
             exit_timestamp: buildExitTimestamp(),
             quantity_closed: quantityClosed,

@@ -145,6 +145,7 @@ function toListItem(detail: JournalTradeDetail): JournalTradeListItem {
     contracts: detail.contracts,
     entry_day: detail.entry_day,
     entry_week: detail.entry_week,
+    exit_option_price: detail.latest_exit?.option_exit_price ?? null,
     sold_for_usd: detail.sold_for_usd,
     realized_pl_usd: detail.review?.realized_pl_usd ?? null,
     realized_r_multiple: detail.review?.realized_r_multiple ?? null,
@@ -184,8 +185,26 @@ function inferQuantityClosed(trade: JournalTradeRecord, requestedQuantity: numbe
   throw new Error("Could not infer quantity_closed for this trade. Please provide it explicitly.");
 }
 
+function resolvePositionCostUsd(
+  contracts: number | null | undefined,
+  optionEntryPrice: number | null | undefined,
+  plannedPositionCostUsd: number,
+): number {
+  if (
+    typeof contracts === "number"
+    && contracts > 0
+    && typeof optionEntryPrice === "number"
+    && optionEntryPrice > 0
+  ) {
+    return contracts * optionEntryPrice * 100;
+  }
+
+  return plannedPositionCostUsd;
+}
+
 export async function createJournalTrade(input: JournalTradeCreateInput): Promise<JournalTradeRecord> {
   const { planned_trade: planned, signal_snapshot_json, ...entry } = input;
+  const positionCostUsd = resolvePositionCostUsd(entry.contracts, entry.option_entry_price, planned.position_cost_usd);
 
   const insertPayload = {
     scan_run_id: planned.scan_run_id ?? null,
@@ -197,7 +216,7 @@ export async function createJournalTrade(input: JournalTradeCreateInput): Promis
     expiration_date: planned.expiration_date ?? null,
     dte_at_entry: planned.dte_at_entry ?? null,
     contracts: entry.contracts ?? null,
-    position_cost_usd: planned.position_cost_usd,
+    position_cost_usd: positionCostUsd,
     underlying_entry_price: planned.underlying_entry_price ?? null,
     option_entry_price: entry.option_entry_price ?? null,
     planned_risk_usd: planned.planned_risk_usd ?? null,
@@ -253,12 +272,21 @@ export async function closeJournalTrade(id: string, input: JournalTradeCloseInpu
   }
 
   const quantityClosed = inferQuantityClosed(trade, input.quantity_closed);
-  const optionExitPrice = input.sold_for_usd / (quantityClosed * 100);
+  const optionExitPrice = input.option_exit_price ?? (
+    input.sold_for_usd !== null && input.sold_for_usd !== undefined
+      ? input.sold_for_usd / (quantityClosed * 100)
+      : null
+  );
+  if (optionExitPrice === null || optionExitPrice <= 0) {
+    throw new Error("option_exit_price is required to close a trade.");
+  }
+
+  const soldForUsd = optionExitPrice * quantityClosed * 100;
   const feesUsd = input.fees_usd ?? 0;
   const slippageUsd = input.slippage_usd ?? 0;
   const positionCostUsd = toNumber(trade.position_cost_usd) ?? 0;
   const plannedRiskUsd = toNumber(trade.planned_risk_usd);
-  const realizedPlUsd = input.sold_for_usd - positionCostUsd - feesUsd - slippageUsd;
+  const realizedPlUsd = soldForUsd - positionCostUsd - feesUsd - slippageUsd;
   const realizedRMultiple = plannedRiskUsd !== null && plannedRiskUsd > 0
     ? realizedPlUsd / plannedRiskUsd
     : null;
