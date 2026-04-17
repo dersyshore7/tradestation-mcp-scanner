@@ -705,12 +705,21 @@
         const reviewedOutcome = Array.isArray(telemetry?.reviewedFinalistOutcomes)
           ? telemetry.reviewedFinalistOutcomes.find((item) => item?.symbol === symbol)
           : null;
+        const finalistsDebugDetail = Array.isArray(telemetry?.finalistsReviewedDebug)
+          ? telemetry.finalistsReviewedDebug.find((item) => item?.symbol === symbol)
+          : null;
+        const finalChartGeometry = latestBackendData?.presentationSummary?.finalChartGeometry || null;
 
         return {
           scan_reason: latestBackendData?.scan?.reason || null,
           concise_reasoning: latestBackendData?.presentationSummary?.conciseReasoning || null,
           why_this_won: latestBackendData?.presentationSummary?.whyThisWon || null,
-          chart_geometry: latestBackendData?.presentationSummary?.finalChartGeometry || null,
+          chart_geometry: finalChartGeometry
+            ? {
+                ...finalChartGeometry,
+                final_chart_reward_risk: finalChartGeometry.finalChartRewardRisk || null,
+              }
+            : null,
           review_ladder: latestBackendData?.presentationSummary?.reviewLadder || [],
           stage3_summary: stage3PassedDetail?.summary || null,
           stage3_why_passed: stage3PassedDetail?.whyPassed || null,
@@ -720,6 +729,23 @@
           chart_review_score: rankingDetail?.scoreInputs?.chartReviewScore ?? null,
           expected_timing: latestBackendData?.tradeCard?.expectedTiming || null,
           trade_rationale: latestBackendData?.tradeCard?.rationale || null,
+          technical_snapshot: {
+            stage3_direction: stage3PassedDetail?.direction || reviewedOutcome?.direction || null,
+            move_pct: rankingDetail?.scoreInputs?.movePct ?? null,
+            volume_ratio: rankingDetail?.scoreInputs?.volumeRatio ?? null,
+            chart_review_score: rankingDetail?.scoreInputs?.chartReviewScore ?? null,
+            stage3_summary: stage3PassedDetail?.summary || null,
+            candlestick_checks: stage3PassedDetail?.whyPassed || null,
+            option_open_interest: rankingDetail?.scoreInputs?.optionOpenInterest ?? null,
+            option_spread: rankingDetail?.scoreInputs?.optionSpread ?? null,
+            option_mid: rankingDetail?.scoreInputs?.optionMid ?? null,
+            continuation_penalty: rankingDetail?.scoreInputs?.continuationPenalty ?? null,
+            final_invalidation: finalChartGeometry?.invalidation || null,
+            final_target: finalChartGeometry?.target || null,
+            support_or_invalidation: finalistsDebugDetail?.preReviewInvalReason || null,
+            resistance_or_target: finalistsDebugDetail?.preReviewTargetReason || null,
+            final_chart_reward_risk: finalChartGeometry?.finalChartRewardRisk || null,
+          },
         };
       }
 
@@ -758,13 +784,30 @@
             <h4>${escapeHtml(title)}</h4>
             ${items.map((item) => `
               <div class="journal-trade">
+                ${(() => {
+                  const reasoning = item.reasoning || {};
+                  const technical = reasoning.technical_snapshot || null;
+                  const primaryReasoning = reasoning.concise_reasoning || reasoning.scan_reason || null;
+                  const finalLevels = reasoning.chart_geometry
+                    ? `${renderMaybe(reasoning.chart_geometry.reference)} -> ${renderMaybe(technical?.final_invalidation || reasoning.chart_geometry.invalidation)} / ${renderMaybe(technical?.final_target || reasoning.chart_geometry.target)}`
+                    : null;
+
+                  return `
                 <div class="row"><strong>${escapeHtml(renderMaybe(item.symbol))}</strong> | ${escapeHtml(renderMaybe(item.entry_date))} | ${escapeHtml(renderMaybe(item.setup_type))}</div>
                 <div class="row"><strong>P/L:</strong> ${escapeHtml(formatMoney(item.realized_pl_usd))} | <strong>Realized:</strong> ${escapeHtml(formatRatio(item.realized_r_multiple))}</div>
                 <div class="row"><strong>Exit reason:</strong> ${escapeHtml(renderMaybe(item.exit_reason))}</div>
-                <div class="row"><strong>Concise reasoning:</strong> ${escapeHtml(renderMaybe(item.reasoning?.concise_reasoning))}</div>
-                <div class="row"><strong>Stage 3 summary:</strong> ${escapeHtml(renderMaybe(item.reasoning?.stage3_summary))}</div>
-                <div class="row"><strong>Trade rationale:</strong> ${escapeHtml(renderMaybe(item.reasoning?.trade_rationale))}</div>
+                <div class="row"><strong>Reasoning:</strong> ${escapeHtml(renderMaybe(primaryReasoning))}</div>
+                <div class="row"><strong>Stage 3 summary:</strong> ${escapeHtml(renderMaybe(reasoning.stage3_summary || technical?.stage3_summary))}</div>
+                <div class="row"><strong>Candlestick / structure checks:</strong> ${escapeHtml(renderMaybe(technical?.candlestick_checks))}</div>
+                <div class="row"><strong>Volume ratio:</strong> ${escapeHtml(renderMaybe(technical?.volume_ratio === null || technical?.volume_ratio === undefined ? null : `${Number(technical.volume_ratio).toFixed(2)}x`))} | <strong>Chart score:</strong> ${escapeHtml(renderMaybe(technical?.chart_review_score === null || technical?.chart_review_score === undefined ? null : Number(technical.chart_review_score).toFixed(2)))}</div>
+                <div class="row"><strong>Chart levels:</strong> ${escapeHtml(renderMaybe(finalLevels))}</div>
+                <div class="row"><strong>Support / invalidation:</strong> ${escapeHtml(renderMaybe(technical?.support_or_invalidation))}</div>
+                <div class="row"><strong>Resistance / target:</strong> ${escapeHtml(renderMaybe(technical?.resistance_or_target))}</div>
+                <div class="row"><strong>Final chart R:R:</strong> ${escapeHtml(renderMaybe(technical?.final_chart_reward_risk || reasoning.chart_geometry?.final_chart_reward_risk))}</div>
+                <div class="row"><strong>Trade rationale:</strong> ${escapeHtml(renderMaybe(reasoning.trade_rationale))}</div>
                 <div class="row"><strong>Notes:</strong> ${escapeHtml(renderMaybe(item.review_notes || item.entry_notes, "n/a"))}</div>
+                  `;
+                })()}
               </div>
             `).join("")}
           </div>
@@ -844,11 +887,10 @@
             <div class="row"><strong>Position:</strong> ${escapeHtml(formatMoney(trade.position_cost_usd))} | <strong>Entry option price:</strong> ${escapeHtml(formatMoney(trade.option_entry_price))}</div>
             <div class="row"><strong>Sold for:</strong> ${escapeHtml(formatMoney(trade.sold_for_usd))} | <strong>P/L:</strong> ${escapeHtml(formatMoney(trade.realized_pl_usd))} | <strong>Realized:</strong> ${escapeHtml(formatRatio(trade.realized_r_multiple))}</div>
             <div class="row"><strong>Winner:</strong> ${escapeHtml(renderMaybe(trade.winner, "n/a"))} | <strong>Exit reason:</strong> ${escapeHtml(renderMaybe(trade.latest_exit_reason))}</div>
-            ${trade.status === "open" ? `
-              <div class="inline-actions">
-                <button class="secondary" data-close-trade-id="${escapeHtml(trade.id)}">Close and review</button>
-              </div>
-            ` : ""}
+            <div class="inline-actions">
+              ${trade.status === "open" ? `<button class="secondary" data-close-trade-id="${escapeHtml(trade.id)}">Close and review</button>` : ""}
+              <button class="secondary" data-delete-trade-id="${escapeHtml(trade.id)}">Delete trade</button>
+            </div>
           </div>
         `).join("");
       }
@@ -941,11 +983,46 @@
         }
 
         const closeButton = target.closest("[data-close-trade-id]");
-        if (!closeButton) {
+        if (closeButton) {
+          openCloseTradeModal(closeButton.getAttribute("data-close-trade-id"));
           return;
         }
 
-        openCloseTradeModal(closeButton.getAttribute("data-close-trade-id"));
+        const deleteButton = target.closest("[data-delete-trade-id]");
+        if (!deleteButton) {
+          return;
+        }
+
+        const tradeId = deleteButton.getAttribute("data-delete-trade-id");
+        const trade = journalTrades.find((item) => item.id === tradeId) || null;
+        if (!tradeId || !trade) {
+          return;
+        }
+
+        const shouldDelete = window.confirm(`Delete ${trade.symbol} from the trade journal? This cannot be undone.`);
+        if (!shouldDelete) {
+          return;
+        }
+
+        (async () => {
+          try {
+            const response = await fetch(`/api/journal/${encodeURIComponent(tradeId)}`, {
+              method: "DELETE",
+            });
+            const data = await response.json();
+            if (!response.ok) {
+              throw new Error(data?.message || "Failed to delete journal trade.");
+            }
+
+            if (latestTradeLog?.id === tradeId) {
+              latestTradeLog = null;
+            }
+
+            await refreshJournalData();
+          } catch (error) {
+            window.alert(error instanceof Error ? error.message : "Failed to delete trade.");
+          }
+        })();
       });
 
       loadDefaults();

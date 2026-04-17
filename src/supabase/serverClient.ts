@@ -24,6 +24,11 @@ type SupabaseUpsertQuery = {
   onConflict: string;
 };
 
+type SupabaseDeleteQuery = {
+  table: string;
+  filters: string[];
+};
+
 function readEnv(name: string): string {
   const value = process.env[name];
   if (!value || value.trim().length === 0) {
@@ -132,6 +137,22 @@ export async function supabaseUpdateAndSelectOne<T>(query: SupabaseUpdateQuery):
     throw new Error(`Supabase update returned no rows for table ${query.table}.`);
   }
   return payload[0] as T;
+}
+
+export async function supabaseDelete(query: SupabaseDeleteQuery): Promise<void> {
+  const params = buildQueryParams(query.filters);
+  const response = await fetch(buildRestUrl(query.table, params), {
+    method: "DELETE",
+    headers: {
+      ...buildBaseHeaders(),
+      Prefer: "return=minimal",
+    },
+  });
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`Supabase delete failed (${response.status}): ${text}`);
+  }
 }
 
 export async function supabaseSelect<T>(query: SupabaseSelectQuery): Promise<T[]> {

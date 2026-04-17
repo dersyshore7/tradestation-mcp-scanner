@@ -161,6 +161,23 @@ export type JournalReasoningSnapshot = {
   chart_review_score: number | null;
   expected_timing: string | null;
   trade_rationale: string | null;
+  technical_snapshot: {
+    stage3_direction: string | null;
+    move_pct: number | null;
+    volume_ratio: number | null;
+    chart_review_score: number | null;
+    stage3_summary: string | null;
+    candlestick_checks: string | null;
+    option_open_interest: number | null;
+    option_spread: number | null;
+    option_mid: number | null;
+    continuation_penalty: number | null;
+    final_invalidation: string | null;
+    final_target: string | null;
+    support_or_invalidation: string | null;
+    resistance_or_target: string | null;
+    final_chart_reward_risk: string | null;
+  } | null;
 };
 
 export type JournalInsightBucket = {

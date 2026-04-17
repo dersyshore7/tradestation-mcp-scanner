@@ -1,4 +1,4 @@
-import { closeJournalTrade, getJournalTradeById } from "../../src/journal/repository.js";
+import { closeJournalTrade, deleteJournalTrade, getJournalTradeById } from "../../src/journal/repository.js";
 import { validateJournalTradeClosePayload } from "../../src/journal/validation.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "../journal/shared.js";
 
@@ -49,5 +49,17 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
     return;
   }
 
-  sendError(res, 404, "Use GET or PATCH /api/journal/:id");
+  if (req.method === "DELETE") {
+    try {
+      await deleteJournalTrade(id);
+      sendJson(res, 200, { deleted: true, id });
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete journal trade.";
+      sendError(res, message.toLowerCase().includes("not found") ? 404 : 500, message);
+    }
+    return;
+  }
+
+  sendError(res, 404, "Use GET, PATCH, or DELETE /api/journal/:id");
 }

@@ -1,5 +1,6 @@
 import { buildJournalInsights } from "./insights.js";
 import {
+  supabaseDelete,
   supabaseInsertAndSelectOne,
   supabaseSelect,
   supabaseUpdateAndSelectOne,
@@ -306,6 +307,18 @@ export async function closeJournalTrade(id: string, input: JournalTradeCloseInpu
   }
 
   return refreshedTrade;
+}
+
+export async function deleteJournalTrade(id: string): Promise<void> {
+  const trade = await getJournalTradeById(id);
+  if (!trade) {
+    throw new Error("Journal trade not found.");
+  }
+
+  await supabaseDelete({
+    table: "journal_trades",
+    filters: [`id=eq.${id}`],
+  });
 }
 
 export async function getJournalInsights(limit = 500): Promise<JournalInsights> {
