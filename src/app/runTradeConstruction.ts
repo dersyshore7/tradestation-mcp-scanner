@@ -5,6 +5,7 @@ import {
   type ChartAnchoredTradabilityResult,
   type RiskRewardTier,
 } from "./chartAnchoredTradability.js";
+import { validateLongPremiumOptionTranslation } from "../scanner/geometry.js";
 import {
   buildDirectOptionSymbols,
   fetchFirstUsableDirectOptionQuote,
@@ -626,6 +627,15 @@ async function buildTradeInputs(
     const targetMove = targetUnderlying - underlyingPrice;
     const optionAtInvalidation = Math.max(0.05, optionMid + (direction === "bullish" ? invalidationMove : -invalidationMove) * deltaAssumption);
     const optionAtTarget = Math.max(0.05, optionMid + (direction === "bullish" ? targetMove : -targetMove) * deltaAssumption);
+    const optionTranslationCheck = validateLongPremiumOptionTranslation(
+      optionMid,
+      optionAtInvalidation,
+      optionAtTarget,
+    );
+    if (!optionTranslationCheck.pass) {
+      diagnostics.failureReason = optionTranslationCheck.reason;
+      throw new TradeCardBlockedAfterConfirmationError(optionTranslationCheck.reason);
+    }
 
     const riskPerContract = Math.max(0.01, (optionMid - optionAtInvalidation) * 100);
     const rewardPerContract = Math.max(0.01, (optionAtTarget - optionMid) * 100);
