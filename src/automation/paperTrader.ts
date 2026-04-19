@@ -11,6 +11,7 @@ import {
   closeJournalTrade,
   createJournalTrade,
   listJournalTradeDetails,
+  updateJournalTradeSignalSnapshot,
 } from "../journal/repository.js";
 import type { JournalTradeDetail } from "../journal/types.js";
 import {
@@ -18,6 +19,10 @@ import {
   readPaperTraderConfig,
   type PaperTraderConfig,
 } from "./config.js";
+import {
+  decideAiManagementAction,
+  enforceAiManagementGuardrails,
+} from "./aiManager.js";
 import {
   createAutomationTradeStationClient,
   extractAverageFillPrice,
@@ -28,6 +33,14 @@ type PaperTraderRunOptions = {
   prompt?: string;
   dryRun?: boolean;
   source?: "api" | "cli";
+};
+
+type ChicagoClockParts = {
+  date: string;
+  time: string;
+  weekday: string;
+  hour: number;
+  minute: number;
 };
 
 type AutomationSnapshot = {
@@ -42,10 +55,30 @@ type AutomationSnapshot = {
       entryLimitPrice?: number;
       intendedStopUnderlying?: number;
       intendedTargetUnderlying?: number;
+      activeStopUnderlying?: number;
+      activeTargetUnderlying?: number;
       timeExitDate?: string;
       orderId?: string | null;
+      managementStyle?: "ai";
+      lastManagementAction?: "hold" | "update_levels" | "exit_now" | "fallback";
+      lastManagementConfidence?: "low" | "medium" | "high";
+      lastManagementNote?: string;
+      lastManagementThesis?: string;
+      lastManagementAt?: string;
+      managementHistory?: PaperTraderManagementHistoryEntry[];
     };
   };
+};
+
+type PaperTraderManagementHistoryEntry = {
+  timestamp: string;
+  action: "hold" | "update_levels" | "exit_now" | "fallback";
+  confidence?: "low" | "medium" | "high";
+  stopUnderlying?: number | null;
+  targetUnderlying?: number | null;
+  note: string;
+  thesis?: string | null;
+  rewardR?: number | null;
 };
 
 type PaperTraderAutomationSnapshot = NonNullable<
@@ -86,6 +119,14 @@ type PaperTraderRunResult = {
   };
   management: {
     inspected: number;
+    updates: {
+      tradeId: string;
+      symbol: string;
+      action: "ai_hold" | "ai_update_levels" | "ai_exit_now" | "ai_fallback";
+      stopUnderlying: number | null;
+      targetUnderlying: number | null;
+      note: string;
+    }[];
     exitsTriggered: {
       tradeId: string;
       symbol: string;
@@ -104,6 +145,7 @@ type PaperTraderRunResult = {
   entry: {
     attempted: boolean;
     outcome:
+      | "outside_market_hours"
       | "skipped_after_guard"
       | "no_trade_today"
       | "trade_card_blocked"
@@ -131,12 +173,10 @@ function readNumber(value: string | number | null | undefined): number | null {
   return null;
 }
 
-function formatChicagoParts(date = new Date()): {
-  date: string;
-  time: string;
-} {
+function formatChicagoParts(date = new Date()): ChicagoClockParts {
   const formatter = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/Chicago",
+    weekday: "short",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -155,11 +195,24 @@ function formatChicagoParts(date = new Date()): {
   return {
     date: `${values.year}-${values.month}-${values.day}`,
     time: `${values.hour}:${values.minute}:${values.second}`,
+    weekday: values.weekday ?? "Mon",
+    hour: Number(values.hour),
+    minute: Number(values.minute),
   };
 }
 
 function toChicagoDateString(isoTimestamp: string): string {
   return formatChicagoParts(new Date(isoTimestamp)).date;
+}
+
+function isRegularUsEquitySession(date = new Date()): boolean {
+  const chicago = formatChicagoParts(date);
+  if (chicago.weekday === "Sat" || chicago.weekday === "Sun") {
+    return false;
+  }
+
+  const minutes = (chicago.hour * 60) + chicago.minute;
+  return minutes >= (8 * 60) + 30 && minutes < 15 * 60;
 }
 
 function buildScanRunId(): string {
@@ -171,6 +224,169 @@ function readAutomationSnapshot(
 ): PaperTraderAutomationSnapshot | null {
   const snapshot = trade.signal_snapshot_json as AutomationSnapshot | null;
   return snapshot?.automation?.paperTrader ?? null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function buildUpdatedSignalSnapshot(
+  trade: JournalTradeDetail,
+  updates: Record<string, unknown>,
+): Record<string, unknown> {
+  const currentSnapshot = asRecord(trade.signal_snapshot_json) ?? {};
+  const automation = asRecord(currentSnapshot.automation) ?? {};
+  const paperTrader = asRecord(automation.paperTrader) ?? {};
+
+  return {
+    ...currentSnapshot,
+    automation: {
+      ...automation,
+      paperTrader: {
+        ...paperTrader,
+        ...updates,
+      },
+    },
+  };
+}
+
+function readManagementHistory(
+  automation: PaperTraderAutomationSnapshot | null,
+): PaperTraderManagementHistoryEntry[] {
+  return Array.isArray(automation?.managementHistory)
+    ? automation.managementHistory.filter((item): item is PaperTraderManagementHistoryEntry =>
+        !!item
+        && typeof item === "object"
+        && typeof (item as { timestamp?: unknown }).timestamp === "string"
+        && typeof (item as { action?: unknown }).action === "string"
+        && typeof (item as { note?: unknown }).note === "string"
+      )
+    : [];
+}
+
+function appendManagementHistory(
+  existing: PaperTraderManagementHistoryEntry[],
+  entry: PaperTraderManagementHistoryEntry,
+): PaperTraderManagementHistoryEntry[] {
+  return [...existing, entry].slice(-30);
+}
+
+function readActiveManagementLevels(
+  trade: JournalTradeDetail,
+  automation: PaperTraderAutomationSnapshot,
+): {
+  stopUnderlying: number | null;
+  targetUnderlying: number | null;
+} {
+  return {
+    stopUnderlying:
+      automation.activeStopUnderlying
+      ?? automation.intendedStopUnderlying
+      ?? readNumber(trade.intended_stop_underlying),
+    targetUnderlying:
+      automation.activeTargetUnderlying
+      ?? automation.intendedTargetUnderlying
+      ?? readNumber(trade.intended_target_underlying),
+  };
+}
+
+function computeProgressToTargetPct(params: {
+  direction: JournalTradeDetail["direction"];
+  entryUnderlyingPrice: number | null;
+  currentUnderlyingPrice: number | null;
+  targetUnderlyingPrice: number | null;
+}): number | null {
+  const { direction, entryUnderlyingPrice, currentUnderlyingPrice, targetUnderlyingPrice } = params;
+  if (
+    entryUnderlyingPrice === null
+    || currentUnderlyingPrice === null
+    || targetUnderlyingPrice === null
+    || entryUnderlyingPrice === targetUnderlyingPrice
+  ) {
+    return null;
+  }
+
+  const rawProgress = direction === "CALL"
+    ? (currentUnderlyingPrice - entryUnderlyingPrice) / (targetUnderlyingPrice - entryUnderlyingPrice)
+    : (entryUnderlyingPrice - currentUnderlyingPrice) / (entryUnderlyingPrice - targetUnderlyingPrice);
+
+  if (!Number.isFinite(rawProgress)) {
+    return null;
+  }
+
+  return Number((rawProgress * 100).toFixed(1));
+}
+
+function computeOptionReturnPct(
+  entryOptionPrice: number | null,
+  currentOptionMid: number | null,
+): number | null {
+  if (entryOptionPrice === null || currentOptionMid === null || entryOptionPrice <= 0) {
+    return null;
+  }
+
+  return Number((((currentOptionMid - entryOptionPrice) / entryOptionPrice) * 100).toFixed(1));
+}
+
+function readTradeRationale(trade: JournalTradeDetail): string | null {
+  const snapshot = asRecord(trade.signal_snapshot_json);
+  const tradeCard = asRecord(snapshot?.tradeCard);
+  return typeof tradeCard?.rationale === "string" ? tradeCard.rationale : null;
+}
+
+function summarizeCurrentManagementHistory(
+  history: PaperTraderManagementHistoryEntry[],
+): string | null {
+  if (history.length === 0) {
+    return null;
+  }
+
+  return history
+    .slice(-6)
+    .map((item) =>
+      `${item.timestamp}: ${item.action}${item.confidence ? ` (${item.confidence})` : ""} | stop=${item.stopUnderlying ?? "n/a"} | target=${item.targetUnderlying ?? "n/a"} | ${item.note}`,
+    )
+    .join("\n");
+}
+
+function buildPolicyFeedbackSummary(
+  allTrades: JournalTradeDetail[],
+  trade: JournalTradeDetail,
+): string | null {
+  const similarClosedTrades = allTrades
+    .filter((candidate) =>
+      candidate.id !== trade.id
+      && candidate.account_mode === "paper"
+      && candidate.status === "closed"
+      && candidate.direction === trade.direction
+      && candidate.setup_type === trade.setup_type
+      && candidate.review
+    )
+    .slice(0, 6);
+
+  if (similarClosedTrades.length === 0) {
+    return null;
+  }
+
+  return similarClosedTrades
+    .map((candidate) => {
+      const candidateAutomation = readAutomationSnapshot(candidate);
+      const candidateHistory = readManagementHistory(candidateAutomation);
+      const lastAction = candidateHistory.at(-1);
+      return [
+        `${candidate.symbol} ${candidate.entry_date}`,
+        `winner=${candidate.review?.winner === true ? "yes" : "no"}`,
+        `realizedR=${readNumber(candidate.review?.realized_r_multiple ?? null) ?? "n/a"}`,
+        `exit=${candidate.latest_exit?.exit_reason ?? "n/a"}`,
+        `last_action=${lastAction?.action ?? "none"}`,
+        `last_note=${lastAction?.note ?? candidate.review?.review_notes ?? "n/a"}`,
+      ].join(" | ");
+    })
+    .join("\n");
 }
 
 function computeTodayRealizedPlUsd(
@@ -198,10 +414,12 @@ function inferExitDecision(params: {
   optionMid: number | null;
 }): ExitDecision | null {
   const stop =
-    params.automation.intendedStopUnderlying
+    params.automation.activeStopUnderlying
+    ?? params.automation.intendedStopUnderlying
     ?? readNumber(params.trade.intended_stop_underlying);
   const target =
-    params.automation.intendedTargetUnderlying
+    params.automation.activeTargetUnderlying
+    ?? params.automation.intendedTargetUnderlying
     ?? readNumber(params.trade.intended_target_underlying);
   const timeExitDate = params.automation.timeExitDate ?? null;
   const entryOptionPrice = readNumber(params.trade.option_entry_price);
@@ -287,6 +505,7 @@ async function manageOpenPaperTrades(
   const client = await createAutomationTradeStationClient(config.automationBaseUrl);
   const nowIso = new Date().toISOString();
   const todayChicago = formatChicagoParts(new Date()).date;
+  const updates: PaperTraderRunResult["management"]["updates"] = [];
   const exitsTriggered: PaperTraderRunResult["management"]["exitsTriggered"] = [];
   const skipped: PaperTraderRunResult["management"]["skipped"] = [];
 
@@ -305,19 +524,158 @@ async function manageOpenPaperTrades(
       client.fetchQuote(trade.symbol),
       client.fetchQuote(automation.optionSymbol),
     ]);
-    const decision = inferExitDecision({
-      trade,
-      automation,
-      todayChicago,
-      underlyingLast: underlyingQuote.last,
-      optionMid: optionQuote.mid,
-    });
+    const activeLevels = readActiveManagementLevels(trade, automation);
+    let effectiveAutomation: PaperTraderAutomationSnapshot = {
+      ...automation,
+      ...(activeLevels.stopUnderlying !== null
+        ? { activeStopUnderlying: activeLevels.stopUnderlying }
+        : {}),
+      ...(activeLevels.targetUnderlying !== null
+        ? { activeTargetUnderlying: activeLevels.targetUnderlying }
+        : {}),
+    };
+    let aiDecisionNote: string | null = null;
+    let decision = null as ExitDecision | null;
+
+    try {
+      const managementHistory = readManagementHistory(automation);
+      const aiDecision = enforceAiManagementGuardrails(
+        trade.direction,
+        activeLevels.stopUnderlying,
+        activeLevels.targetUnderlying,
+        underlyingQuote.last,
+        await decideAiManagementAction({
+          symbol: trade.symbol,
+          direction: trade.direction,
+          setupType: trade.setup_type,
+          confidenceBucket: trade.confidence_bucket,
+          entryDate: trade.entry_date,
+          expirationDate: trade.expiration_date,
+          dteAtEntry: trade.dte_at_entry,
+          underlyingEntryPrice: readNumber(trade.underlying_entry_price),
+          optionEntryPrice: readNumber(trade.option_entry_price),
+          currentUnderlyingPrice: underlyingQuote.last,
+          currentOptionMid: optionQuote.mid,
+          currentStopUnderlying: activeLevels.stopUnderlying,
+          currentTargetUnderlying: activeLevels.targetUnderlying,
+          originalStopUnderlying:
+            automation.intendedStopUnderlying
+            ?? readNumber(trade.intended_stop_underlying),
+          originalTargetUnderlying:
+            automation.intendedTargetUnderlying
+            ?? readNumber(trade.intended_target_underlying),
+          timeExitDate: automation.timeExitDate ?? null,
+          progressToTargetPct: computeProgressToTargetPct({
+            direction: trade.direction,
+            entryUnderlyingPrice: readNumber(trade.underlying_entry_price),
+            currentUnderlyingPrice: underlyingQuote.last,
+            targetUnderlyingPrice: activeLevels.targetUnderlying,
+          }),
+          optionReturnPct: computeOptionReturnPct(
+            readNumber(trade.option_entry_price),
+            optionQuote.mid,
+          ),
+          rationale: readTradeRationale(trade),
+          lastManagementNote: automation.lastManagementNote ?? null,
+          lastManagementThesis: automation.lastManagementThesis ?? null,
+          managementHistorySummary: summarizeCurrentManagementHistory(managementHistory),
+          policyFeedbackSummary: buildPolicyFeedbackSummary(allTrades, trade),
+        }),
+      );
+
+      aiDecisionNote = `${aiDecision.thesis} ${aiDecision.note}`;
+      const nextStopUnderlying = aiDecision.updatedStopUnderlying ?? activeLevels.stopUnderlying;
+      const nextTargetUnderlying = aiDecision.updatedTargetUnderlying ?? activeLevels.targetUnderlying;
+      const historyEntry: PaperTraderManagementHistoryEntry = {
+        timestamp: nowIso,
+        action: aiDecision.action,
+        confidence: aiDecision.confidence,
+        stopUnderlying: nextStopUnderlying,
+        targetUnderlying: nextTargetUnderlying,
+        note: aiDecision.note,
+        thesis: aiDecision.thesis,
+      };
+
+      if (!dryRun) {
+        await updateJournalTradeSignalSnapshot(
+          trade.id,
+          buildUpdatedSignalSnapshot(trade, {
+            activeStopUnderlying: nextStopUnderlying,
+            activeTargetUnderlying: nextTargetUnderlying,
+            managementStyle: "ai",
+            lastManagementAction: aiDecision.action,
+            lastManagementConfidence: aiDecision.confidence,
+            lastManagementNote: aiDecision.note,
+            lastManagementThesis: aiDecision.thesis,
+            lastManagementAt: nowIso,
+            managementHistory: appendManagementHistory(managementHistory, historyEntry),
+          }),
+        );
+      }
+
+      effectiveAutomation = {
+        ...effectiveAutomation,
+        ...(nextStopUnderlying !== null
+          ? { activeStopUnderlying: nextStopUnderlying }
+          : {}),
+        ...(nextTargetUnderlying !== null
+          ? { activeTargetUnderlying: nextTargetUnderlying }
+          : {}),
+        managementStyle: "ai",
+        lastManagementAction: aiDecision.action,
+        lastManagementConfidence: aiDecision.confidence,
+        lastManagementNote: aiDecision.note,
+        lastManagementThesis: aiDecision.thesis,
+        lastManagementAt: nowIso,
+      };
+
+      updates.push({
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        action:
+          aiDecision.action === "hold"
+            ? "ai_hold"
+            : aiDecision.action === "update_levels"
+              ? "ai_update_levels"
+              : "ai_exit_now",
+        stopUnderlying: nextStopUnderlying,
+        targetUnderlying: nextTargetUnderlying,
+        note: aiDecisionNote,
+      });
+
+      if (aiDecision.action === "exit_now") {
+        decision = {
+          reason: "manual_early_exit",
+          note: `AI manager chose exit-now. ${aiDecisionNote}`,
+        };
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown AI manager error.";
+      updates.push({
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        action: "ai_fallback",
+        stopUnderlying: activeLevels.stopUnderlying,
+        targetUnderlying: activeLevels.targetUnderlying,
+        note: `AI manager unavailable; falling back to hard exits. ${message}`,
+      });
+    }
+
+    if (!decision) {
+      decision = inferExitDecision({
+        trade,
+        automation: effectiveAutomation,
+        todayChicago,
+        underlyingLast: underlyingQuote.last,
+        optionMid: optionQuote.mid,
+      });
+    }
 
     if (!decision) {
       skipped.push({
         tradeId: trade.id,
         symbol: trade.symbol,
-        reason: "No stop, target, time, or premium-decay exit trigger fired.",
+        reason: aiDecisionNote ?? "No stop, target, time, or premium-decay exit trigger fired.",
       });
       continue;
     }
@@ -396,6 +754,7 @@ async function manageOpenPaperTrades(
 
   return {
     inspected: openPaperTrades.length,
+    updates,
     exitsTriggered,
     skipped,
   };
@@ -545,8 +904,17 @@ async function maybeEnterNewPaperTrade(params: {
             entryLimitPrice: automation.optionLimitPrice,
             intendedStopUnderlying: automation.intendedStopUnderlying,
             intendedTargetUnderlying: automation.intendedTargetUnderlying,
+            activeStopUnderlying: automation.intendedStopUnderlying,
+            activeTargetUnderlying: automation.intendedTargetUnderlying,
             timeExitDate: automation.timeExitDate,
             orderId: orderResult.orderId,
+            managementStyle: "ai",
+            lastManagementAction: "hold",
+            lastManagementConfidence: "medium",
+            lastManagementNote: "Trade entered. AI manager is waiting for the next review cycle.",
+            lastManagementThesis: "Original thesis accepted at entry.",
+            lastManagementAt: now.toISOString(),
+            managementHistory: [],
             confirmationStatus: confirmation.status,
             orderStatus: orderResult.status,
           },
@@ -588,8 +956,43 @@ export async function runPaperTraderCycle(
   const openPaperTrades = allTrades.filter(
     (trade) => trade.account_mode === "paper" && trade.status === "open",
   );
-  const todayChicago = formatChicagoParts(new Date()).date;
+  const chicagoNow = formatChicagoParts(new Date());
+  const todayChicago = chicagoNow.date;
   const todayRealizedPlUsd = computeTodayRealizedPlUsd(allTrades, todayChicago);
+
+  if (!dryRun && !isRegularUsEquitySession(new Date())) {
+    return {
+      mode: "paper",
+      timestamp: new Date().toISOString(),
+      dryRun,
+      config: {
+        automationBaseUrl: config.automationBaseUrl,
+        allowOrderPlacement: config.allowOrderPlacement,
+        accountId: config.accountId as string,
+        maxOpenTrades: config.maxOpenTrades,
+        maxDailyLossUsd: config.maxDailyLossUsd,
+      },
+      guards: {
+        openPaperTrades: openPaperTrades.length,
+        todayRealizedPlUsd,
+        newEntriesAllowed:
+          openPaperTrades.length < config.maxOpenTrades
+          && todayRealizedPlUsd > -config.maxDailyLossUsd,
+      },
+      management: {
+        inspected: 0,
+        updates: [],
+        exitsTriggered: [],
+        skipped: [],
+      },
+      entry: {
+        attempted: false,
+        outcome: "outside_market_hours",
+        symbol: null,
+        reason: `Skipped live paper-trader cycle outside regular US equity market hours (America/Chicago). Current Chicago time: ${chicagoNow.time}.`,
+      },
+    };
+  }
 
   const management = await manageOpenPaperTrades(config, dryRun, allTrades);
   const remainingOpenPaperTrades = openPaperTrades.filter(

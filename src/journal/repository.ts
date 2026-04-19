@@ -265,6 +265,26 @@ export async function getJournalTradeById(id: string): Promise<JournalTradeDetai
   return hydrated[0] ?? null;
 }
 
+export async function updateJournalTradeSignalSnapshot(
+  id: string,
+  signalSnapshotJson: Record<string, unknown> | null,
+): Promise<JournalTradeDetail> {
+  await supabaseUpdateAndSelectOne<JournalTradeRecord>({
+    table: "journal_trades",
+    filters: [`id=eq.${id}`],
+    values: {
+      signal_snapshot_json: signalSnapshotJson,
+    },
+  });
+
+  const refreshedTrade = await getJournalTradeById(id);
+  if (!refreshedTrade) {
+    throw new Error("Updated trade could not be reloaded.");
+  }
+
+  return refreshedTrade;
+}
+
 export async function closeJournalTrade(id: string, input: JournalTradeCloseInput): Promise<JournalTradeDetail> {
   const trade = await getJournalTradeById(id);
   if (!trade) {

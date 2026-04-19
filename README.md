@@ -221,12 +221,15 @@ A separate SIM-only automation lane now exists for paper trading:
 What one paper-trader cycle does:
 
 1. Load open paper trades from the journal
-2. Manage any open paper trades using the stored stop, target, time-exit, and premium-decay rules
-3. If guards allow, run a fresh scan
-4. Build a trade card
-5. Preview the TradeStation order
-6. Optionally place the order in TradeStation SIM
-7. Journal the new paper trade with execution metadata for later management
+2. Let the AI manager reassess any open paper trades using current quotes, the original thesis, recent management history, and rewarded feedback from similar closed paper trades
+3. Tighten active stop/target levels or exit early when the AI manager decides the thesis has weakened or protecting gains is better than waiting
+4. If guards allow, run a fresh scan
+5. Build a trade card
+6. Preview the TradeStation order
+7. Optionally place the order in TradeStation SIM
+8. Journal the new paper trade with execution metadata for later management
+
+New paper trades now seed AI management state in `signal_snapshot_json`, including active stop/target levels plus a short management history so later 5-minute reviews can update the trade instead of re-reading the original entry only.
 
 Safety defaults:
 
@@ -234,6 +237,8 @@ Safety defaults:
 - Order placement stays off until you set `AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1`
 - The automation module refuses to run unless its base URL points to TradeStation SIM
 - The API route can be protected with `AUTO_TRADER_API_SECRET` or `CRON_SECRET`
+- Live runs skip themselves outside regular US equity market hours; dry runs still work anytime
+- `vercel.json` now schedules `GET /api/paper-trader-run` every 5 minutes on weekdays, and the runtime gate decides whether the market is actually open in Chicago
 
 Recommended env vars for the separate automation module:
 
@@ -275,8 +280,9 @@ Notes:
 
 - This module is intentionally separate from `/api/workflow` and the current scanner UI.
 - It is built for long single-leg options entries only.
-- It uses the existing trade-card logic for entry planning and uses stored stop/target/time-exit rules for ongoing management.
+- It uses the existing trade-card logic for entry planning and an AI manager for ongoing paper-trade assessment.
 - Use `/api/paper-trader-run` for Vercel cron because Vercel cron invokes a `GET` request.
+- The current AI manager uses rewarded experience memory from prior paper trades; it is not a separately trained model policy yet.
 
 ## Supabase trade journal
 

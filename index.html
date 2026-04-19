@@ -852,6 +852,7 @@
           <div class="journal-trade">
             <div class="row"><strong>Automation base URL:</strong> ${escapeHtml(renderMaybe(status?.automationBaseUrl))}</div>
             <div class="row"><strong>Route secret required:</strong> ${escapeHtml(formatBoolean(status?.requiresSecret))}</div>
+            <div class="row"><strong>AI review cadence:</strong> Every 5 minutes on weekdays via <code>/api/paper-trader-run</code></div>
           </div>
         `;
       }
@@ -863,6 +864,9 @@
 
         const exitsTriggered = Array.isArray(result?.management?.exitsTriggered)
           ? result.management.exitsTriggered
+          : [];
+        const updates = Array.isArray(result?.management?.updates)
+          ? result.management.updates
           : [];
         const skipped = Array.isArray(result?.management?.skipped)
           ? result.management.skipped
@@ -896,6 +900,10 @@
           </div>
 
           <div class="section-grid" style="margin-top: 16px;">
+            <div class="comparison-card">
+              <h4>AI Decisions</h4>
+              ${renderList(updates.map((item) => `${item.symbol}: ${item.action} | stop ${renderMaybe(item.stopUnderlying)} | target ${renderMaybe(item.targetUnderlying)}${item.note ? ` - ${item.note}` : ""}`))}
+            </div>
             <div class="comparison-card">
               <h4>Triggered Exits</h4>
               ${renderList(exitsTriggered.map((item) => `${item.symbol}: ${item.reason} (${item.action})${item.note ? ` - ${item.note}` : ""}`))}

@@ -1,4 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "outputDirectory": "."
+  "outputDirectory": ".",
+  "crons": [
+    {
+      "path": "/api/paper-trader-run",
+      "schedule": "*/5 * * * 1-5"
+    }
+  ]
 }
