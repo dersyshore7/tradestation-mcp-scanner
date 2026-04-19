@@ -581,7 +581,9 @@ export async function runPaperTraderCycle(
   const config = readPaperTraderConfig();
   assertPaperTraderConfig(config);
 
-  const dryRun = options.dryRun ?? !config.allowOrderPlacement;
+  const dryRun = config.allowOrderPlacement
+    ? options.dryRun === true
+    : true;
   const allTrades = await listJournalTradeDetails(200);
   const openPaperTrades = allTrades.filter(
     (trade) => trade.account_mode === "paper" && trade.status === "open",
