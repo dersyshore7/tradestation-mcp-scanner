@@ -9,6 +9,7 @@ export type TradeStationTradeAction =
   | "SELLTOOPEN"
   | "SELLTOCLOSE";
 export type TradeStationDuration = "DAY" | "GTC" | "GTD" | "DYP" | "GCP";
+const DEFAULT_TRADESTATION_ROUTE = "Intelligent";
 
 export type TradeStationOrderRequest = {
   accountId: string;
@@ -199,29 +200,34 @@ function toQuoteSnapshot(symbol: string, payload: unknown): TradeStationQuoteSna
 }
 
 function buildOrderPayload(order: TradeStationOrderRequest): JsonObject {
+  if (!Number.isInteger(order.quantity) || order.quantity <= 0) {
+    throw new Error("quantity must be an integer > 0.");
+  }
+
   const payload: JsonObject = {
     AccountID: order.accountId,
     Symbol: order.symbol,
-    Quantity: order.quantity,
+    Quantity: String(order.quantity),
     OrderType: order.orderType,
     TradeAction: order.tradeAction,
     TimeInForce: {
       Duration: order.duration ?? "DAY",
     },
+    Route: DEFAULT_TRADESTATION_ROUTE,
   };
 
   if (order.orderType === "Limit" || order.orderType === "StopLimit") {
     if (typeof order.limitPrice !== "number" || order.limitPrice <= 0) {
       throw new Error("limitPrice is required for Limit and StopLimit orders.");
     }
-    payload.LimitPrice = Number(order.limitPrice.toFixed(2));
+    payload.LimitPrice = order.limitPrice.toFixed(2);
   }
 
   if (order.orderType === "Stop" || order.orderType === "StopLimit") {
     if (typeof order.stopPrice !== "number" || order.stopPrice <= 0) {
       throw new Error("stopPrice is required for Stop and StopLimit orders.");
     }
-    payload.StopPrice = Number(order.stopPrice.toFixed(2));
+    payload.StopPrice = order.stopPrice.toFixed(2);
   }
 
   return payload;
