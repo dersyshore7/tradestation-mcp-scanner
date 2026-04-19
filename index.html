@@ -471,6 +471,39 @@
       <div class="card">
         <div class="panel-header">
           <div>
+            <h2>Paper Trader</h2>
+            <p class="section-description">Separate SIM automation lane for status checks, dry runs, and live paper-trader cycles.</p>
+          </div>
+          <div class="actions">
+            <button id="loadPaperTraderStatusButton" class="secondary">Load Status</button>
+            <button id="runPaperTraderDryButton" class="secondary">Run Dry Cycle</button>
+            <button id="runPaperTraderLiveButton">Run Live Cycle</button>
+          </div>
+        </div>
+
+        <label for="paperTraderSecret">Paper trader secret</label>
+        <input
+          id="paperTraderSecret"
+          type="password"
+          placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET"
+          autocomplete="off"
+        />
+        <div class="field-note">Use the same secret you set in Vercel for the paper-trader routes. This module stays separate from the manual scanner flow above.</div>
+
+        <details>
+          <summary>Optional prompt override</summary>
+          <div id="paperTraderPromptFields">
+            <label for="paperTraderPrompt">Prompt override</label>
+            <input id="paperTraderPrompt" placeholder="Optional custom prompt for this paper-trader cycle" />
+          </div>
+        </details>
+
+        <div id="paperTraderArea" class="muted">Load status to confirm the SIM paper-trader configuration.</div>
+      </div>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
             <h2>Result</h2>
             <p class="section-description">Latest scan output, chosen setup, and any local trade capture from this session.</p>
           </div>
@@ -616,9 +649,24 @@
       const closeTradeStatus = document.getElementById("closeTradeStatus");
       const saveCloseTradeButton = document.getElementById("saveCloseTrade");
       const closeCloseTradeModalButton = document.getElementById("closeCloseTradeModal");
+      const paperTraderSecretInput = document.getElementById("paperTraderSecret");
+      const paperTraderPromptInput = document.getElementById("paperTraderPrompt");
+      const paperTraderArea = document.getElementById("paperTraderArea");
+      const loadPaperTraderStatusButton = document.getElementById("loadPaperTraderStatusButton");
+      const runPaperTraderDryButton = document.getElementById("runPaperTraderDryButton");
+      const runPaperTraderLiveButton = document.getElementById("runPaperTraderLiveButton");
+      const paperTraderSecretStorageKey = "paperTraderApiSecret";
 
       if (defaultPromptText) {
         defaultPromptText.textContent = "Loading...";
+      }
+
+      if (paperTraderSecretInput) {
+        try {
+          paperTraderSecretInput.value = window.localStorage.getItem(paperTraderSecretStorageKey) || "";
+        } catch {
+          paperTraderSecretInput.value = "";
+        }
       }
 
       function escapeHtml(value) {
@@ -632,6 +680,10 @@
 
       function renderMaybe(value, fallback = "n/a") {
         return value === null || value === undefined || value === "" ? fallback : String(value);
+      }
+
+      function formatBoolean(value) {
+        return value ? "Yes" : "No";
       }
 
       function asNumber(value) {
@@ -733,6 +785,175 @@
         return entries
           .map(([key, value]) => `<div class="row"><strong>${escapeHtml(key)}:</strong> ${escapeHtml(String(value))}</div>`)
           .join("");
+      }
+
+      function buildPaperTraderHeaders(includeJson = false) {
+        const headers = {};
+        const secret = paperTraderSecretInput?.value?.trim() || "";
+        if (secret) {
+          headers.authorization = `Bearer ${secret}`;
+        }
+        if (includeJson) {
+          headers["content-type"] = "application/json";
+        }
+        return headers;
+      }
+
+      async function readJsonResponse(response, fallbackMessage) {
+        const contentType = response.headers.get("content-type") || "";
+        if (!contentType.toLowerCase().includes("application/json")) {
+          const text = await response.text();
+          if (text.includes("Authentication Required") || text.includes("Vercel Authentication")) {
+            throw new Error("This preview is behind Vercel Authentication. Open the preview in Vercel first or disable deployment protection before testing the paper trader here.");
+          }
+          throw new Error(`${fallbackMessage} ${text.slice(0, 200) || "Empty response."}`);
+        }
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data?.message || fallbackMessage);
+        }
+        return data;
+      }
+
+      function renderPaperTraderStatus(status) {
+        if (!paperTraderArea) {
+          return;
+        }
+
+        paperTraderArea.innerHTML = `
+          <div class="stats-grid" style="margin-top: 12px;">
+            <div class="stat-card">
+              <div class="stat-label">Enabled</div>
+              <div class="stat-value">${escapeHtml(formatBoolean(status?.enabled))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Order Placement</div>
+              <div class="stat-value">${escapeHtml(status?.allowOrderPlacement ? "Live SIM" : "Preview Only")}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">SIM Account Configured</div>
+              <div class="stat-value">${escapeHtml(formatBoolean(status?.accountIdConfigured))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Open Paper Trades</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(status?.openPaperTrades, "0"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Max Open Trades</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(status?.maxOpenTrades, "0"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Daily Loss Guard</div>
+              <div class="stat-value">${escapeHtml(formatMoney(status?.maxDailyLossUsd))}</div>
+            </div>
+          </div>
+
+          <div class="journal-trade">
+            <div class="row"><strong>Automation base URL:</strong> ${escapeHtml(renderMaybe(status?.automationBaseUrl))}</div>
+            <div class="row"><strong>Route secret required:</strong> ${escapeHtml(formatBoolean(status?.requiresSecret))}</div>
+          </div>
+        `;
+      }
+
+      function renderPaperTraderRunResult(result) {
+        if (!paperTraderArea) {
+          return;
+        }
+
+        const exitsTriggered = Array.isArray(result?.management?.exitsTriggered)
+          ? result.management.exitsTriggered
+          : [];
+        const skipped = Array.isArray(result?.management?.skipped)
+          ? result.management.skipped
+          : [];
+
+        paperTraderArea.innerHTML = `
+          <div class="summary-section">
+            <div class="row"><strong>Mode:</strong> <span class="pill">${escapeHtml(renderMaybe(result?.dryRun ? "Dry Run" : "Live SIM"))}</span></div>
+            <div class="row"><strong>Entry outcome:</strong> ${escapeHtml(renderMaybe(result?.entry?.outcome))}</div>
+            <div class="row"><strong>Reason:</strong> ${escapeHtml(renderMaybe(result?.entry?.reason))}</div>
+            <div class="row"><strong>Symbol:</strong> ${escapeHtml(renderMaybe(result?.entry?.symbol))}</div>
+          </div>
+
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-label">Open Trades</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(result?.guards?.openPaperTrades, "0"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Today Realized P/L</div>
+              <div class="stat-value ${escapeHtml(numberToneClass(result?.guards?.todayRealizedPlUsd))}">${escapeHtml(formatMoney(result?.guards?.todayRealizedPlUsd))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">New Entries Allowed</div>
+              <div class="stat-value">${escapeHtml(formatBoolean(result?.guards?.newEntriesAllowed))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Managed Trades</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(result?.management?.inspected, "0"))}</div>
+            </div>
+          </div>
+
+          <div class="section-grid" style="margin-top: 16px;">
+            <div class="comparison-card">
+              <h4>Triggered Exits</h4>
+              ${renderList(exitsTriggered.map((item) => `${item.symbol}: ${item.reason} (${item.action})${item.note ? ` - ${item.note}` : ""}`))}
+            </div>
+            <div class="comparison-card">
+              <h4>Skipped Trades</h4>
+              ${renderList(skipped.map((item) => `${item.symbol}: ${item.reason}`))}
+            </div>
+          </div>
+
+          <details>
+            <summary>Raw Paper Trader Response</summary>
+            <pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre>
+          </details>
+        `;
+      }
+
+      async function loadPaperTraderStatus() {
+        if (!paperTraderArea) {
+          return;
+        }
+
+        paperTraderArea.innerHTML = '<div class="muted">Loading paper-trader status...</div>';
+
+        try {
+          const response = await fetch("/api/paper-trader", {
+            headers: buildPaperTraderHeaders(),
+          });
+          const data = await readJsonResponse(response, "Failed to load paper-trader status.");
+          renderPaperTraderStatus(data?.status || null);
+        } catch (error) {
+          paperTraderArea.innerHTML = `<div class="empty-state">${escapeHtml(error instanceof Error ? error.message : "Failed to load paper-trader status.")}</div>`;
+        }
+      }
+
+      async function runPaperTraderCycle(dryRun) {
+        if (!paperTraderArea) {
+          return;
+        }
+
+        paperTraderArea.innerHTML = `<div class="muted">${escapeHtml(dryRun ? "Running dry cycle..." : "Running live SIM cycle...")}</div>`;
+
+        try {
+          const prompt = paperTraderPromptInput?.value?.trim() || "";
+          const response = await fetch("/api/paper-trader", {
+            method: "POST",
+            headers: buildPaperTraderHeaders(true),
+            body: JSON.stringify({
+              dryRun,
+              ...(prompt ? { prompt } : {}),
+            }),
+          });
+          const data = await readJsonResponse(response, "Paper trader cycle failed.");
+          renderPaperTraderRunResult(data);
+          await refreshJournalData();
+        } catch (error) {
+          paperTraderArea.innerHTML = `<div class="empty-state">${escapeHtml(error instanceof Error ? error.message : "Paper trader cycle failed.")}</div>`;
+        }
       }
 
       function openTradeEntryModal() {
@@ -1343,6 +1564,24 @@
 
       refreshInsightsButton?.addEventListener("click", loadJournalInsights);
       refreshJournalButton?.addEventListener("click", loadJournalTrades);
+      paperTraderSecretInput?.addEventListener("input", () => {
+        try {
+          window.localStorage.setItem(paperTraderSecretStorageKey, paperTraderSecretInput.value);
+        } catch {
+          // Ignore browsers where localStorage is unavailable.
+        }
+      });
+      loadPaperTraderStatusButton?.addEventListener("click", loadPaperTraderStatus);
+      runPaperTraderDryButton?.addEventListener("click", () => {
+        runPaperTraderCycle(true);
+      });
+      runPaperTraderLiveButton?.addEventListener("click", () => {
+        const shouldRun = window.confirm("Run a live SIM paper-trader cycle? This can place or close paper trades if order placement is enabled.");
+        if (!shouldRun) {
+          return;
+        }
+        runPaperTraderCycle(false);
+      });
       journalTradesArea?.addEventListener("click", (event) => {
         const target = event.target;
         if (!(target instanceof HTMLElement)) {
@@ -1394,6 +1633,9 @@
 
       loadDefaults();
       refreshJournalData();
+      if (paperTraderSecretInput?.value) {
+        loadPaperTraderStatus();
+      }
 
       saveTradeLogButton.addEventListener("click", async () => {
         try {
