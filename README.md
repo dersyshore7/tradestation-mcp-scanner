@@ -208,6 +208,76 @@ A minimal UI is available at the project root (`/`) for running the existing sca
 
 This UI is intentionally thin and does not place orders.
 
+## Separate paper-trader module
+
+The existing scanner workflow remains unchanged and read-only.
+
+A separate SIM-only automation lane now exists for paper trading:
+
+- API: `GET /api/paper-trader` for status, `POST /api/paper-trader` to run one automation cycle
+- Cron/manual-run route: `GET /api/paper-trader-run`
+- CLI: `npm run paper-trader:run`
+
+What one paper-trader cycle does:
+
+1. Load open paper trades from the journal
+2. Manage any open paper trades using the stored stop, target, time-exit, and premium-decay rules
+3. If guards allow, run a fresh scan
+4. Build a trade card
+5. Preview the TradeStation order
+6. Optionally place the order in TradeStation SIM
+7. Journal the new paper trade with execution metadata for later management
+
+Safety defaults:
+
+- Disabled until you set `AUTO_TRADER_ENABLED=1`
+- Order placement stays off until you set `AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1`
+- The automation module refuses to run unless its base URL points to TradeStation SIM
+- The API route can be protected with `AUTO_TRADER_API_SECRET` or `CRON_SECRET`
+
+Recommended env vars for the separate automation module:
+
+```bash
+AUTO_TRADER_ENABLED=1
+AUTO_TRADER_ALLOW_ORDER_PLACEMENT=0
+AUTO_TRADER_MAX_OPEN_TRADES=1
+AUTO_TRADER_MAX_DAILY_LOSS_USD=300
+AUTO_TRADER_SCAN_PROMPT=Run a new Scan for this week
+AUTO_TRADER_API_SECRET=your_long_random_secret
+
+TRADESTATION_AUTOMATION_BASE_URL=https://sim-api.tradestation.com/v3
+TRADESTATION_AUTOMATION_ACCOUNT_ID=your_sim_account_id
+```
+
+Dry-run example:
+
+```bash
+npm run paper-trader:run -- --dry-run
+```
+
+API trigger example:
+
+```bash
+curl -X POST https://your-deployment.vercel.app/api/paper-trader \
+  -H "Authorization: Bearer your_long_random_secret" \
+  -H "Content-Type: application/json" \
+  -d '{"dryRun":true}'
+```
+
+Cron/manual GET example:
+
+```bash
+curl "https://your-deployment.vercel.app/api/paper-trader-run?dryRun=true" \
+  -H "Authorization: Bearer your_long_random_secret"
+```
+
+Notes:
+
+- This module is intentionally separate from `/api/workflow` and the current scanner UI.
+- It is built for long single-leg options entries only.
+- It uses the existing trade-card logic for entry planning and uses stored stop/target/time-exit rules for ongoing management.
+- Use `/api/paper-trader-run` for Vercel cron because Vercel cron invokes a `GET` request.
+
 ## Supabase trade journal
 
 The journal uses durable server-side persistence in Supabase Postgres.

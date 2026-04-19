@@ -17,7 +17,8 @@
     "tradestation:options-debug": "tsx src/tradestation/debugOptionsApi.ts",
     "scanner:stage3-debug": "tsx src/app/debugStage3StarterUniverse.ts",
     "scanner:single-review-debug": "tsx src/app/debugSingleSymbolReview.ts",
-    "trade:construction-debug": "tsx src/app/debugTradeConstruction.ts"
+    "trade:construction-debug": "tsx src/app/debugTradeConstruction.ts",
+    "paper-trader:run": "tsx src/automation/runPaperTrader.ts"
   },
   "keywords": [],
   "author": "",

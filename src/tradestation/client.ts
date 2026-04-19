@@ -26,9 +26,11 @@ function getRequiredEnvVar(name: string): string {
   return value;
 }
 
-function getTradeStationBaseUrl(): string {
+export function readTradeStationBaseUrl(baseUrlOverride?: string): string {
   return (
-    process.env[TRADESTATION_BASE_URL_ENV_NAME] ?? DEFAULT_TRADESTATION_BASE_URL
+    baseUrlOverride
+    ?? process.env[TRADESTATION_BASE_URL_ENV_NAME]
+    ?? DEFAULT_TRADESTATION_BASE_URL
   ).replace(/\/$/, "");
 }
 
@@ -120,10 +122,12 @@ export async function requestTradeStationAccessToken(): Promise<string> {
   return tokenPayload.access_token as string;
 }
 
-export async function createTradeStationGetFetcher(): Promise<
+export async function createTradeStationFetcher(options?: {
+  baseUrl?: string;
+}): Promise<
   (path: string, init?: RequestInit) => Promise<Response>
 > {
-  const baseUrl = getTradeStationBaseUrl();
+  const baseUrl = readTradeStationBaseUrl(options?.baseUrl);
   const accessToken = await requestTradeStationAccessToken();
 
   return async (path: string, init?: RequestInit) => {
@@ -134,12 +138,28 @@ export async function createTradeStationGetFetcher(): Promise<
 
     return fetch(`${baseUrl}${dedupedPath}`, {
       ...init,
-      method: "GET",
+      method: init?.method ?? "GET",
       headers: {
         authorization: `Bearer ${accessToken}`,
         accept: "application/json",
+        ...(init?.body ? { "content-type": "application/json" } : {}),
         ...init?.headers,
       },
+    });
+  };
+}
+
+export async function createTradeStationGetFetcher(baseUrlOverride?: string): Promise<
+  (path: string, init?: RequestInit) => Promise<Response>
+> {
+  const request = await createTradeStationFetcher(
+    baseUrlOverride ? { baseUrl: baseUrlOverride } : undefined,
+  );
+
+  return async (path: string, init?: RequestInit) => {
+    return request(path, {
+      ...init,
+      method: "GET",
     });
   };
 }
