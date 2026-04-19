@@ -34,6 +34,8 @@ export type AiManagementInput = {
   lastManagementThesis: string | null;
   managementHistorySummary: string | null;
   policyFeedbackSummary: string | null;
+  trainedPolicySummary: string | null;
+  trainedPolicyRecommendedAction: "hold" | "update_levels" | "exit_now" | null;
 };
 
 function extractJsonObject(text: string): string {
@@ -115,6 +117,14 @@ function buildPrompt(input: AiManagementInput): string {
     input.policyFeedbackSummary
       ? `Rewarded experience memory:\n${input.policyFeedbackSummary}`
       : "Rewarded experience memory: none yet.",
+    "",
+    input.trainedPolicySummary
+      ? `Trained policy prior:\n${input.trainedPolicySummary}`
+      : "Trained policy prior: not enough closed paper-trade data yet.",
+    "",
+    input.trainedPolicyRecommendedAction
+      ? `If the live state agrees, the current trained-policy recommendation is: ${input.trainedPolicyRecommendedAction}.`
+      : "No confident trained-policy action recommendation is available yet.",
     "",
     input.managementHistorySummary
       ? `Current trade management history:\n${input.managementHistorySummary}`

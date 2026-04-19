@@ -222,12 +222,13 @@ What one paper-trader cycle does:
 
 1. Load open paper trades from the journal
 2. Let the AI manager reassess any open paper trades using current quotes, the original thesis, recent management history, and rewarded feedback from similar closed paper trades
-3. Tighten active stop/target levels or exit early when the AI manager decides the thesis has weakened or protecting gains is better than waiting
-4. If guards allow, run a fresh scan
-5. Build a trade card
-6. Preview the TradeStation order
-7. Optionally place the order in TradeStation SIM
-8. Journal the new paper trade with execution metadata for later management
+3. Feed the AI manager a first-pass trained policy prior that is learned from closed paper trades and their management outcomes
+4. Tighten active stop/target levels or exit early when the AI manager decides the thesis has weakened or protecting gains is better than waiting
+5. If guards allow, run a fresh scan
+6. Build a trade card
+7. Preview the TradeStation order
+8. Optionally place the order in TradeStation SIM
+9. Journal the new paper trade with execution metadata for later management
 
 New paper trades now seed AI management state in `signal_snapshot_json`, including active stop/target levels plus a short management history so later 5-minute reviews can update the trade instead of re-reading the original entry only.
 
@@ -238,7 +239,7 @@ Safety defaults:
 - The automation module refuses to run unless its base URL points to TradeStation SIM
 - The API route can be protected with `AUTO_TRADER_API_SECRET` or `CRON_SECRET`
 - Live runs skip themselves outside regular US equity market hours; dry runs still work anytime
-- `vercel.json` now schedules `GET /api/paper-trader-run` every 5 minutes on weekdays, and the runtime gate decides whether the market is actually open in Chicago
+- The runtime is ready for a 5-minute manager loop, but the repo does not enable it in `vercel.json` yet so Hobby deployments keep working until you upgrade Vercel
 
 Recommended env vars for the separate automation module:
 
@@ -282,7 +283,13 @@ Notes:
 - It is built for long single-leg options entries only.
 - It uses the existing trade-card logic for entry planning and an AI manager for ongoing paper-trade assessment.
 - Use `/api/paper-trader-run` for Vercel cron because Vercel cron invokes a `GET` request.
-- The current AI manager uses rewarded experience memory from prior paper trades; it is not a separately trained model policy yet.
+- The current AI manager now includes a first trained contextual policy layer learned from closed paper trades, plus rewarded experience memory in the prompt.
+
+Policy-training debug:
+
+```bash
+npm run policy:train
+```
 
 ## Supabase trade journal
 

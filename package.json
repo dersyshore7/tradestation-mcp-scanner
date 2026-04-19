@@ -18,7 +18,8 @@
     "scanner:stage3-debug": "tsx src/app/debugStage3StarterUniverse.ts",
     "scanner:single-review-debug": "tsx src/app/debugSingleSymbolReview.ts",
     "trade:construction-debug": "tsx src/app/debugTradeConstruction.ts",
-    "paper-trader:run": "tsx src/automation/runPaperTrader.ts"
+    "paper-trader:run": "tsx src/automation/runPaperTrader.ts",
+    "policy:train": "tsx src/automation/trainPolicy.ts"
   },
   "keywords": [],
   "author": "",

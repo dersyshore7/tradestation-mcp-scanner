@@ -24,6 +24,10 @@ import {
   enforceAiManagementGuardrails,
 } from "./aiManager.js";
 import {
+  recommendPolicyAction,
+  trainPolicyModel,
+} from "./policyModel.js";
+import {
   createAutomationTradeStationClient,
   extractAverageFillPrice,
   type TradeStationOrderRequest,
@@ -76,6 +80,10 @@ type PaperTraderManagementHistoryEntry = {
   confidence?: "low" | "medium" | "high";
   stopUnderlying?: number | null;
   targetUnderlying?: number | null;
+  currentUnderlyingPrice?: number | null;
+  currentOptionMid?: number | null;
+  progressToTargetPct?: number | null;
+  optionReturnPct?: number | null;
   note: string;
   thesis?: string | null;
   rewardR?: number | null;
@@ -389,6 +397,26 @@ function buildPolicyFeedbackSummary(
     .join("\n");
 }
 
+function summarizeTrainedPolicyRecommendation(
+  recommendation: ReturnType<typeof recommendPolicyAction>,
+): string | null {
+  if (!recommendation.summary) {
+    return null;
+  }
+
+  const actionLines = (["hold", "update_levels", "exit_now"] as const)
+    .map((action) => {
+      const summary = recommendation.actionSummaries[action];
+      if (!summary) {
+        return null;
+      }
+      return `${action}: count=${summary.count}, avg=${summary.averageRewardR.toFixed(2)}R, win_rate=${(summary.winRate * 100).toFixed(0)}%`;
+    })
+    .filter((value): value is string => value !== null);
+
+  return [recommendation.summary, ...actionLines].join("\n");
+}
+
 function computeTodayRealizedPlUsd(
   trades: JournalTradeDetail[],
   todayChicago: string,
@@ -502,6 +530,7 @@ async function manageOpenPaperTrades(
   const openPaperTrades = allTrades.filter(
     (trade) => trade.account_mode === "paper" && trade.status === "open",
   );
+  const trainedPolicyModel = trainPolicyModel(allTrades);
   const client = await createAutomationTradeStationClient(config.automationBaseUrl);
   const nowIso = new Date().toISOString();
   const todayChicago = formatChicagoParts(new Date()).date;
@@ -525,6 +554,24 @@ async function manageOpenPaperTrades(
       client.fetchQuote(automation.optionSymbol),
     ]);
     const activeLevels = readActiveManagementLevels(trade, automation);
+    const progressToTargetPct = computeProgressToTargetPct({
+      direction: trade.direction,
+      entryUnderlyingPrice: readNumber(trade.underlying_entry_price),
+      currentUnderlyingPrice: underlyingQuote.last,
+      targetUnderlyingPrice: activeLevels.targetUnderlying,
+    });
+    const optionReturnPct = computeOptionReturnPct(
+      readNumber(trade.option_entry_price),
+      optionQuote.mid,
+    );
+    const trainedPolicyRecommendation = recommendPolicyAction(trainedPolicyModel, {
+      direction: trade.direction,
+      setupType: trade.setup_type,
+      confidenceBucket: trade.confidence_bucket,
+      progressToTargetPct,
+      optionReturnPct,
+      dteAtEntry: trade.dte_at_entry,
+    });
     let effectiveAutomation: PaperTraderAutomationSnapshot = {
       ...automation,
       ...(activeLevels.stopUnderlying !== null
@@ -565,21 +612,15 @@ async function manageOpenPaperTrades(
             automation.intendedTargetUnderlying
             ?? readNumber(trade.intended_target_underlying),
           timeExitDate: automation.timeExitDate ?? null,
-          progressToTargetPct: computeProgressToTargetPct({
-            direction: trade.direction,
-            entryUnderlyingPrice: readNumber(trade.underlying_entry_price),
-            currentUnderlyingPrice: underlyingQuote.last,
-            targetUnderlyingPrice: activeLevels.targetUnderlying,
-          }),
-          optionReturnPct: computeOptionReturnPct(
-            readNumber(trade.option_entry_price),
-            optionQuote.mid,
-          ),
+          progressToTargetPct,
+          optionReturnPct,
           rationale: readTradeRationale(trade),
           lastManagementNote: automation.lastManagementNote ?? null,
           lastManagementThesis: automation.lastManagementThesis ?? null,
           managementHistorySummary: summarizeCurrentManagementHistory(managementHistory),
           policyFeedbackSummary: buildPolicyFeedbackSummary(allTrades, trade),
+          trainedPolicySummary: summarizeTrainedPolicyRecommendation(trainedPolicyRecommendation),
+          trainedPolicyRecommendedAction: trainedPolicyRecommendation.recommendedAction,
         }),
       );
 
@@ -592,6 +633,10 @@ async function manageOpenPaperTrades(
         confidence: aiDecision.confidence,
         stopUnderlying: nextStopUnderlying,
         targetUnderlying: nextTargetUnderlying,
+        currentUnderlyingPrice: underlyingQuote.last,
+        currentOptionMid: optionQuote.mid,
+        progressToTargetPct,
+        optionReturnPct,
         note: aiDecision.note,
         thesis: aiDecision.thesis,
       };
