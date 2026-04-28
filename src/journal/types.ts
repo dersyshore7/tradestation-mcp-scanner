@@ -59,6 +59,21 @@ export type JournalTradeCloseInput = {
   review_notes?: string | null;
 };
 
+export type JournalTradeUpdateInput = {
+  account_mode?: AccountMode;
+  entry_date?: string;
+  entry_time?: string | null;
+  contracts?: number | null;
+  option_entry_price?: number | null;
+  entry_notes?: string | null;
+  option_exit_price?: number | null;
+  quantity_closed?: number | null;
+  exit_reason?: JournalExitReason;
+  exit_timestamp?: string;
+  lessons_learned?: string | null;
+  review_notes?: string | null;
+};
+
 export type JournalTradeRecord = {
   id: string;
   created_at: string;

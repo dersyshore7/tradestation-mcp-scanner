@@ -5,6 +5,7 @@ import {
   TRADE_STATUSES,
   type JournalTradeCloseInput,
   type JournalTradeCreateInput,
+  type JournalTradeUpdateInput,
   type PlannedTradeSnapshot,
 } from "./types.js";
 
@@ -33,6 +34,16 @@ function optionalString(value: unknown, field: string): string | null {
   return readString(value, field, false);
 }
 
+function optionalNullableStringForUpdate(value: unknown, field: string): string | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null || value === "") {
+    return null;
+  }
+  return readString(value, field, false);
+}
+
 function parseNumber(value: unknown, field: string): number {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -49,6 +60,17 @@ function parseNumber(value: unknown, field: string): number {
 function optionalPositiveNumber(value: unknown, field: string): number | null {
   if (value === undefined || value === null || value === "") {
     return null;
+  }
+  const parsed = parseNumber(value, field);
+  if (parsed <= 0) {
+    throw new Error(`${field} must be > 0.`);
+  }
+  return parsed;
+}
+
+function optionalPositiveNumberForUpdate(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
   }
   const parsed = parseNumber(value, field);
   if (parsed <= 0) {
@@ -79,6 +101,17 @@ function optionalIntegerGreaterThanZero(value: unknown, field: string): number |
   return parsed;
 }
 
+function optionalIntegerGreaterThanZeroForUpdate(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  const parsed = parseNumber(value, field);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${field} must be an integer > 0.`);
+  }
+  return parsed;
+}
+
 function parseDate(value: unknown, field: string): string {
   const normalized = readString(value, field, false);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
@@ -96,6 +129,20 @@ function optionalDate(value: unknown, field: string): string | null {
 
 function optionalTime(value: unknown, field: string): string | null {
   if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  const normalized = readString(value, field, false);
+  if (!/^\d{2}:\d{2}(:\d{2})?$/.test(normalized)) {
+    throw new Error(`${field} must be HH:MM or HH:MM:SS.`);
+  }
+  return normalized;
+}
+
+function optionalTimeForUpdate(value: unknown, field: string): string | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null || value === "") {
     return null;
   }
   const normalized = readString(value, field, false);
@@ -243,4 +290,72 @@ export function validateJournalTradeClosePayload(payload: unknown): JournalTrade
     lessons_learned: optionalString(input.lessons_learned, "lessons_learned"),
     review_notes: optionalString(input.review_notes, "review_notes"),
   };
+}
+
+export function validateJournalTradeUpdatePayload(payload: unknown): JournalTradeUpdateInput {
+  const input = asRecord(payload);
+  const accountModeRaw = input.account_mode;
+  const result: JournalTradeUpdateInput = {};
+
+  if (accountModeRaw !== undefined) {
+    const normalized = readString(accountModeRaw, "account_mode", false).toLowerCase();
+    if (!ACCOUNT_MODES.includes(normalized as "paper" | "live")) {
+      throw new Error("account_mode must be paper or live.");
+    }
+    result.account_mode = normalized as "paper" | "live";
+  }
+
+  if (input.entry_date !== undefined) {
+    result.entry_date = parseDate(input.entry_date, "entry_date");
+  }
+
+  const entryTime = optionalTimeForUpdate(input.entry_time, "entry_time");
+  if (entryTime !== undefined) {
+    result.entry_time = entryTime;
+  }
+
+  const contracts = optionalIntegerGreaterThanZeroForUpdate(input.contracts, "contracts");
+  if (contracts !== undefined) {
+    result.contracts = contracts;
+  }
+
+  const optionEntryPrice = optionalPositiveNumberForUpdate(input.option_entry_price, "option_entry_price");
+  if (optionEntryPrice !== undefined) {
+    result.option_entry_price = optionEntryPrice;
+  }
+
+  const entryNotes = optionalNullableStringForUpdate(input.entry_notes, "entry_notes");
+  if (entryNotes !== undefined) {
+    result.entry_notes = entryNotes;
+  }
+
+  const optionExitPrice = optionalPositiveNumberForUpdate(input.option_exit_price, "option_exit_price");
+  if (optionExitPrice !== undefined) {
+    result.option_exit_price = optionExitPrice;
+  }
+
+  const quantityClosed = optionalIntegerGreaterThanZeroForUpdate(input.quantity_closed, "quantity_closed");
+  if (quantityClosed !== undefined) {
+    result.quantity_closed = quantityClosed;
+  }
+
+  if (input.exit_reason !== undefined) {
+    result.exit_reason = normalizeExitReason(input.exit_reason);
+  }
+
+  if (input.exit_timestamp !== undefined) {
+    result.exit_timestamp = parseIsoTimestamp(input.exit_timestamp, "exit_timestamp");
+  }
+
+  const lessonsLearned = optionalNullableStringForUpdate(input.lessons_learned, "lessons_learned");
+  if (lessonsLearned !== undefined) {
+    result.lessons_learned = lessonsLearned;
+  }
+
+  const reviewNotes = optionalNullableStringForUpdate(input.review_notes, "review_notes");
+  if (reviewNotes !== undefined) {
+    result.review_notes = reviewNotes;
+  }
+
+  return result;
 }

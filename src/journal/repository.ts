@@ -15,6 +15,7 @@ import type {
   JournalTradeListItem,
   JournalTradeRecord,
   JournalTradeReviewRecord,
+  JournalTradeUpdateInput,
 } from "./types.js";
 
 function buildEntryWeek(entryDate: string): string {
@@ -202,6 +203,44 @@ function resolvePositionCostUsd(
   return plannedPositionCostUsd;
 }
 
+function calculateCloseReviewValues(
+  trade: Pick<JournalTradeRecord, "position_cost_usd" | "planned_risk_usd">,
+  latestExit: Pick<JournalTradeExitRecord, "option_exit_price" | "quantity_closed" | "fees_usd" | "slippage_usd">,
+): {
+  soldForUsd: number;
+  realizedPlUsd: number;
+  realizedRMultiple: number | null;
+  realizedReturnPct: number | null;
+} {
+  const optionExitPrice = toNumber(latestExit.option_exit_price) ?? 0;
+  const positionCostUsd = toNumber(trade.position_cost_usd) ?? 0;
+  const plannedRiskUsd = toNumber(trade.planned_risk_usd);
+  const feesUsd = toNumber(latestExit.fees_usd) ?? 0;
+  const slippageUsd = toNumber(latestExit.slippage_usd) ?? 0;
+  const soldForUsd = optionExitPrice * latestExit.quantity_closed * 100;
+  const realizedPlUsd = soldForUsd - positionCostUsd - feesUsd - slippageUsd;
+  const realizedRMultiple = plannedRiskUsd !== null && plannedRiskUsd > 0
+    ? realizedPlUsd / plannedRiskUsd
+    : null;
+  const realizedReturnPct = positionCostUsd > 0 ? (realizedPlUsd / positionCostUsd) * 100 : null;
+
+  return {
+    soldForUsd,
+    realizedPlUsd,
+    realizedRMultiple,
+    realizedReturnPct,
+  };
+}
+
+function hasExitFieldUpdates(input: JournalTradeUpdateInput): boolean {
+  return input.option_exit_price !== undefined
+    || input.quantity_closed !== undefined
+    || input.exit_reason !== undefined
+    || input.exit_timestamp !== undefined
+    || input.lessons_learned !== undefined
+    || input.review_notes !== undefined;
+}
+
 export async function createJournalTrade(input: JournalTradeCreateInput): Promise<JournalTradeRecord> {
   const { planned_trade: planned, signal_snapshot_json, ...entry } = input;
   const positionCostUsd = resolvePositionCostUsd(entry.contracts, entry.option_entry_price, planned.position_cost_usd);
@@ -285,6 +324,83 @@ export async function updateJournalTradeSignalSnapshot(
   return refreshedTrade;
 }
 
+export async function updateJournalTrade(id: string, input: JournalTradeUpdateInput): Promise<JournalTradeDetail> {
+  const trade = await getJournalTradeById(id);
+  if (!trade) {
+    throw new Error("Journal trade not found.");
+  }
+
+  const entryDate = input.entry_date ?? trade.entry_date;
+  if (trade.expiration_date && trade.expiration_date < entryDate) {
+    throw new Error("entry_date must be on/before expiration_date.");
+  }
+
+  if (trade.status !== "closed" && hasExitFieldUpdates(input)) {
+    throw new Error("Only closed trades can update exit details.");
+  }
+
+  const contracts = input.contracts ?? trade.contracts;
+  const optionEntryPrice = input.option_entry_price ?? toNumber(trade.option_entry_price);
+  const positionCostUsd = resolvePositionCostUsd(
+    contracts,
+    optionEntryPrice,
+    toNumber(trade.position_cost_usd) ?? 0,
+  );
+
+  const updatedTrade = await supabaseUpdateAndSelectOne<JournalTradeRecord>({
+    table: "journal_trades",
+    filters: [`id=eq.${id}`],
+    values: {
+      account_mode: input.account_mode ?? trade.account_mode,
+      entry_date: entryDate,
+      entry_time: input.entry_time !== undefined ? input.entry_time : trade.entry_time,
+      contracts,
+      option_entry_price: optionEntryPrice,
+      position_cost_usd: positionCostUsd,
+      entry_notes: input.entry_notes !== undefined ? input.entry_notes : trade.entry_notes,
+    },
+  });
+
+  if (trade.status === "closed" && trade.latest_exit) {
+    const updatedExit = await supabaseUpdateAndSelectOne<JournalTradeExitRecord>({
+      table: "journal_exits",
+      filters: [`id=eq.${trade.latest_exit.id}`],
+      values: {
+        exit_time: input.exit_timestamp ?? trade.latest_exit.exit_time,
+        option_exit_price: input.option_exit_price ?? toNumber(trade.latest_exit.option_exit_price),
+        quantity_closed: input.quantity_closed ?? trade.latest_exit.quantity_closed,
+        exit_reason: input.exit_reason ?? trade.latest_exit.exit_reason,
+      },
+    });
+
+    const reviewValues = calculateCloseReviewValues(updatedTrade, updatedExit);
+    await supabaseUpsertAndSelectOne<JournalTradeReviewRecord>({
+      table: "journal_reviews",
+      onConflict: "trade_id",
+      values: {
+        trade_id: id,
+        followed_plan: trade.review?.followed_plan ?? null,
+        winner: reviewValues.realizedPlUsd > 0,
+        realized_pl_usd: reviewValues.realizedPlUsd,
+        realized_r_multiple: reviewValues.realizedRMultiple,
+        realized_return_pct: reviewValues.realizedReturnPct,
+        rule_break_tags: trade.review?.rule_break_tags ?? [],
+        review_grade: trade.review?.review_grade ?? null,
+        mistake_category: trade.review?.mistake_category ?? null,
+        lessons_learned: input.lessons_learned !== undefined ? input.lessons_learned : (trade.review?.lessons_learned ?? null),
+        review_notes: input.review_notes !== undefined ? input.review_notes : (trade.review?.review_notes ?? null),
+      },
+    });
+  }
+
+  const refreshedTrade = await getJournalTradeById(id);
+  if (!refreshedTrade) {
+    throw new Error("Updated trade could not be reloaded.");
+  }
+
+  return refreshedTrade;
+}
+
 export async function closeJournalTrade(id: string, input: JournalTradeCloseInput): Promise<JournalTradeDetail> {
   const trade = await getJournalTradeById(id);
   if (!trade) {
@@ -301,16 +417,14 @@ export async function closeJournalTrade(id: string, input: JournalTradeCloseInpu
     throw new Error("option_exit_price is required to close a trade.");
   }
 
-  const soldForUsd = optionExitPrice * quantityClosed * 100;
   const feesUsd = input.fees_usd ?? 0;
   const slippageUsd = input.slippage_usd ?? 0;
-  const positionCostUsd = toNumber(trade.position_cost_usd) ?? 0;
-  const plannedRiskUsd = toNumber(trade.planned_risk_usd);
-  const realizedPlUsd = soldForUsd - positionCostUsd - feesUsd - slippageUsd;
-  const realizedRMultiple = plannedRiskUsd !== null && plannedRiskUsd > 0
-    ? realizedPlUsd / plannedRiskUsd
-    : null;
-  const realizedReturnPct = positionCostUsd > 0 ? (realizedPlUsd / positionCostUsd) * 100 : null;
+  const reviewValues = calculateCloseReviewValues(trade, {
+    option_exit_price: String(optionExitPrice),
+    quantity_closed: quantityClosed,
+    fees_usd: String(feesUsd),
+    slippage_usd: String(slippageUsd),
+  });
 
   await supabaseInsertAndSelectOne<JournalTradeExitRecord>({
     table: "journal_exits",
@@ -331,10 +445,10 @@ export async function closeJournalTrade(id: string, input: JournalTradeCloseInpu
     onConflict: "trade_id",
     values: {
       trade_id: id,
-      winner: realizedPlUsd > 0,
-      realized_pl_usd: realizedPlUsd,
-      realized_r_multiple: realizedRMultiple,
-      realized_return_pct: realizedReturnPct,
+      winner: reviewValues.realizedPlUsd > 0,
+      realized_pl_usd: reviewValues.realizedPlUsd,
+      realized_r_multiple: reviewValues.realizedRMultiple,
+      realized_return_pct: reviewValues.realizedReturnPct,
       rule_break_tags: [],
       lessons_learned: input.lessons_learned ?? null,
       review_notes: input.review_notes ?? null,

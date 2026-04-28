@@ -528,7 +528,7 @@
         <div class="panel-header">
           <div>
             <h2>Journal Trades</h2>
-            <p class="section-description">Recent trades with actual fills, exits, and a fast way to close or delete entries.</p>
+            <p class="section-description">Recent trades with actual fills, exits, and a fast way to close, edit, or delete entries.</p>
           </div>
           <div class="actions">
             <button id="refreshJournalButton" class="secondary">Refresh Trades</button>
@@ -614,6 +614,72 @@
       </div>
     </div>
 
+    <div class="modal" id="editTradeModal" role="dialog" aria-modal="true" aria-label="Edit trade">
+      <div class="modal-content">
+        <h3 id="editTradeTitle">Edit trade</h3>
+        <div class="field-note">Journal-only correction. Updating fills here only changes saved journal data and recalculates P/L.</div>
+
+        <label for="editActualEntry">Entry option price</label>
+        <input id="editActualEntry" type="number" step="0.01" placeholder="e.g. 2.15" />
+
+        <label for="editQuantity">Quantity / contracts</label>
+        <input id="editQuantity" type="number" step="1" placeholder="e.g. 3" />
+
+        <label for="editEntryDate">Entry date</label>
+        <input id="editEntryDate" type="date" />
+
+        <label for="editEntryTime">Entry time</label>
+        <input id="editEntryTime" type="time" />
+
+        <label for="editAccountMode">Account mode</label>
+        <select id="editAccountMode">
+          <option value="paper">paper</option>
+          <option value="live">live</option>
+        </select>
+
+        <label for="editNote">Entry note</label>
+        <textarea id="editNote" rows="3" placeholder="Optional execution note"></textarea>
+
+        <div id="editClosedFields">
+          <label for="editCloseSoldFor">Exit option price (per contract)</label>
+          <input id="editCloseSoldFor" type="number" step="0.01" placeholder="e.g. 3.20" />
+
+          <label for="editCloseQuantity">Quantity closed</label>
+          <input id="editCloseQuantity" type="number" step="1" placeholder="e.g. 3" />
+
+          <label for="editCloseExitDate">Exit date</label>
+          <input id="editCloseExitDate" type="date" />
+
+          <label for="editCloseExitTime">Exit time</label>
+          <input id="editCloseExitTime" type="time" />
+
+          <label for="editCloseExitReason">Exit reason</label>
+          <select id="editCloseExitReason">
+            <option value="target_hit">Target</option>
+            <option value="stop_hit">Stop</option>
+            <option value="time_exit">Time Exit</option>
+            <option value="manual_early_exit">Manual Exit</option>
+            <option value="rule_violation">Rule Violation</option>
+            <option value="partial_profit">Partial Profit</option>
+            <option value="other">Other</option>
+          </select>
+
+          <label for="editCloseLessonsLearned">Lessons learned</label>
+          <textarea id="editCloseLessonsLearned" rows="3" placeholder="What stood out about this trade?"></textarea>
+
+          <label for="editCloseReviewNotes">Review notes</label>
+          <textarea id="editCloseReviewNotes" rows="3" placeholder="Anything to remember next time"></textarea>
+        </div>
+
+        <div id="editTradeStatus" class="muted"></div>
+
+        <div class="actions">
+          <button id="saveEditTrade">Save changes</button>
+          <button id="closeEditTradeModal" class="secondary">Close</button>
+        </div>
+      </div>
+    </div>
+
     <script>
       let defaultScanPrompt = "";
       let latestTradeLog = null;
@@ -621,6 +687,7 @@
       let journalTrades = [];
       let journalInsights = null;
       let selectedTradeToClose = null;
+      let selectedTradeToEdit = null;
 
       const runScanButton = document.getElementById("runScanButton");
       const promptInput = document.getElementById("prompt");
@@ -649,6 +716,25 @@
       const closeTradeStatus = document.getElementById("closeTradeStatus");
       const saveCloseTradeButton = document.getElementById("saveCloseTrade");
       const closeCloseTradeModalButton = document.getElementById("closeCloseTradeModal");
+      const editTradeModal = document.getElementById("editTradeModal");
+      const editTradeTitle = document.getElementById("editTradeTitle");
+      const editTradeStatus = document.getElementById("editTradeStatus");
+      const editActualEntryInput = document.getElementById("editActualEntry");
+      const editQuantityInput = document.getElementById("editQuantity");
+      const editEntryDateInput = document.getElementById("editEntryDate");
+      const editEntryTimeInput = document.getElementById("editEntryTime");
+      const editAccountModeInput = document.getElementById("editAccountMode");
+      const editNoteInput = document.getElementById("editNote");
+      const editClosedFields = document.getElementById("editClosedFields");
+      const editCloseSoldForInput = document.getElementById("editCloseSoldFor");
+      const editCloseQuantityInput = document.getElementById("editCloseQuantity");
+      const editCloseExitDateInput = document.getElementById("editCloseExitDate");
+      const editCloseExitTimeInput = document.getElementById("editCloseExitTime");
+      const editCloseExitReasonInput = document.getElementById("editCloseExitReason");
+      const editCloseLessonsLearnedInput = document.getElementById("editCloseLessonsLearned");
+      const editCloseReviewNotesInput = document.getElementById("editCloseReviewNotes");
+      const saveEditTradeButton = document.getElementById("saveEditTrade");
+      const closeEditTradeModalButton = document.getElementById("closeEditTradeModal");
       const paperTraderSecretInput = document.getElementById("paperTraderSecret");
       const paperTraderPromptInput = document.getElementById("paperTraderPrompt");
       const paperTraderArea = document.getElementById("paperTraderArea");
@@ -719,6 +805,39 @@
           return "n/a";
         }
         return `${parsed.toFixed(2)}R`;
+      }
+
+      function pad2(value) {
+        return String(value).padStart(2, "0");
+      }
+
+      function formatDateInputValue(date) {
+        return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+      }
+
+      function formatTimeInputValue(date) {
+        return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+      }
+
+      function normalizeTimeInputValue(value) {
+        if (typeof value !== "string" || value.length === 0) {
+          return "";
+        }
+        return value.slice(0, 5);
+      }
+
+      function buildIsoTimestamp(dateValue, timeValue, missingDateMessage) {
+        if (!dateValue) {
+          throw new Error(missingDateMessage);
+        }
+
+        const normalizedTime = timeValue || "15:55";
+        const localTimestamp = new Date(`${dateValue}T${normalizedTime}:00`);
+        if (Number.isNaN(localTimestamp.getTime())) {
+          throw new Error("Date/time is invalid.");
+        }
+
+        return localTimestamp.toISOString();
       }
 
       function numberToneClass(value) {
@@ -1024,6 +1143,162 @@
           closeTradeStatus.textContent = "";
         }
         closeTradeModal.style.display = "none";
+      }
+
+      function resetEditTradeForm() {
+        if (editActualEntryInput) {
+          editActualEntryInput.value = "";
+        }
+        if (editQuantityInput) {
+          editQuantityInput.value = "";
+        }
+        if (editEntryDateInput) {
+          editEntryDateInput.value = "";
+        }
+        if (editEntryTimeInput) {
+          editEntryTimeInput.value = "";
+        }
+        if (editAccountModeInput) {
+          editAccountModeInput.value = "paper";
+        }
+        if (editNoteInput) {
+          editNoteInput.value = "";
+        }
+        if (editCloseSoldForInput) {
+          editCloseSoldForInput.value = "";
+        }
+        if (editCloseQuantityInput) {
+          editCloseQuantityInput.value = "";
+        }
+        if (editCloseExitDateInput) {
+          editCloseExitDateInput.value = "";
+        }
+        if (editCloseExitTimeInput) {
+          editCloseExitTimeInput.value = "";
+        }
+        if (editCloseExitReasonInput) {
+          editCloseExitReasonInput.value = "target_hit";
+        }
+        if (editCloseLessonsLearnedInput) {
+          editCloseLessonsLearnedInput.value = "";
+        }
+        if (editCloseReviewNotesInput) {
+          editCloseReviewNotesInput.value = "";
+        }
+        if (editClosedFields) {
+          editClosedFields.hidden = true;
+        }
+      }
+
+      function populateEditTradeForm(trade) {
+        if (editTradeTitle) {
+          editTradeTitle.textContent = `Edit ${trade.symbol}`;
+        }
+        if (editActualEntryInput) {
+          editActualEntryInput.value = trade.option_entry_price ?? "";
+        }
+        if (editQuantityInput) {
+          editQuantityInput.value = trade.contracts ? String(trade.contracts) : "";
+        }
+        if (editEntryDateInput) {
+          editEntryDateInput.value = trade.entry_date || "";
+        }
+        if (editEntryTimeInput) {
+          editEntryTimeInput.value = normalizeTimeInputValue(trade.entry_time);
+        }
+        if (editAccountModeInput) {
+          editAccountModeInput.value = trade.account_mode || "paper";
+        }
+        if (editNoteInput) {
+          editNoteInput.value = trade.entry_notes || "";
+        }
+
+        const isClosed = trade.status === "closed" && trade.latest_exit;
+        if (editClosedFields) {
+          editClosedFields.hidden = !isClosed;
+        }
+
+        if (!isClosed) {
+          return;
+        }
+
+        const exitTime = new Date(trade.latest_exit.exit_time);
+        if (editCloseSoldForInput) {
+          editCloseSoldForInput.value = trade.latest_exit.option_exit_price ?? "";
+        }
+        if (editCloseQuantityInput) {
+          editCloseQuantityInput.value = trade.latest_exit.quantity_closed ? String(trade.latest_exit.quantity_closed) : "";
+        }
+        if (editCloseExitDateInput) {
+          editCloseExitDateInput.value = Number.isNaN(exitTime.getTime()) ? "" : formatDateInputValue(exitTime);
+        }
+        if (editCloseExitTimeInput) {
+          editCloseExitTimeInput.value = Number.isNaN(exitTime.getTime()) ? "" : formatTimeInputValue(exitTime);
+        }
+        if (editCloseExitReasonInput) {
+          editCloseExitReasonInput.value = trade.latest_exit.exit_reason || "target_hit";
+        }
+        if (editCloseLessonsLearnedInput) {
+          editCloseLessonsLearnedInput.value = trade.review?.lessons_learned || "";
+        }
+        if (editCloseReviewNotesInput) {
+          editCloseReviewNotesInput.value = trade.review?.review_notes || "";
+        }
+      }
+
+      async function openEditTradeModal(tradeId) {
+        const tradeSummary = journalTrades.find((trade) => trade.id === tradeId) || null;
+        if (!tradeId || !tradeSummary) {
+          return;
+        }
+
+        selectedTradeToEdit = null;
+        resetEditTradeForm();
+        if (editTradeTitle) {
+          editTradeTitle.textContent = `Edit ${tradeSummary.symbol}`;
+        }
+        if (editTradeStatus) {
+          editTradeStatus.textContent = "Loading trade...";
+        }
+        if (saveEditTradeButton) {
+          saveEditTradeButton.disabled = true;
+        }
+        editTradeModal.style.display = "flex";
+
+        try {
+          const response = await fetch(`/api/journal/${encodeURIComponent(tradeId)}`);
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data?.message || "Failed to load journal trade.");
+          }
+
+          selectedTradeToEdit = data.trade || null;
+          if (!selectedTradeToEdit) {
+            throw new Error("Trade details were empty.");
+          }
+
+          populateEditTradeForm(selectedTradeToEdit);
+          if (editTradeStatus) {
+            editTradeStatus.textContent = "";
+          }
+        } catch (error) {
+          if (editTradeStatus) {
+            editTradeStatus.textContent = error instanceof Error ? error.message : "Failed to load trade.";
+          }
+        } finally {
+          if (saveEditTradeButton) {
+            saveEditTradeButton.disabled = !selectedTradeToEdit;
+          }
+        }
+      }
+
+      function closeEditTradeModal() {
+        selectedTradeToEdit = null;
+        resetEditTradeForm();
+        if (editTradeStatus) {
+          editTradeStatus.textContent = "";
+        }
+        editTradeModal.style.display = "none";
       }
 
       async function loadDefaults() {
@@ -1482,6 +1757,7 @@
                   <div class="row"><strong>Exit reason:</strong> ${escapeHtml(renderMaybe(trade.latest_exit_reason, trade.status === "open" ? "not closed yet" : "n/a"))}</div>
                 </div>
                 <div class="inline-actions">
+                  <button class="secondary" data-edit-trade-id="${escapeHtml(trade.id)}">Edit trade</button>
                   ${trade.status === "open" ? `<button class="secondary" data-close-trade-id="${escapeHtml(trade.id)}">Close and review</button>` : ""}
                   <button class="secondary" data-delete-trade-id="${escapeHtml(trade.id)}">Delete trade</button>
                 </div>
@@ -1492,18 +1768,11 @@
       }
 
       function buildExitTimestamp() {
-        const dateValue = closeExitDateInput?.value || "";
-        const timeValue = closeExitTimeInput?.value || "15:55";
-        if (!dateValue) {
-          throw new Error("Exit date is required.");
-        }
-
-        const localTimestamp = new Date(`${dateValue}T${timeValue}:00`);
-        if (Number.isNaN(localTimestamp.getTime())) {
-          throw new Error("Exit date/time is invalid.");
-        }
-
-        return localTimestamp.toISOString();
+        return buildIsoTimestamp(
+          closeExitDateInput?.value || "",
+          closeExitTimeInput?.value || "15:55",
+          "Exit date is required.",
+        );
       }
 
       runScanButton.addEventListener("click", async () => {
@@ -1570,6 +1839,13 @@
         }
       });
 
+      closeEditTradeModalButton.addEventListener("click", closeEditTradeModal);
+      editTradeModal.addEventListener("click", (event) => {
+        if (event.target === editTradeModal) {
+          closeEditTradeModal();
+        }
+      });
+
       refreshInsightsButton?.addEventListener("click", loadJournalInsights);
       refreshJournalButton?.addEventListener("click", loadJournalTrades);
       paperTraderSecretInput?.addEventListener("input", () => {
@@ -1593,6 +1869,12 @@
       journalTradesArea?.addEventListener("click", (event) => {
         const target = event.target;
         if (!(target instanceof HTMLElement)) {
+          return;
+        }
+
+        const editButton = target.closest("[data-edit-trade-id]");
+        if (editButton) {
+          openEditTradeModal(editButton.getAttribute("data-edit-trade-id"));
           return;
         }
 
@@ -1704,6 +1986,83 @@
           }
         } finally {
           saveTradeLogButton.disabled = false;
+        }
+      });
+
+      saveEditTradeButton.addEventListener("click", async () => {
+        try {
+          if (!selectedTradeToEdit) {
+            throw new Error("Select a trade to edit first.");
+          }
+
+          const optionEntryPrice = editActualEntryInput?.value ? Number(editActualEntryInput.value) : null;
+          const contracts = editQuantityInput?.value ? Number(editQuantityInput.value) : null;
+          if (optionEntryPrice !== null && (!Number.isFinite(optionEntryPrice) || optionEntryPrice <= 0)) {
+            throw new Error("Entry option price must be a positive number.");
+          }
+          if (contracts !== null && (!Number.isFinite(contracts) || contracts <= 0)) {
+            throw new Error("Contracts must be a positive whole number.");
+          }
+
+          const payload = {
+            account_mode: editAccountModeInput?.value || "paper",
+            entry_date: editEntryDateInput?.value || null,
+            entry_time: editEntryTimeInput?.value || null,
+            contracts,
+            option_entry_price: optionEntryPrice,
+            entry_notes: editNoteInput?.value || null,
+          };
+
+          if (!payload.entry_date) {
+            throw new Error("Entry date is required.");
+          }
+
+          if (selectedTradeToEdit.status === "closed") {
+            const optionExitPrice = editCloseSoldForInput?.value ? Number(editCloseSoldForInput.value) : null;
+            const quantityClosed = editCloseQuantityInput?.value ? Number(editCloseQuantityInput.value) : null;
+            if (optionExitPrice === null || !Number.isFinite(optionExitPrice) || optionExitPrice <= 0) {
+              throw new Error("Exit option price must be a positive number.");
+            }
+            if (quantityClosed === null || !Number.isFinite(quantityClosed) || quantityClosed <= 0) {
+              throw new Error("Quantity closed must be a positive whole number.");
+            }
+
+            payload.option_exit_price = optionExitPrice;
+            payload.quantity_closed = quantityClosed;
+            payload.exit_reason = editCloseExitReasonInput?.value || "target_hit";
+            payload.exit_timestamp = buildIsoTimestamp(
+              editCloseExitDateInput?.value || "",
+              editCloseExitTimeInput?.value || "15:55",
+              "Exit date is required.",
+            );
+            payload.lessons_learned = editCloseLessonsLearnedInput?.value || null;
+            payload.review_notes = editCloseReviewNotesInput?.value || null;
+          }
+
+          saveEditTradeButton.disabled = true;
+          if (editTradeStatus) {
+            editTradeStatus.textContent = "Saving changes...";
+          }
+
+          const response = await fetch(`/api/journal/${encodeURIComponent(selectedTradeToEdit.id)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data?.message || "Failed to update journal trade.");
+          }
+
+          latestTradeLog = data.trade;
+          closeEditTradeModal();
+          await refreshJournalData();
+        } catch (error) {
+          if (editTradeStatus) {
+            editTradeStatus.textContent = error instanceof Error ? error.message : "Unexpected update error.";
+          }
+        } finally {
+          saveEditTradeButton.disabled = false;
         }
       });
 

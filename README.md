@@ -298,6 +298,7 @@ The journal uses durable server-side persistence in Supabase Postgres.
 - `POST /api/journal` validates and stores an initial journal trade entry.
 - `GET /api/journal` returns recent entries.
 - `GET /api/journal/:id` returns one entry.
+- `PUT /api/journal/:id` edits saved journal fills, timestamps, and review notes while recalculating derived P/L.
 - `PATCH /api/journal/:id` stores a trade closeout and review summary.
 - `GET /api/journal/insights` returns journal analytics such as win rate, weekday profitability, setup performance, and recent winner/loser reasoning comparisons.
 - Schema migrations live in `supabase/migrations`.
