@@ -280,6 +280,7 @@
         gap: 18px;
       }
       .journal-trade,
+      .recommendation-card,
       .comparison-card {
         border: 1px solid var(--border);
         border-radius: 16px;
@@ -404,6 +405,7 @@
         margin-top: 10px;
       }
       .comparison-card h4,
+      .recommendation-card h4,
       .journal-trade h4 {
         margin-bottom: 8px;
       }
@@ -509,6 +511,19 @@
           </div>
         </div>
         <div id="resultArea">No run yet.</div>
+      </div>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Past Recommendations</h2>
+            <p class="section-description">Recent saved trade cards and reasoning snapshots. Use these when you took a setup after the active card changed or the page refreshed.</p>
+          </div>
+          <div class="actions">
+            <button id="refreshRecommendationsButton" class="secondary">Refresh Recommendations</button>
+          </div>
+        </div>
+        <div id="tradeRecommendationsArea" class="muted">Loading recommendations...</div>
       </div>
 
       <div class="card">
@@ -686,8 +701,10 @@
       let latestBackendData = null;
       let journalTrades = [];
       let journalInsights = null;
+      let tradeRecommendations = [];
       let selectedTradeToClose = null;
       let selectedTradeToEdit = null;
+      let selectedRecommendationForJournal = null;
 
       const runScanButton = document.getElementById("runScanButton");
       const promptInput = document.getElementById("prompt");
@@ -700,6 +717,8 @@
       const entryDateInput = document.getElementById("entryDate");
       const entryTimeInput = document.getElementById("entryTime");
       const accountModeInput = document.getElementById("accountMode");
+      const tradeRecommendationsArea = document.getElementById("tradeRecommendationsArea");
+      const refreshRecommendationsButton = document.getElementById("refreshRecommendationsButton");
       const journalInsightsArea = document.getElementById("journalInsightsArea");
       const journalTradesArea = document.getElementById("journalTradesArea");
       const refreshInsightsButton = document.getElementById("refreshInsightsButton");
@@ -935,6 +954,32 @@
         return data;
       }
 
+      function buildBackendDataFromRecommendation(recommendation) {
+        const snapshot = recommendation?.signal_snapshot_json || {};
+        const scan = snapshot.scan || null;
+        const telemetry = snapshot.telemetry || scan?.telemetry || null;
+
+        return {
+          scan_run_id: recommendation?.scan_run_id || null,
+          prompt: recommendation?.prompt || null,
+          scan,
+          telemetry,
+          tradeCard: snapshot.tradeCard || null,
+          journalPlannedTrade: recommendation?.planned_trade_json || null,
+          presentationSummary: snapshot.presentationSummary || null,
+          tradeRecommendation: recommendation || null,
+        };
+      }
+
+      function getTradeEntrySourceData() {
+        return selectedRecommendationForJournal?.backendData || latestBackendData;
+      }
+
+      function readContractsFromTradeCard(sourceData) {
+        const contractsMatch = (sourceData?.tradeCard?.buy || "").match(/^(\d+)x/i);
+        return contractsMatch ? contractsMatch[1] : "";
+      }
+
       function renderPaperTraderStatus(status) {
         if (!paperTraderArea) {
           return;
@@ -1083,9 +1128,33 @@
         }
       }
 
-      function openTradeEntryModal() {
-        if (entryDateInput && !entryDateInput.value) {
-          entryDateInput.value = new Date().toISOString().slice(0, 10);
+      function openTradeEntryModal(sourceData = latestBackendData, recommendationId = null) {
+        selectedRecommendationForJournal = sourceData
+          ? { backendData: sourceData, recommendationId }
+          : null;
+
+        const quantityInput = document.getElementById("quantity");
+        const actualEntryInput = document.getElementById("actualEntry");
+        const noteInput = document.getElementById("note");
+        const now = new Date();
+
+        if (quantityInput) {
+          quantityInput.value = readContractsFromTradeCard(sourceData);
+        }
+        if (actualEntryInput) {
+          actualEntryInput.value = "";
+        }
+        if (noteInput) {
+          noteInput.value = "";
+        }
+        if (entryDateInput) {
+          entryDateInput.value = formatDateInputValue(now);
+        }
+        if (entryTimeInput) {
+          entryTimeInput.value = formatTimeInputValue(now);
+        }
+        if (accountModeInput) {
+          accountModeInput.value = "paper";
         }
         if (tradeModalStatus) {
           tradeModalStatus.textContent = "";
@@ -1094,6 +1163,7 @@
       }
 
       function closeTradeEntryModal() {
+        selectedRecommendationForJournal = null;
         if (tradeModalStatus) {
           tradeModalStatus.textContent = "";
         }
@@ -1359,8 +1429,44 @@
         }
       }
 
+      async function loadTradeRecommendations() {
+        if (tradeRecommendationsArea) {
+          tradeRecommendationsArea.innerHTML = '<div class="muted">Loading recommendations...</div>';
+        }
+
+        try {
+          const response = await fetch("/api/recommendations");
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data?.message || "Failed to load trade recommendations.");
+          }
+          tradeRecommendations = Array.isArray(data.recommendations) ? data.recommendations : [];
+          renderTradeRecommendations();
+        } catch (error) {
+          if (tradeRecommendationsArea) {
+            tradeRecommendationsArea.innerHTML = `<div class="muted">${escapeHtml(error instanceof Error ? error.message : "Failed to load trade recommendations.")}</div>`;
+          }
+        }
+      }
+
+      async function markRecommendationJournaled(recommendationId, journalTradeId) {
+        if (!recommendationId || !journalTradeId) {
+          return;
+        }
+
+        const response = await fetch(`/api/recommendations/${encodeURIComponent(recommendationId)}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ journal_trade_id: journalTradeId }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data?.message || "Failed to mark recommendation as journaled.");
+        }
+      }
+
       async function refreshJournalData() {
-        await Promise.all([loadJournalTrades(), loadJournalInsights()]);
+        await Promise.all([loadJournalTrades(), loadJournalInsights(), loadTradeRecommendations()]);
       }
 
       function renderDebugDetailsPanel() {
@@ -1482,8 +1588,7 @@
 
       function renderTrade(scan, tradeCard, presentationSummary) {
         const planned = latestBackendData?.journalPlannedTrade || null;
-        const contractsMatch = (latestBackendData?.tradeCard?.buy || "").match(/^(\d+)x/i);
-        const contractsFromCard = contractsMatch ? contractsMatch[1] : "";
+        const contractsFromCard = readContractsFromTradeCard(latestBackendData);
         const quantityInput = document.getElementById("quantity");
         if (quantityInput && !quantityInput.value) {
           quantityInput.value = contractsFromCard;
@@ -1506,7 +1611,9 @@
         `;
 
         const tookTradeButton = document.getElementById("tookTradeButton");
-        tookTradeButton?.addEventListener("click", openTradeEntryModal);
+        tookTradeButton?.addEventListener("click", () => {
+          openTradeEntryModal(latestBackendData, latestBackendData?.tradeRecommendation?.id || null);
+        });
 
         if (latestTradeLog) {
           const holder = document.getElementById("localTradeCapture");
@@ -1516,9 +1623,9 @@
         }
       }
 
-      function buildSavedReasoningSnapshot() {
-        const symbol = latestBackendData?.scan?.ticker || latestBackendData?.journalPlannedTrade?.symbol || null;
-        const telemetry = latestBackendData?.telemetry || latestBackendData?.scan?.telemetry || null;
+      function buildSavedReasoningSnapshot(sourceData = latestBackendData) {
+        const symbol = sourceData?.scan?.ticker || sourceData?.journalPlannedTrade?.symbol || null;
+        const telemetry = sourceData?.telemetry || sourceData?.scan?.telemetry || null;
         const stage3PassedDetail = Array.isArray(telemetry?.stage3PassedDetails)
           ? telemetry.stage3PassedDetails.find((item) => item?.symbol === symbol)
           : null;
@@ -1531,27 +1638,27 @@
         const finalistsDebugDetail = Array.isArray(telemetry?.finalistsReviewedDebug)
           ? telemetry.finalistsReviewedDebug.find((item) => item?.symbol === symbol)
           : null;
-        const finalChartGeometry = latestBackendData?.presentationSummary?.finalChartGeometry || null;
+        const finalChartGeometry = sourceData?.presentationSummary?.finalChartGeometry || null;
 
         return {
-          scan_reason: latestBackendData?.scan?.reason || null,
-          concise_reasoning: latestBackendData?.presentationSummary?.conciseReasoning || null,
-          why_this_won: latestBackendData?.presentationSummary?.whyThisWon || null,
+          scan_reason: sourceData?.scan?.reason || null,
+          concise_reasoning: sourceData?.presentationSummary?.conciseReasoning || null,
+          why_this_won: sourceData?.presentationSummary?.whyThisWon || null,
           chart_geometry: finalChartGeometry
             ? {
                 ...finalChartGeometry,
                 final_chart_reward_risk: finalChartGeometry.finalChartRewardRisk || null,
               }
             : null,
-          review_ladder: latestBackendData?.presentationSummary?.reviewLadder || [],
+          review_ladder: sourceData?.presentationSummary?.reviewLadder || [],
           stage3_summary: stage3PassedDetail?.summary || null,
           stage3_why_passed: stage3PassedDetail?.whyPassed || null,
           review_outcome_reason: reviewedOutcome?.reason || null,
           confirmation_failure_reasons: reviewedOutcome?.confirmationFailureReasons || [],
           volume_ratio: rankingDetail?.scoreInputs?.volumeRatio ?? null,
           chart_review_score: rankingDetail?.scoreInputs?.chartReviewScore ?? null,
-          expected_timing: latestBackendData?.tradeCard?.expectedTiming || null,
-          trade_rationale: latestBackendData?.tradeCard?.rationale || null,
+          expected_timing: sourceData?.tradeCard?.expectedTiming || null,
+          trade_rationale: sourceData?.tradeCard?.rationale || null,
           technical_snapshot: {
             stage3_direction: stage3PassedDetail?.direction || reviewedOutcome?.direction || null,
             move_pct: rankingDetail?.scoreInputs?.movePct ?? null,
@@ -1635,6 +1742,68 @@
             `).join("")}
           </div>
         `;
+      }
+
+      function renderTradeRecommendations() {
+        if (!tradeRecommendationsArea) {
+          return;
+        }
+
+        if (!Array.isArray(tradeRecommendations) || tradeRecommendations.length === 0) {
+          tradeRecommendationsArea.innerHTML = '<div class="empty-state">No saved trade-card recommendations yet. Run a scan that produces a trade card and it will appear here.</div>';
+          return;
+        }
+
+        tradeRecommendationsArea.innerHTML = tradeRecommendations.map((recommendation) => {
+          const sourceData = buildBackendDataFromRecommendation(recommendation);
+          const planned = sourceData.journalPlannedTrade || {};
+          const summary = sourceData.presentationSummary || {};
+          const summaryTradeCard = summary.tradeCard || {};
+          const rawTradeCard = sourceData.tradeCard || {};
+          const geometry = summary.finalChartGeometry || null;
+          const journaled = Boolean(recommendation.journal_trade_id);
+          const createdAt = new Date(recommendation.created_at);
+          const createdLabel = Number.isNaN(createdAt.getTime())
+            ? renderMaybe(recommendation.created_at)
+            : `${createdAt.toLocaleDateString()} ${createdAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+          const optionChosen = summaryTradeCard.optionChosen || `${renderMaybe(rawTradeCard.ticker || planned.symbol)} ${renderMaybe(rawTradeCard.direction || planned.direction)} via ${renderMaybe(rawTradeCard.buy)}`;
+          const primaryReasoning = summary.conciseReasoning || sourceData.scan?.reason || null;
+          const levels = geometry
+            ? `${renderMaybe(geometry.reference)} -> stop ${renderMaybe(geometry.invalidation)} / target ${renderMaybe(geometry.target)}`
+            : null;
+
+          return `
+            <div class="recommendation-card">
+              <div class="trade-header">
+                <div>
+                  <div class="trade-title">
+                    <strong class="trade-symbol">${escapeHtml(renderMaybe(recommendation.symbol || planned.symbol))}</strong>
+                    <span class="status-chip ${journaled ? "status-closed" : "status-open"}">${escapeHtml(journaled ? "journaled" : "available")}</span>
+                  </div>
+                  <div class="trade-caption">Recommended ${escapeHtml(createdLabel)} • ${escapeHtml(renderMaybe(planned.setup_type, "scanner_trade"))}</div>
+                </div>
+                <div class="mono">${escapeHtml(renderMaybe(planned.direction || recommendation.direction))} • ${escapeHtml(renderMaybe(planned.confidence_bucket || recommendation.confidence_bucket))}</div>
+              </div>
+
+              <div class="row"><strong>Option:</strong> ${escapeHtml(optionChosen)}</div>
+              <div class="row"><strong>Expected timing:</strong> ${escapeHtml(renderMaybe(summaryTradeCard.expectedTiming || rawTradeCard.expectedTiming))}</div>
+              <div class="row"><strong>Levels:</strong> ${escapeHtml(renderMaybe(levels))}</div>
+              <div class="row"><strong>Reasoning:</strong> ${escapeHtml(renderMaybe(primaryReasoning))}</div>
+              <div class="row"><strong>Rationale:</strong> ${escapeHtml(renderMaybe(summaryTradeCard.rationale || rawTradeCard.rationale))}</div>
+
+              <div class="inline-actions">
+                ${journaled
+                  ? `<span class="muted">Saved to journal as ${escapeHtml(recommendation.journal_trade_id)}</span>`
+                  : `<button class="secondary" data-take-recommendation-id="${escapeHtml(recommendation.id)}">I took this trade</button>`}
+              </div>
+
+              <details>
+                <summary>Saved reasoning snapshot</summary>
+                <pre>${escapeHtml(JSON.stringify(sourceData, null, 2))}</pre>
+              </details>
+            </div>
+          `;
+        }).join("");
       }
 
       function renderJournalInsights() {
@@ -1818,6 +1987,7 @@
           }
 
           renderTrade(data.scan, data.tradeCard, data.presentationSummary || null);
+          await loadTradeRecommendations();
         } catch (error) {
           resultArea.textContent = error instanceof Error ? error.message : "Unexpected error.";
         } finally {
@@ -1848,6 +2018,7 @@
 
       refreshInsightsButton?.addEventListener("click", loadJournalInsights);
       refreshJournalButton?.addEventListener("click", loadJournalTrades);
+      refreshRecommendationsButton?.addEventListener("click", loadTradeRecommendations);
       paperTraderSecretInput?.addEventListener("input", () => {
         try {
           window.localStorage.setItem(paperTraderSecretStorageKey, paperTraderSecretInput.value);
@@ -1865,6 +2036,25 @@
           return;
         }
         runPaperTraderCycle(false);
+      });
+      tradeRecommendationsArea?.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) {
+          return;
+        }
+
+        const takeButton = target.closest("[data-take-recommendation-id]");
+        if (!takeButton) {
+          return;
+        }
+
+        const recommendationId = takeButton.getAttribute("data-take-recommendation-id");
+        const recommendation = tradeRecommendations.find((item) => item.id === recommendationId) || null;
+        if (!recommendation) {
+          return;
+        }
+
+        openTradeEntryModal(buildBackendDataFromRecommendation(recommendation), recommendation.id);
       });
       journalTradesArea?.addEventListener("click", (event) => {
         const target = event.target;
@@ -1934,7 +2124,9 @@
             tradeModalStatus.textContent = "Saving...";
           }
 
-          const plannedTrade = latestBackendData?.journalPlannedTrade;
+          const sourceData = getTradeEntrySourceData();
+          const recommendationId = selectedRecommendationForJournal?.recommendationId || null;
+          const plannedTrade = sourceData?.journalPlannedTrade;
           if (!plannedTrade) {
             throw new Error("No planned trade data was available from workflow response.");
           }
@@ -1948,17 +2140,18 @@
             entry_notes: document.getElementById("note").value || null,
             planned_trade: {
               ...plannedTrade,
-              scan_run_id: latestBackendData?.scan_run_id || null,
-              symbol: plannedTrade.symbol || latestBackendData?.scan?.ticker,
-              direction: plannedTrade.direction || latestBackendData?.scan?.direction,
+              scan_run_id: sourceData?.scan_run_id || null,
+              symbol: plannedTrade.symbol || sourceData?.scan?.ticker,
+              direction: plannedTrade.direction || sourceData?.scan?.direction,
               setup_type: plannedTrade.setup_type || "scanner_trade",
             },
             signal_snapshot_json: {
-              scan: latestBackendData?.scan || null,
-              telemetry: latestBackendData?.telemetry || latestBackendData?.scan?.telemetry || null,
-              tradeCard: latestBackendData?.tradeCard || null,
-              presentationSummary: latestBackendData?.presentationSummary || null,
-              reasoningSnapshot: buildSavedReasoningSnapshot(),
+              scan: sourceData?.scan || null,
+              telemetry: sourceData?.telemetry || sourceData?.scan?.telemetry || null,
+              tradeCard: sourceData?.tradeCard || null,
+              presentationSummary: sourceData?.presentationSummary || null,
+              recommendation: recommendationId ? { id: recommendationId } : null,
+              reasoningSnapshot: buildSavedReasoningSnapshot(sourceData),
             },
           };
 
@@ -1973,6 +2166,13 @@
           }
 
           latestTradeLog = data.trade;
+          if (recommendationId && latestTradeLog?.id) {
+            try {
+              await markRecommendationJournaled(recommendationId, latestTradeLog.id);
+            } catch (recommendationError) {
+              console.warn("Journal entry saved, but recommendation status could not be updated.", recommendationError);
+            }
+          }
           closeTradeEntryModal();
           await refreshJournalData();
 
