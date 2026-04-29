@@ -30,6 +30,7 @@ export type AiManagementInput = {
   progressToTargetPct: number | null;
   optionReturnPct: number | null;
   rationale: string | null;
+  currentChartReviewSummary?: string | null;
   lastManagementNote: string | null;
   lastManagementThesis: string | null;
   managementHistorySummary: string | null;
@@ -129,6 +130,10 @@ function buildPrompt(input: AiManagementInput): string {
     input.managementHistorySummary
       ? `Current trade management history:\n${input.managementHistorySummary}`
       : "Current trade management history: none yet.",
+    "",
+    input.currentChartReviewSummary
+      ? `Fresh read-only multi-timeframe chart review:\n${input.currentChartReviewSummary}`
+      : "Fresh read-only multi-timeframe chart review: unavailable.",
     "",
     `Trade context: ${JSON.stringify(input)}`,
   ].join("\n");

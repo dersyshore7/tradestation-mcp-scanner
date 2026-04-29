@@ -510,7 +510,7 @@
             <p class="section-description">For a trade you already took but forgot to journal. Saves the missing trade and asks the read-only AI manager whether the current state favors holding, tightening levels, or considering an exit.</p>
           </div>
         </div>
-        <div class="field-note">Decision support only. This never places orders. If you do not provide current prices, the app will try to fetch read-only quotes from TradeStation.</div>
+        <div class="field-note">Decision support only. This never places orders. The app reads the current multi-timeframe chart from TradeStation; manual prices below are optional overrides for option P/L math.</div>
 
         <div class="section-grid">
           <div>
@@ -557,11 +557,11 @@
           </div>
           <div>
             <label for="lateCurrentUnderlying">Current underlying price</label>
-            <input id="lateCurrentUnderlying" type="number" step="0.01" placeholder="Optional if quote fetch works" />
+            <input id="lateCurrentUnderlying" type="number" step="0.01" placeholder="Optional manual override" />
           </div>
           <div>
             <label for="lateCurrentOptionMid">Current option mid/mark</label>
-            <input id="lateCurrentOptionMid" type="number" step="0.01" placeholder="Optional if option symbol is provided" />
+            <input id="lateCurrentOptionMid" type="number" step="0.01" placeholder="Optional manual override" />
           </div>
           <div>
             <label for="lateStopUnderlying">Invalidation / stop level</label>
@@ -1296,7 +1296,13 @@
         const decision = result?.decision || {};
         const metrics = result?.metrics || {};
         const quoteStatus = result?.quote_status || {};
+        const chartReview = result?.chart_review || {};
         const quoteErrors = Array.isArray(quoteStatus.errors) ? quoteStatus.errors : [];
+        const chartAlignedLabel = chartReview.alignsWithTradeDirection === null || chartReview.alignsWithTradeDirection === undefined
+          ? "unknown"
+          : chartReview.alignsWithTradeDirection
+            ? "aligned with trade"
+            : "against trade";
 
         lateReviewArea.innerHTML = `
           <div class="summary-section" style="margin-top: 14px;">
@@ -1305,6 +1311,14 @@
             <div class="row"><strong>Execution note:</strong> ${escapeHtml(renderMaybe(decision.note))}</div>
             <div class="row"><strong>Updated stop:</strong> ${escapeHtml(formatMoney(decision.updatedStopUnderlying))} | <strong>Updated target:</strong> ${escapeHtml(formatMoney(decision.updatedTargetUnderlying))}</div>
             <div class="field-note">This is decision support only. No order was placed.</div>
+          </div>
+
+          <div class="summary-section">
+            <h3>Fresh Market Read</h3>
+            <div class="row"><strong>Chart conclusion:</strong> ${escapeHtml(renderMaybe(chartReview.conclusion))} | <strong>Chart direction:</strong> ${escapeHtml(renderMaybe(chartReview.direction))} | <strong>Alignment:</strong> ${escapeHtml(chartAlignedLabel)}</div>
+            <div class="row"><strong>Current chart levels:</strong> ref ${escapeHtml(formatMoney(chartReview.referencePrice))} | invalidation ${escapeHtml(formatMoney(chartReview.invalidationLevel))} | target ${escapeHtml(formatMoney(chartReview.targetLevel))} | R:R ${escapeHtml(renderMaybe(chartReview.actualRewardRiskRatio === null || chartReview.actualRewardRiskRatio === undefined ? null : Number(chartReview.actualRewardRiskRatio).toFixed(2)))}</div>
+            <div class="row"><strong>Market read:</strong> ${escapeHtml(renderMaybe(chartReview.reason))}</div>
+            <div class="row"><strong>Blocking reasons:</strong> ${escapeHtml(Array.isArray(chartReview.topBlockingReasons) && chartReview.topBlockingReasons.length > 0 ? chartReview.topBlockingReasons.join(" | ") : "none")}</div>
           </div>
 
           <div class="stats-grid">

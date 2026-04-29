@@ -205,7 +205,7 @@ A minimal UI is available at the project root (`/`) for running the existing sca
 - If no confirmed setup exists, the UI shows `no_trade_today`.
 - If confirmed, it shows the scan reasoning and full trade card plus an **I took this trade** modal that persists to Supabase via `POST /api/journal`.
 - Confirmed trade-card recommendations are also saved to **Past Recommendations**, so you can revisit prior reasoning after a refresh or a newer scan and journal the older setup if you actually took it.
-- Use **Late Trade Review** for trades you took before recommendation history existed. It captures the real entry, optional current prices, stop/target levels, and thesis, then asks the read-only AI manager for hold/update-levels/consider-exit decision support.
+- Use **Late Trade Review** for trades you took before recommendation history existed. It captures the real entry, optional current prices, stop/target levels, and thesis, reads fresh multi-timeframe chart context from TradeStation, then asks the read-only AI manager for hold/update-levels/consider-exit decision support.
 - The page now also shows journal insights, recent journal trades, and lets you close a trade with realized P/L and review notes.
 
 This UI is intentionally thin and does not place orders.

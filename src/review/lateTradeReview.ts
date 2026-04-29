@@ -1,6 +1,7 @@
 import { decideAiManagementAction, enforceAiManagementGuardrails } from "../automation/aiManager.js";
 import { readPaperTraderConfig } from "../automation/config.js";
 import { createAutomationTradeStationClient } from "../automation/tradestation.js";
+import { runSingleSymbolTradeStationAnalysis } from "../app/runScan.js";
 import { createJournalTrade, getJournalTradeById } from "../journal/repository.js";
 import type { AccountMode, JournalTradeDetail, TradeDirection } from "../journal/types.js";
 
@@ -44,6 +45,18 @@ export type LateTradeReviewResult = {
     underlying: "manual" | "fetched" | "missing";
     option: "manual" | "fetched" | "missing";
     errors: string[];
+  };
+  chart_review: {
+    conclusion: "confirmed" | "rejected" | "no_trade_today" | "unavailable";
+    direction: "bullish" | "bearish" | null;
+    confidence: string | null;
+    reason: string;
+    alignsWithTradeDirection: boolean | null;
+    referencePrice: number | null;
+    invalidationLevel: number | null;
+    targetLevel: number | null;
+    actualRewardRiskRatio: number | null;
+    topBlockingReasons: string[];
   };
 };
 
@@ -196,6 +209,23 @@ function computeOptionReturnPct(entryOptionPrice: number, currentOptionMid: numb
   return Number((((currentOptionMid - entryOptionPrice) / entryOptionPrice) * 100).toFixed(1));
 }
 
+function toMarketDirection(direction: TradeDirection): "bullish" | "bearish" {
+  return direction === "CALL" ? "bullish" : "bearish";
+}
+
+function buildChartReviewSummary(
+  chartReview: LateTradeReviewResult["chart_review"],
+): string {
+  return [
+    `Current multi-timeframe chart conclusion: ${chartReview.conclusion}.`,
+    `Detected chart direction: ${chartReview.direction ?? "neutral"}; trade direction alignment: ${chartReview.alignsWithTradeDirection === null ? "unknown" : chartReview.alignsWithTradeDirection ? "aligned" : "against trade"}.`,
+    `Chart confidence: ${chartReview.confidence ?? "n/a"}.`,
+    `Reference=${chartReview.referencePrice ?? "n/a"}, invalidation=${chartReview.invalidationLevel ?? "n/a"}, target=${chartReview.targetLevel ?? "n/a"}, chart R:R=${chartReview.actualRewardRiskRatio ?? "n/a"}.`,
+    `Blocking reasons: ${chartReview.topBlockingReasons.length > 0 ? chartReview.topBlockingReasons.join("; ") : "none"}.`,
+    `Narrative: ${chartReview.reason}`,
+  ].join(" ");
+}
+
 export function validateLateTradeReviewPayload(payload: unknown): LateTradeReviewInput {
   const input = asRecord(payload);
   const entryDate = readDate(input.entry_date, "entry_date");
@@ -269,8 +299,66 @@ async function resolveCurrentPrices(input: LateTradeReviewInput): Promise<{
   };
 }
 
+async function readCurrentChartReview(
+  input: LateTradeReviewInput,
+): Promise<LateTradeReviewResult["chart_review"]> {
+  try {
+    const review = await runSingleSymbolTradeStationAnalysis(
+      input.symbol,
+      readPaperTraderConfig().automationBaseUrl,
+    );
+    const debug = review.confirmationDebug;
+    const expectedDirection = toMarketDirection(input.direction);
+    const alignsWithTradeDirection = review.direction
+      ? review.direction === expectedDirection
+      : null;
+
+    return {
+      conclusion: review.conclusion,
+      direction: review.direction,
+      confidence: review.confidence,
+      reason: review.reason,
+      alignsWithTradeDirection,
+      referencePrice:
+        debug?.finalizedTradeGeometry?.referencePrice
+        ?? debug?.confirmationReferencePrice
+        ?? debug?.stage3ReferencePrice
+        ?? null,
+      invalidationLevel:
+        debug?.finalizedTradeGeometry?.invalidationLevel
+        ?? debug?.invalidationLevel
+        ?? null,
+      targetLevel:
+        debug?.finalizedTradeGeometry?.targetLevel
+        ?? debug?.targetLevel
+        ?? null,
+      actualRewardRiskRatio:
+        debug?.finalizedTradeGeometry?.rewardRiskRatio
+        ?? debug?.actualRewardRiskRatio
+        ?? null,
+      topBlockingReasons: debug?.topBlockingReasons ?? [],
+    };
+  } catch (error) {
+    return {
+      conclusion: "unavailable",
+      direction: null,
+      confidence: null,
+      reason: error instanceof Error ? error.message : "Failed to read current chart.",
+      alignsWithTradeDirection: null,
+      referencePrice: null,
+      invalidationLevel: null,
+      targetLevel: null,
+      actualRewardRiskRatio: null,
+      topBlockingReasons: ["current chart review unavailable"],
+    };
+  }
+}
+
 export async function reviewLateTrade(input: LateTradeReviewInput): Promise<LateTradeReviewResult> {
-  const { currentUnderlyingPrice, currentOptionMid, quoteStatus } = await resolveCurrentPrices(input);
+  const [{ currentUnderlyingPrice, currentOptionMid, quoteStatus }, chartReview] = await Promise.all([
+    resolveCurrentPrices(input),
+    readCurrentChartReview(input),
+  ]);
   const dteAtEntry = calculateDteAtEntry(input.entry_date, input.expiration_date);
   const positionCostUsd = input.contracts * input.option_entry_price * 100;
   const progressToTargetPct = computeProgressToTargetPct({
@@ -300,6 +388,7 @@ export async function reviewLateTrade(input: LateTradeReviewInput): Promise<Late
     progressToTargetPct,
     optionReturnPct,
     rationale: input.rationale,
+    currentChartReviewSummary: buildChartReviewSummary(chartReview),
     lastManagementNote: null,
     lastManagementThesis: null,
     managementHistorySummary: "Late manual review: no prior saved scanner recommendation or management history is available.",
@@ -343,6 +432,7 @@ export async function reviewLateTrade(input: LateTradeReviewInput): Promise<Late
           currentUnderlyingPrice,
           currentOptionMid,
           quoteStatus,
+          chartReview,
           decision,
           reviewedAt: new Date().toISOString(),
           note: "Decision support only. No order was placed.",
@@ -380,5 +470,6 @@ export async function reviewLateTrade(input: LateTradeReviewInput): Promise<Late
       progressToTargetPct,
     },
     quote_status: quoteStatus,
+    chart_review: chartReview,
   };
 }
