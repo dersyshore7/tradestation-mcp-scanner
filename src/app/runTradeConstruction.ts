@@ -44,6 +44,21 @@ export type TradeConstructionInput = {
   confirmedDirection?: ScanDirection;
   confirmedConfidence?: ScanConfidence;
   finalizedTradeGeometry?: FinalizedTradeGeometry;
+  tradestationBaseUrlOverride?: string;
+};
+
+export type TradeCardAutomationMetadata = {
+  optionSymbol: string;
+  contracts: number;
+  optionLimitPrice: number;
+  expirationDate: string;
+  dteAtEntry: number;
+  underlyingEntryPrice: number;
+  intendedStopUnderlying: number;
+  intendedTargetUnderlying: number;
+  timeExitDate: string;
+  entryOrderType: "Limit";
+  entryTradeAction: "BUYTOOPEN";
 };
 
 export type TradeConstructionResult = {
@@ -71,6 +86,7 @@ export type TradeConstructionResult = {
     intended_stop_underlying: number;
     intended_target_underlying: number;
   };
+  automationMetadata: TradeCardAutomationMetadata;
 };
 
 type TradeInputs = {
@@ -476,8 +492,9 @@ async function buildTradeInputs(
   symbol: string,
   direction: ScanDirection,
   finalizedTradeGeometryOverride?: FinalizedTradeGeometry,
+  tradestationBaseUrlOverride?: string,
 ): Promise<{ tradeInputs: TradeInputs; diagnostics: TradeConstructionDiagnostics }> {
-  const get = await createTradeStationGetFetcher();
+  const get = await createTradeStationGetFetcher(tradestationBaseUrlOverride);
 
   const diagnostics: TradeConstructionDiagnostics = {
     selectedExpiration: null,
@@ -683,7 +700,12 @@ export async function constructTradeCard(input: TradeConstructionInput): Promise
 
   const symbol = promptMatch.symbol;
   const { direction, confidence } = await resolveDirectionAndConfidence(symbol, input.confirmedDirection, input.confirmedConfidence);
-  const { tradeInputs: trade, diagnostics } = await buildTradeInputs(symbol, direction, input.finalizedTradeGeometry);
+  const { tradeInputs: trade, diagnostics } = await buildTradeInputs(
+    symbol,
+    direction,
+    input.finalizedTradeGeometry,
+    input.tradestationBaseUrlOverride,
+  );
   const timing = classifyExpectedTiming(confidence, trade);
   const practicalOptionFit = evaluatePracticalImmediateEntryOptionFit(
     confidence,
@@ -734,6 +756,19 @@ export async function constructTradeCard(input: TradeConstructionInput): Promise
       confidence_bucket: confidence,
       intended_stop_underlying: trade.finalizedTradeGeometry.invalidationLevel,
       intended_target_underlying: trade.finalizedTradeGeometry.targetLevel,
+    },
+    automationMetadata: {
+      optionSymbol: trade.optionSymbol,
+      contracts: trade.contracts,
+      optionLimitPrice: trade.optionMid,
+      expirationDate: trade.expirationDate,
+      dteAtEntry: trade.dte,
+      underlyingEntryPrice: trade.underlyingPrice,
+      intendedStopUnderlying: trade.finalizedTradeGeometry.invalidationLevel,
+      intendedTargetUnderlying: trade.finalizedTradeGeometry.targetLevel,
+      timeExitDate,
+      entryOrderType: "Limit",
+      entryTradeAction: "BUYTOOPEN",
     },
   };
 }

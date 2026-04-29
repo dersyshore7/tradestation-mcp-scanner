@@ -204,9 +204,93 @@ A minimal UI is available at the project root (`/`) for running the existing sca
 - The API reuses existing engine functions (`runScan` and `constructTradeCard`) without changing scan/trade logic.
 - If no confirmed setup exists, the UI shows `no_trade_today`.
 - If confirmed, it shows the scan reasoning and full trade card plus an **I took this trade** modal that persists to Supabase via `POST /api/journal`.
+- Confirmed trade-card recommendations are also saved to **Past Recommendations**, so you can revisit prior reasoning after a refresh or a newer scan and journal the older setup if you actually took it.
 - The page now also shows journal insights, recent journal trades, and lets you close a trade with realized P/L and review notes.
 
 This UI is intentionally thin and does not place orders.
+
+## Separate paper-trader module
+
+The existing scanner workflow remains unchanged and read-only.
+
+A separate SIM-only automation lane now exists for paper trading:
+
+- API: `GET /api/paper-trader` for status, `POST /api/paper-trader` to run one automation cycle
+- Cron/manual-run route: `GET /api/paper-trader-run`
+- CLI: `npm run paper-trader:run`
+
+What one paper-trader cycle does:
+
+1. Load open paper trades from the journal
+2. Let the AI manager reassess any open paper trades using current quotes, the original thesis, recent management history, and rewarded feedback from similar closed paper trades
+3. Feed the AI manager a first-pass trained policy prior that is learned from closed paper trades and their management outcomes
+4. Tighten active stop/target levels or exit early when the AI manager decides the thesis has weakened or protecting gains is better than waiting
+5. If guards allow, run a fresh scan
+6. Build a trade card
+7. Preview the TradeStation order
+8. Optionally place the order in TradeStation SIM
+9. Journal the new paper trade with execution metadata for later management
+
+New paper trades now seed AI management state in `signal_snapshot_json`, including active stop/target levels plus a short management history so later 5-minute reviews can update the trade instead of re-reading the original entry only.
+
+Safety defaults:
+
+- Disabled until you set `AUTO_TRADER_ENABLED=1`
+- Order placement stays off until you set `AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1`
+- The automation module refuses to run unless its base URL points to TradeStation SIM
+- The API route can be protected with `AUTO_TRADER_API_SECRET` or `CRON_SECRET`
+- Live runs skip themselves outside regular US equity market hours; dry runs still work anytime
+- The runtime is ready for a 5-minute manager loop, but the repo does not enable it in `vercel.json` yet so Hobby deployments keep working until you upgrade Vercel
+
+Recommended env vars for the separate automation module:
+
+```bash
+AUTO_TRADER_ENABLED=1
+AUTO_TRADER_ALLOW_ORDER_PLACEMENT=0
+AUTO_TRADER_MAX_OPEN_TRADES=1
+AUTO_TRADER_MAX_DAILY_LOSS_USD=300
+AUTO_TRADER_SCAN_PROMPT=Run a new Scan for this week
+AUTO_TRADER_API_SECRET=your_long_random_secret
+
+TRADESTATION_AUTOMATION_BASE_URL=https://sim-api.tradestation.com/v3
+TRADESTATION_AUTOMATION_ACCOUNT_ID=your_sim_account_id
+```
+
+Dry-run example:
+
+```bash
+npm run paper-trader:run -- --dry-run
+```
+
+API trigger example:
+
+```bash
+curl -X POST https://your-deployment.vercel.app/api/paper-trader \
+  -H "Authorization: Bearer your_long_random_secret" \
+  -H "Content-Type: application/json" \
+  -d '{"dryRun":true}'
+```
+
+Cron/manual GET example:
+
+```bash
+curl "https://your-deployment.vercel.app/api/paper-trader-run?dryRun=true" \
+  -H "Authorization: Bearer your_long_random_secret"
+```
+
+Notes:
+
+- This module is intentionally separate from `/api/workflow` and the current scanner UI.
+- It is built for long single-leg options entries only.
+- It uses the existing trade-card logic for entry planning and an AI manager for ongoing paper-trade assessment.
+- Use `/api/paper-trader-run` for Vercel cron because Vercel cron invokes a `GET` request.
+- The current AI manager now includes a first trained contextual policy layer learned from closed paper trades, plus rewarded experience memory in the prompt.
+
+Policy-training debug:
+
+```bash
+npm run policy:train
+```
 
 ## Supabase trade journal
 
@@ -215,8 +299,11 @@ The journal uses durable server-side persistence in Supabase Postgres.
 - `POST /api/journal` validates and stores an initial journal trade entry.
 - `GET /api/journal` returns recent entries.
 - `GET /api/journal/:id` returns one entry.
+- `PUT /api/journal/:id` edits saved journal fills, timestamps, and review notes while recalculating derived P/L.
 - `PATCH /api/journal/:id` stores a trade closeout and review summary.
 - `GET /api/journal/insights` returns journal analytics such as win rate, weekday profitability, setup performance, and recent winner/loser reasoning comparisons.
+- `GET /api/recommendations` returns recent saved trade-card recommendations.
+- `PATCH /api/recommendations/:id` marks a recommendation as journaled after it becomes an actual trade entry.
 - Schema migrations live in `supabase/migrations`.
 
 Saved journal entries now keep richer scanner context in `signal_snapshot_json`, including:

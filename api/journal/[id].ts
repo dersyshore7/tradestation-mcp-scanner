@@ -1,5 +1,5 @@
-import { closeJournalTrade, deleteJournalTrade, getJournalTradeById } from "../../src/journal/repository.js";
-import { validateJournalTradeClosePayload } from "../../src/journal/validation.js";
+import { closeJournalTrade, deleteJournalTrade, getJournalTradeById, updateJournalTrade } from "../../src/journal/repository.js";
+import { validateJournalTradeClosePayload, validateJournalTradeUpdatePayload } from "../../src/journal/validation.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "../journal/shared.js";
 
 function readId(req: VercelRequestLike): string | null {
@@ -49,6 +49,32 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
     return;
   }
 
+  if (req.method === "PUT") {
+    try {
+      const payload = validateJournalTradeUpdatePayload(req.body);
+      const trade = await updateJournalTrade(id, payload);
+      sendJson(res, 200, { trade });
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update journal trade.";
+      const normalized = message.toLowerCase();
+      const status = normalized.includes("not found")
+        ? 404
+        : normalized.includes("must")
+          || normalized.includes("required")
+          || normalized.includes("only closed")
+          || normalized.includes("valid")
+          || normalized.includes("integer")
+          || normalized.includes("paper or live")
+          || normalized.includes("on/before")
+          || normalized.includes("yyyy-mm-dd")
+          ? 400
+          : 500;
+      sendError(res, status, message);
+    }
+    return;
+  }
+
   if (req.method === "DELETE") {
     try {
       await deleteJournalTrade(id);
@@ -61,5 +87,5 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
     return;
   }
 
-  sendError(res, 404, "Use GET, PATCH, or DELETE /api/journal/:id");
+  sendError(res, 404, "Use GET, PATCH, PUT, or DELETE /api/journal/:id");
 }

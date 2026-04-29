@@ -27,6 +27,7 @@ const YAHOO_FINANCE_BASE_URL = "https://query1.finance.yahoo.com";
 export type ScanInput = {
   prompt: string;
   excludedTickers?: string[];
+  tradestationBaseUrlOverride?: string;
 };
 
 export type ScanResult = {
@@ -5429,7 +5430,10 @@ async function runUniverseTierTradeStationScan(
     }
 
     const reviewResult: SingleSymbolReviewResult =
-      await runSingleSymbolTradeStationAnalysis(finalist.symbol);
+      await runSingleSymbolTradeStationAnalysis(
+        finalist.symbol,
+        input.tradestationBaseUrlOverride,
+      );
     const stage3Candidate = stage3BySymbol.get(finalist.symbol);
     const stage3SaidViable =
       !!stage3Candidate &&
@@ -5830,7 +5834,7 @@ async function runUniverseTierTradeStationScan(
 async function runStarterUniverseTradeStationScan(
   input: ScanInput,
 ): Promise<ScanResult> {
-  const get = await createTradeStationGetFetcher();
+  const get = await createTradeStationGetFetcher(input.tradestationBaseUrlOverride);
   const tierExecutions: TierScanExecution[] = [];
 
   for (const tier of SCAN_UNIVERSE_TIERS) {
@@ -6157,8 +6161,9 @@ function readNumber(
 
 export async function runSingleSymbolTradeStationAnalysis(
   symbol: string,
+  tradestationBaseUrlOverride?: string,
 ): Promise<SingleSymbolReviewResult> {
-  const get = await createTradeStationGetFetcher();
+  const get = await createTradeStationGetFetcher(tradestationBaseUrlOverride);
   const targetDte = await resolveTargetDteForSymbol(get, symbol);
   if (targetDte !== null) {
     const earningsCheck = await runEarningsCheck(symbol, 0, targetDte);
@@ -6433,5 +6438,8 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
     };
   }
 
-  return runSingleSymbolTradeStationAnalysis(symbolMatch.symbol);
+  return runSingleSymbolTradeStationAnalysis(
+    symbolMatch.symbol,
+    normalizedInput.tradestationBaseUrlOverride,
+  );
 }

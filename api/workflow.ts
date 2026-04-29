@@ -3,11 +3,13 @@ import {
   mergeFinalizedAsymmetryIntoFinalistsReviewedDebug,
   runScan,
   type ScanInput,
+  type StarterUniverseTelemetry,
 } from "../src/app/runScan.js";
 import { buildWorkflowPresentationSummary } from "../src/app/resultPresentation.js";
 import { constructTradeCard } from "../src/app/runTradeConstruction.js";
 import { CHART_ANCHORED_TWO_TO_ONE_FAILURE } from "../src/app/chartAnchoredTradability.js";
 import { DEFAULT_SCAN_PROMPT } from "../src/config/defaultScanPrompt.js";
+import { createTradeRecommendation } from "../src/recommendations/repository.js";
 
 type VercelRequestLike = {
   method?: string;
@@ -114,6 +116,29 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
         confirmedConfidence: scanResult.confidence,
         ...(finalizedTradeGeometry ? { finalizedTradeGeometry } : {}),
       });
+      const presentationSummary = buildWorkflowPresentationSummary({
+        scan: scanResult,
+        telemetry,
+        tradeCard,
+      });
+      const signalSnapshotJson = {
+        scan: scanResult,
+        telemetry,
+        tradeCard,
+        presentationSummary,
+      };
+      let tradeRecommendation = null;
+
+      try {
+        tradeRecommendation = await createTradeRecommendation({
+          scan_run_id: scanRunId,
+          prompt: scanInput.prompt,
+          planned_trade: tradeCard.plannedJournalFields,
+          signal_snapshot_json: signalSnapshotJson,
+        });
+      } catch (recommendationError) {
+        console.warn("Failed to persist trade recommendation history.", recommendationError);
+      }
 
       sendJson(res, 200, {
         scan_run_id: scanRunId,
@@ -121,12 +146,9 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
         scan: scanResult,
         tradeCard,
         journalPlannedTrade: tradeCard.plannedJournalFields,
+        tradeRecommendation,
         telemetry,
-        presentationSummary: buildWorkflowPresentationSummary({
-          scan: scanResult,
-          telemetry,
-          tradeCard,
-        }),
+        presentationSummary,
       });
       return;
     } catch (error) {
@@ -148,39 +170,42 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
               : item,
           )
         : [];
-      const telemetryWithTradeBlock = {
-        ...(telemetry ?? {}),
-        finalSelectedSymbol: null,
-        winningTier: null,
-        finalSelectionSourceTier: null,
-        finalOutcomeSource: "tier_blocked_post_confirmation",
-        reviewedFinalistOutcomes,
-        bestRejectedCandidates: reviewedFinalistOutcomes
-          .filter((item: any) => item?.conclusion !== "confirmed")
-          .map((item: any) => ({
-            symbol: item.symbol,
-            tier: item.tier,
-            tierLabel: item.tierLabel,
-            rejectionReasons: item.confirmationFailureReasons,
-          })),
-        bestReviewedFinalistsAcrossTiers: reviewedFinalistOutcomes
-          .filter((item: any) => item?.survivedFinalSelection)
-          .map((item: any) => item.symbol),
-        crossTierFinalistSummary: null,
-        tradeCardBlock: {
-          blocked: true,
-          reason: blockerMessage,
-          scanReasoning: scanResult.reason,
-        },
-      };
-
-      if (Array.isArray(telemetry?.finalistsReviewedDebug)) {
-        telemetryWithTradeBlock.finalistsReviewedDebug =
-          mergeFinalizedAsymmetryIntoFinalistsReviewedDebug(
-            telemetry.finalistsReviewedDebug,
+      const telemetryWithTradeBlock: (StarterUniverseTelemetry & { tradeCardBlock: Record<string, unknown> }) | null = telemetry
+        ? {
+            ...telemetry,
+            finalSelectedSymbol: null,
+            winningTier: null,
+            finalSelectionSourceTier: null,
+            finalOutcomeSource: "tier_blocked_post_confirmation",
             reviewedFinalistOutcomes,
-          );
-      }
+            bestRejectedCandidates: reviewedFinalistOutcomes
+              .filter((item: any) => item?.conclusion !== "confirmed")
+              .map((item: any) => ({
+                symbol: item.symbol,
+                tier: item.tier,
+                tierLabel: item.tierLabel,
+                rejectionReasons: item.confirmationFailureReasons,
+              })),
+            bestReviewedFinalistsAcrossTiers: reviewedFinalistOutcomes
+              .filter((item: any) => item?.survivedFinalSelection)
+              .map((item: any) => item.symbol),
+            crossTierFinalistSummary: null,
+            tradeCardBlock: {
+              blocked: true,
+              reason: blockerMessage,
+              scanReasoning: scanResult.reason,
+            },
+          }
+        : null;
+      const telemetryForResponse = telemetryWithTradeBlock && Array.isArray(telemetry?.finalistsReviewedDebug)
+        ? {
+            ...telemetryWithTradeBlock,
+            finalistsReviewedDebug: mergeFinalizedAsymmetryIntoFinalistsReviewedDebug(
+              telemetry.finalistsReviewedDebug,
+              reviewedFinalistOutcomes,
+            ),
+          }
+        : telemetryWithTradeBlock;
 
       if (isChartAnchoredTwoToOneBlocker(error)) {
         console.warn("Unexpected trade-card reward:risk blocker after confirmation; returning no_trade_today for safety.");
@@ -197,10 +222,10 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
         prompt: scanInput.prompt,
         scan: blockedScanResult,
         tradeCard: null,
-        telemetry: telemetryWithTradeBlock,
+        telemetry: telemetryForResponse,
         presentationSummary: buildWorkflowPresentationSummary({
           scan: blockedScanResult,
-          telemetry: telemetryWithTradeBlock,
+          telemetry: telemetryForResponse,
           tradeCard: null,
         }),
       });
