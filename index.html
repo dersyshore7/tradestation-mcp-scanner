@@ -1298,6 +1298,17 @@
         const quoteStatus = result?.quote_status || {};
         const chartReview = result?.chart_review || {};
         const quoteErrors = Array.isArray(quoteStatus.errors) ? quoteStatus.errors : [];
+        const decisionConfidencePercent = asNumber(decision.confidencePercent);
+        const profitChancePercent = asNumber(decision.profitChancePercent ?? chartReview.estimatedProfitChancePercent);
+        const chartConfidencePercent = asNumber(chartReview.confidencePercent);
+        const timeframes = Array.isArray(chartReview.timeframes) ? chartReview.timeframes : [];
+        const timeframeSummary = timeframes.length > 0
+          ? timeframes.map((item) => {
+            const move = asNumber(item.movePct);
+            const volume = asNumber(item.volumeRatio);
+            return `${renderMaybe(item.label)} ${move === null ? "move n/a" : formatPercent(move, 2)} (${renderMaybe(item.barCount, "0")} bars${volume === null ? "" : `, vol ${volume.toFixed(2)}x`})`;
+          }).join(" | ")
+          : "not available";
         const chartAlignedLabel = chartReview.alignsWithTradeDirection === null || chartReview.alignsWithTradeDirection === undefined
           ? "unknown"
           : chartReview.alignsWithTradeDirection
@@ -1306,8 +1317,10 @@
 
         lateReviewArea.innerHTML = `
           <div class="summary-section" style="margin-top: 14px;">
-            <div class="row"><strong>Review signal:</strong> <span class="pill">${escapeHtml(lateDecisionLabel(decision.action))}</span> <span class="muted">(${escapeHtml(renderMaybe(decision.confidence))} confidence)</span></div>
+            <div class="row"><strong>Review signal:</strong> <span class="pill">${escapeHtml(lateDecisionLabel(decision.action))}</span> <span class="muted">(${escapeHtml(renderMaybe(decision.confidence))} confidence${decisionConfidencePercent === null ? "" : `, ${escapeHtml(formatPercent(decisionConfidencePercent, 0))}`})</span></div>
+            <div class="row"><strong>Estimated chance this option recovers to profit:</strong> ${escapeHtml(profitChancePercent === null ? "n/a" : formatPercent(profitChancePercent, 0))} <span class="muted">rough decision-support estimate, not a guarantee</span></div>
             <div class="row"><strong>Thesis read:</strong> ${escapeHtml(renderMaybe(decision.thesis))}</div>
+            <div class="row"><strong>Plain English:</strong> ${escapeHtml(renderMaybe(decision.plainEnglishExplanation || chartReview.plainEnglishSummary))}</div>
             <div class="row"><strong>Execution note:</strong> ${escapeHtml(renderMaybe(decision.note))}</div>
             <div class="row"><strong>Updated stop:</strong> ${escapeHtml(formatMoney(decision.updatedStopUnderlying))} | <strong>Updated target:</strong> ${escapeHtml(formatMoney(decision.updatedTargetUnderlying))}</div>
             <div class="field-note">This is decision support only. No order was placed.</div>
@@ -1315,10 +1328,16 @@
 
           <div class="summary-section">
             <h3>Fresh Market Read</h3>
-            <div class="row"><strong>Chart conclusion:</strong> ${escapeHtml(renderMaybe(chartReview.conclusion))} | <strong>Chart direction:</strong> ${escapeHtml(renderMaybe(chartReview.direction))} | <strong>Alignment:</strong> ${escapeHtml(chartAlignedLabel)}</div>
-            <div class="row"><strong>Current chart levels:</strong> ref ${escapeHtml(formatMoney(chartReview.referencePrice))} | invalidation ${escapeHtml(formatMoney(chartReview.invalidationLevel))} | target ${escapeHtml(formatMoney(chartReview.targetLevel))} | R:R ${escapeHtml(renderMaybe(chartReview.actualRewardRiskRatio === null || chartReview.actualRewardRiskRatio === undefined ? null : Number(chartReview.actualRewardRiskRatio).toFixed(2)))}</div>
-            <div class="row"><strong>Market read:</strong> ${escapeHtml(renderMaybe(chartReview.reason))}</div>
-            <div class="row"><strong>Blocking reasons:</strong> ${escapeHtml(Array.isArray(chartReview.topBlockingReasons) && chartReview.topBlockingReasons.length > 0 ? chartReview.topBlockingReasons.join(" | ") : "none")}</div>
+            <div class="row"><strong>Chart conclusion:</strong> ${escapeHtml(renderMaybe(chartReview.conclusion))} | <strong>Chart direction:</strong> ${escapeHtml(renderMaybe(chartReview.direction))} | <strong>Alignment:</strong> ${escapeHtml(chartAlignedLabel)} | <strong>Chart confidence:</strong> ${escapeHtml(chartConfidencePercent === null ? "below confirmation threshold" : formatPercent(chartConfidencePercent, 0))}</div>
+            <div class="row"><strong>Current chart levels:</strong> ref ${escapeHtml(formatMoney(chartReview.referencePrice))} | invalidation/resistance ${escapeHtml(formatMoney(chartReview.invalidationLevel))} | target/support ${escapeHtml(formatMoney(chartReview.targetLevel))} | R:R ${escapeHtml(renderMaybe(chartReview.actualRewardRiskRatio === null || chartReview.actualRewardRiskRatio === undefined ? null : Number(chartReview.actualRewardRiskRatio).toFixed(2)))}</div>
+            <div class="row"><strong>Nearest S/R:</strong> support ${escapeHtml(formatMoney(chartReview.nearestSupportBelow))} | resistance ${escapeHtml(formatMoney(chartReview.nearestResistanceAbove))} | <strong>Level source:</strong> ${escapeHtml(renderMaybe(chartReview.levelSource))}</div>
+            <div class="row"><strong>Timeframes checked:</strong> ${escapeHtml(timeframeSummary)}</div>
+            <div class="row"><strong>Market read:</strong> ${escapeHtml(renderMaybe(chartReview.plainEnglishSummary))}</div>
+            <div class="row"><strong>What pushed the decision:</strong> ${escapeHtml(Array.isArray(chartReview.topBlockingReasons) && chartReview.topBlockingReasons.length > 0 ? chartReview.topBlockingReasons.join(" | ") : "none")}</div>
+            <details>
+              <summary>Scanner detail</summary>
+              <div class="row">${escapeHtml(renderMaybe(chartReview.reason))}</div>
+            </details>
           </div>
 
           <div class="stats-grid">

@@ -6,8 +6,11 @@ export type AiManagementDecision = {
   updatedStopUnderlying: number | null;
   updatedTargetUnderlying: number | null;
   confidence: "low" | "medium" | "high";
+  confidencePercent: number;
+  profitChancePercent: number | null;
   thesis: string;
   note: string;
+  plainEnglishExplanation: string;
 };
 
 export type AiManagementInput = {
@@ -62,6 +65,23 @@ function asFiniteNumber(value: unknown): number | null {
   return null;
 }
 
+function clampPercent(value: number | null): number | null {
+  if (value === null) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, Number(value.toFixed(0))));
+}
+
+function fallbackConfidencePercent(confidence: AiManagementDecision["confidence"]): number {
+  if (confidence === "high") {
+    return 85;
+  }
+  if (confidence === "medium") {
+    return 65;
+  }
+  return 45;
+}
+
 function normalizeDecision(payload: unknown): AiManagementDecision {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("AI manager returned a non-object decision.");
@@ -72,6 +92,9 @@ function normalizeDecision(payload: unknown): AiManagementDecision {
   const confidence = objectPayload.confidence;
   const thesis = typeof objectPayload.thesis === "string" ? objectPayload.thesis.trim() : "";
   const note = typeof objectPayload.note === "string" ? objectPayload.note.trim() : "";
+  const plainEnglishExplanation = typeof objectPayload.plainEnglishExplanation === "string"
+    ? objectPayload.plainEnglishExplanation.trim()
+    : "";
 
   if (action !== "hold" && action !== "update_levels" && action !== "exit_now") {
     throw new Error("AI manager returned an invalid action.");
@@ -88,8 +111,13 @@ function normalizeDecision(payload: unknown): AiManagementDecision {
     updatedStopUnderlying: asFiniteNumber(objectPayload.updatedStopUnderlying),
     updatedTargetUnderlying: asFiniteNumber(objectPayload.updatedTargetUnderlying),
     confidence,
+    confidencePercent:
+      clampPercent(asFiniteNumber(objectPayload.confidencePercent))
+      ?? fallbackConfidencePercent(confidence),
+    profitChancePercent: clampPercent(asFiniteNumber(objectPayload.profitChancePercent)),
     thesis,
     note,
+    plainEnglishExplanation: plainEnglishExplanation || thesis,
   };
 }
 
@@ -113,7 +141,10 @@ function buildPrompt(input: AiManagementInput): string {
     "- Prefer hold over unnecessary changes.",
     "- Use exit_now if the thesis is degrading, the trade is extended, or protecting gains is better than holding.",
     "Return JSON with exactly these keys:",
-    '{ "action": "hold|update_levels|exit_now", "updatedStopUnderlying": number|null, "updatedTargetUnderlying": number|null, "confidence": "low|medium|high", "thesis": "short explanation", "note": "one concise execution note" }',
+    '{ "action": "hold|update_levels|exit_now", "updatedStopUnderlying": number|null, "updatedTargetUnderlying": number|null, "confidence": "low|medium|high", "confidencePercent": number, "profitChancePercent": number|null, "thesis": "short explanation", "note": "one concise execution note", "plainEnglishExplanation": "plain-English explanation" }',
+    "confidencePercent is your confidence in the management decision, not a guarantee of market outcome.",
+    "profitChancePercent is a rough decision-support estimate that the open option can recover to profit before expiration; use null if the option/current chart data is too incomplete.",
+    "plainEnglishExplanation must sound like a skilled trader teaching a newer trader in 4-7 clear sentences. Mention the relevant support/resistance, invalidation/target levels, multi-timeframe alignment, volume/continuation quality when available, and why the action was chosen. Avoid scanner jargon unless you translate it.",
     "",
     input.policyFeedbackSummary
       ? `Rewarded experience memory:\n${input.policyFeedbackSummary}`
