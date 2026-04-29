@@ -3,7 +3,7 @@
   "outputDirectory": ".",
   "crons": [
     {
-      "path": "/api/paper-trader-run?reconcileOnly=true&reconcileOrders=true&skipNewEntry=true",
+      "path": "/api/paper-trader-run?reconcileOrders=true",
       "schedule": "*/5 13-21 * * 1-5"
     }
   ]

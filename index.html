@@ -1156,7 +1156,8 @@
             <div class="row"><strong>Automation base URL:</strong> ${escapeHtml(renderMaybe(status?.automationBaseUrl))}</div>
             <div class="row"><strong>Route secret required:</strong> ${escapeHtml(formatBoolean(status?.requiresSecret))}</div>
             <div class="row"><strong>Configuration checks:</strong> ${configurationIssues.length > 0 ? renderList(configurationIssues) : "<span class=\"muted\">Live SIM configuration is ready.</span>"}</div>
-            <div class="row"><strong>Order monitor:</strong> Use <code>/api/paper-trader-run?reconcileOnly=true&reconcileOrders=true&skipNewEntry=true</code> manually or from an external scheduler</div>
+            <div class="row"><strong>Autonomous cron:</strong> Every 5 minutes on weekdays via <code>/api/paper-trader-run?reconcileOrders=true</code>; can reconcile fills, manage exits, and enter new SIM trades when guards allow.</div>
+            <div class="row"><strong>Manual order check:</strong> The Check Orders button still uses read-only monitor mode for diagnostics.</div>
             <div class="row"><strong>Learning set:</strong> ${escapeHtml(renderMaybe(learning?.closedPaperTrades, "0"))} closed paper trades, ${escapeHtml(renderMaybe(learning?.learnedContexts, "0"))} learned contexts</div>
           </div>
         `;

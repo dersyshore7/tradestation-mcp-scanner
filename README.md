@@ -218,7 +218,8 @@ A separate SIM-only automation lane now exists for paper trading:
 
 - API: `GET /api/paper-trader` for status, `POST /api/paper-trader` to run one automation cycle
 - Cron/manual-run route: `GET /api/paper-trader-run`
-- Read-only monitor mode: `GET /api/paper-trader-run?reconcileOnly=true&reconcileOrders=true&skipNewEntry=true` reconciles open paper orders without opening or closing trades
+- Full automation cron route: `GET /api/paper-trader-run?reconcileOrders=true` reconciles fills, manages open paper trades, and can enter new SIM trades when guards allow
+- Read-only monitor mode: `GET /api/paper-trader-run?reconcileOnly=true&reconcileOrders=true&skipNewEntry=true` is still available for manual order checks
 - CLI: `npm run paper-trader:run`
 
 What one paper-trader cycle does:
@@ -242,7 +243,7 @@ Safety defaults:
 - The automation module refuses to run unless its base URL points to TradeStation SIM
 - The API route can be protected with `AUTO_TRADER_API_SECRET` or `CRON_SECRET`
 - Live runs skip themselves outside regular US equity market hours; dry runs still work anytime
-- Vercel Hobby does not support 5-minute cron jobs; use the read-only monitor query manually, from an external scheduler, or enable Vercel Pro before adding a 5-minute cron
+- Vercel Pro cron runs the full paper-trader cycle every 5 minutes on weekdays during the configured UTC window
 
 Recommended env vars for the separate automation module:
 
@@ -287,13 +288,20 @@ curl "https://your-deployment.vercel.app/api/paper-trader-run?reconcileOnly=true
   -H "Authorization: Bearer your_long_random_secret"
 ```
 
+Full automation run example:
+
+```bash
+curl "https://your-deployment.vercel.app/api/paper-trader-run?reconcileOrders=true" \
+  -H "Authorization: Bearer your_long_random_secret"
+```
+
 Notes:
 
 - This module is intentionally separate from `/api/workflow` and the current scanner UI.
 - It is built for long single-leg options entries only.
 - It uses the existing trade-card logic for entry planning and an AI manager for ongoing paper-trade assessment.
-- Use `/api/paper-trader-run` for explicit manual or scheduled full cycles when you want the AI manager and scanner flow to run.
-- Use read-only monitor mode for unattended order checks from a scheduler; it reconciles partial fills and saved average entry price, but does not scan for new entries or send exit orders.
+- `vercel.json` schedules `/api/paper-trader-run?reconcileOrders=true`, so the deployed cron can reconcile fills, manage exits, and enter new SIM trades when `AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1`.
+- Use read-only monitor mode only for manual diagnostics; it reconciles partial fills and saved average entry price, but does not scan for new entries or send exit orders.
 - The current AI manager now includes a first trained contextual policy layer learned from closed paper trades, plus rewarded experience memory in the prompt.
 
 Policy-training debug:
