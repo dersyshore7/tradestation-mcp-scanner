@@ -218,7 +218,7 @@ A separate SIM-only automation lane now exists for paper trading:
 
 - API: `GET /api/paper-trader` for status, `POST /api/paper-trader` to run one automation cycle
 - Cron/manual-run route: `GET /api/paper-trader-run`
-- Read-only monitor route: `GET /api/paper-trader-monitor` reconciles open paper orders without opening or closing trades
+- Read-only monitor mode: `GET /api/paper-trader-run?reconcileOnly=true&reconcileOrders=true&skipNewEntry=true` reconciles open paper orders without opening or closing trades
 - CLI: `npm run paper-trader:run`
 
 What one paper-trader cycle does:
@@ -242,7 +242,7 @@ Safety defaults:
 - The automation module refuses to run unless its base URL points to TradeStation SIM
 - The API route can be protected with `AUTO_TRADER_API_SECRET` or `CRON_SECRET`
 - Live runs skip themselves outside regular US equity market hours; dry runs still work anytime
-- Vercel Hobby does not support 5-minute cron jobs; use `/api/paper-trader-monitor` manually, from an external scheduler, or enable Vercel Pro before adding a 5-minute cron
+- Vercel Hobby does not support 5-minute cron jobs; use the read-only monitor query manually, from an external scheduler, or enable Vercel Pro before adding a 5-minute cron
 
 Recommended env vars for the separate automation module:
 
@@ -283,7 +283,7 @@ curl "https://your-deployment.vercel.app/api/paper-trader-run?dryRun=true" \
 Read-only order monitor example:
 
 ```bash
-curl "https://your-deployment.vercel.app/api/paper-trader-monitor" \
+curl "https://your-deployment.vercel.app/api/paper-trader-run?reconcileOnly=true&reconcileOrders=true&skipNewEntry=true" \
   -H "Authorization: Bearer your_long_random_secret"
 ```
 
@@ -293,7 +293,7 @@ Notes:
 - It is built for long single-leg options entries only.
 - It uses the existing trade-card logic for entry planning and an AI manager for ongoing paper-trade assessment.
 - Use `/api/paper-trader-run` for explicit manual or scheduled full cycles when you want the AI manager and scanner flow to run.
-- Use `/api/paper-trader-monitor` for unattended order checks from a scheduler; it reconciles partial fills and saved average entry price, but does not scan for new entries or send exit orders.
+- Use read-only monitor mode for unattended order checks from a scheduler; it reconciles partial fills and saved average entry price, but does not scan for new entries or send exit orders.
 - The current AI manager now includes a first trained contextual policy layer learned from closed paper trades, plus rewarded experience memory in the prompt.
 
 Policy-training debug:

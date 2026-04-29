@@ -1156,7 +1156,7 @@
             <div class="row"><strong>Automation base URL:</strong> ${escapeHtml(renderMaybe(status?.automationBaseUrl))}</div>
             <div class="row"><strong>Route secret required:</strong> ${escapeHtml(formatBoolean(status?.requiresSecret))}</div>
             <div class="row"><strong>Configuration checks:</strong> ${configurationIssues.length > 0 ? renderList(configurationIssues) : "<span class=\"muted\">Live SIM configuration is ready.</span>"}</div>
-            <div class="row"><strong>Order monitor:</strong> Every 5 minutes on weekdays via <code>/api/paper-trader-monitor</code></div>
+            <div class="row"><strong>Order monitor:</strong> Use <code>/api/paper-trader-run?reconcileOnly=true&reconcileOrders=true&skipNewEntry=true</code> manually or from an external scheduler</div>
             <div class="row"><strong>Learning set:</strong> ${escapeHtml(renderMaybe(learning?.closedPaperTrades, "0"))} closed paper trades, ${escapeHtml(renderMaybe(learning?.learnedContexts, "0"))} learned contexts</div>
           </div>
         `;
@@ -1310,8 +1310,8 @@
         paperTraderArea.innerHTML = '<div class="muted">Checking open paper orders...</div>';
 
         try {
-          const response = await fetch("/api/paper-trader-monitor", {
-            method: "POST",
+          const response = await fetch("/api/paper-trader-run?reconcileOnly=true&reconcileOrders=true&skipNewEntry=true", {
+            method: "GET",
             headers: buildPaperTraderHeaders(true),
           });
           const data = await readJsonResponse(response, "Paper trader order check failed.");
