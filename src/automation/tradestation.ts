@@ -10,6 +10,9 @@ export type TradeStationTradeAction =
   | "SELLTOCLOSE";
 export type TradeStationDuration = "DAY" | "GTC" | "GTD" | "DYP" | "GCP";
 const DEFAULT_TRADESTATION_ROUTE = "Intelligent";
+const OPTION_STANDARD_INCREMENT_THRESHOLD = 3;
+const OPTION_STANDARD_INCREMENT = 0.05;
+const DEFAULT_PRICE_INCREMENT = 0.01;
 
 export type TradeStationOrderRequest = {
   accountId: string;
@@ -25,6 +28,7 @@ export type TradeStationOrderRequest = {
 export type TradeStationOrderResult = {
   orderId: string | null;
   status: string | null;
+  rejectReason: string | null;
   averageFillPrice: number | null;
   raw: unknown;
 };
@@ -165,6 +169,24 @@ export function extractOrderStatus(payload: unknown): string | null {
   return null;
 }
 
+export function extractOrderRejectReason(payload: unknown): string | null {
+  for (const candidate of collectObjects(payload)) {
+    const reason = readString(candidate, [
+      "RejectReason",
+      "RejectReasonDescription",
+      "RejectionReason",
+      "RejectMessage",
+      "Message",
+      "Error",
+    ]);
+    if (reason) {
+      return reason;
+    }
+  }
+
+  return null;
+}
+
 export function extractAverageFillPrice(payload: unknown): number | null {
   for (const candidate of collectObjects(payload)) {
     const price = readNumber(candidate, [
@@ -199,6 +221,43 @@ function toQuoteSnapshot(symbol: string, payload: unknown): TradeStationQuoteSna
   };
 }
 
+function isOptionSymbol(symbol: string): boolean {
+  return /\b\d{6}[CP]\d+(?:\.\d+)?\b/i.test(symbol);
+}
+
+function isBuyAction(action: TradeStationTradeAction): boolean {
+  return action === "BUY" || action === "BUYTOOPEN" || action === "BUYTOCLOSE";
+}
+
+function roundToIncrement(
+  price: number,
+  increment: number,
+  direction: "up" | "down" | "nearest",
+): number {
+  const rawUnits = price / increment;
+  const units = direction === "up"
+    ? Math.ceil(rawUnits - 1e-9)
+    : direction === "down"
+      ? Math.floor(rawUnits + 1e-9)
+      : Math.round(rawUnits);
+
+  return Number((Math.max(1, units) * increment).toFixed(2));
+}
+
+export function normalizeTradeStationOrderPrice(order: {
+  symbol: string;
+  price: number;
+  tradeAction: TradeStationTradeAction;
+}): number {
+  const increment = isOptionSymbol(order.symbol)
+    && order.price >= OPTION_STANDARD_INCREMENT_THRESHOLD
+      ? OPTION_STANDARD_INCREMENT
+      : DEFAULT_PRICE_INCREMENT;
+  const direction = isBuyAction(order.tradeAction) ? "up" : "down";
+
+  return roundToIncrement(order.price, increment, direction);
+}
+
 function buildOrderPayload(order: TradeStationOrderRequest): JsonObject {
   if (!Number.isInteger(order.quantity) || order.quantity <= 0) {
     throw new Error("quantity must be an integer > 0.");
@@ -220,14 +279,22 @@ function buildOrderPayload(order: TradeStationOrderRequest): JsonObject {
     if (typeof order.limitPrice !== "number" || order.limitPrice <= 0) {
       throw new Error("limitPrice is required for Limit and StopLimit orders.");
     }
-    payload.LimitPrice = order.limitPrice.toFixed(2);
+    payload.LimitPrice = normalizeTradeStationOrderPrice({
+      symbol: order.symbol,
+      price: order.limitPrice,
+      tradeAction: order.tradeAction,
+    }).toFixed(2);
   }
 
   if (order.orderType === "Stop" || order.orderType === "StopLimit") {
     if (typeof order.stopPrice !== "number" || order.stopPrice <= 0) {
       throw new Error("stopPrice is required for Stop and StopLimit orders.");
     }
-    payload.StopPrice = order.stopPrice.toFixed(2);
+    payload.StopPrice = normalizeTradeStationOrderPrice({
+      symbol: order.symbol,
+      price: order.stopPrice,
+      tradeAction: order.tradeAction,
+    }).toFixed(2);
   }
 
   return payload;
@@ -273,6 +340,7 @@ export async function createAutomationTradeStationClient(baseUrl: string): Promi
       return {
         orderId: extractOrderId(payload),
         status: extractOrderStatus(payload),
+        rejectReason: extractOrderRejectReason(payload),
         averageFillPrice: extractAverageFillPrice(payload),
         raw: payload,
       };
@@ -286,6 +354,7 @@ export async function createAutomationTradeStationClient(baseUrl: string): Promi
       return {
         orderId: extractOrderId(payload),
         status: extractOrderStatus(payload),
+        rejectReason: extractOrderRejectReason(payload),
         averageFillPrice: extractAverageFillPrice(payload),
         raw: payload,
       };

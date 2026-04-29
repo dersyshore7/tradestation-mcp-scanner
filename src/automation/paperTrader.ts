@@ -16,6 +16,7 @@ import {
 import type { JournalTradeDetail } from "../journal/types.js";
 import {
   assertPaperTraderConfig,
+  isTradeStationSimBaseUrl,
   readPaperTraderConfig,
   type PaperTraderConfig,
 } from "./config.js";
@@ -30,6 +31,7 @@ import {
 import {
   createAutomationTradeStationClient,
   extractAverageFillPrice,
+  normalizeTradeStationOrderPrice,
   type TradeStationOrderRequest,
 } from "./tradestation.js";
 
@@ -101,18 +103,21 @@ type ExitDecision = {
 type PaperTraderStatus = {
   enabled: boolean;
   allowOrderPlacement: boolean;
+  liveRunReady: boolean;
   automationBaseUrl: string;
   accountIdConfigured: boolean;
   maxOpenTrades: number;
   maxDailyLossUsd: number;
   requiresSecret: boolean;
   openPaperTrades: number;
+  configurationIssues: string[];
 };
 
 type PaperTraderRunResult = {
   mode: "paper";
   timestamp: string;
   dryRun: boolean;
+  dryRunReason: string | null;
   config: {
     automationBaseUrl: string;
     allowOrderPlacement: boolean;
@@ -221,6 +226,36 @@ function isRegularUsEquitySession(date = new Date()): boolean {
 
   const minutes = (chicago.hour * 60) + chicago.minute;
   return minutes >= (8 * 60) + 30 && minutes < 15 * 60;
+}
+
+function buildPaperTraderConfigurationIssues(config: PaperTraderConfig): string[] {
+  const issues: string[] = [];
+
+  if (!config.enabled) {
+    issues.push("Set AUTO_TRADER_ENABLED=1 to enable the paper trader module.");
+  }
+
+  if (!config.allowOrderPlacement) {
+    issues.push(
+      "Set AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1 to allow live SIM order placement; requests stay preview-only until then.",
+    );
+  }
+
+  if (!config.accountId) {
+    issues.push("Set TRADESTATION_AUTOMATION_ACCOUNT_ID to the dedicated SIM paper account id.");
+  }
+
+  if (!isTradeStationSimBaseUrl(config.automationBaseUrl)) {
+    issues.push(
+      "Set TRADESTATION_AUTOMATION_BASE_URL=https://sim-api.tradestation.com/v3 for the paper trader.",
+    );
+  }
+
+  if (config.allowOrderPlacement && !config.apiSecret) {
+    issues.push("Set AUTO_TRADER_API_SECRET or CRON_SECRET before enabling live SIM order placement.");
+  }
+
+  return issues;
 }
 
 function buildScanRunId(): string {
@@ -504,13 +539,53 @@ function inferExitDecision(params: {
   return null;
 }
 
+async function getAverageFillPriceIfAvailable(params: {
+  getExecutions: (accountId: string, orderId: string) => Promise<unknown>;
+  accountId: string;
+  orderId: string;
+}): Promise<number | null> {
+  try {
+    const executions = await params.getExecutions(params.accountId, params.orderId);
+    return extractAverageFillPrice(executions);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      message.includes("TradeStation request failed (404)")
+      && message.includes("No orders were found")
+    ) {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+function isRejectedOrderResult(order: { status: string | null }): boolean {
+  return order.status?.toLowerCase().includes("reject") ?? false;
+}
+
+function formatRejectedOrderReason(order: {
+  orderId: string | null;
+  status: string | null;
+  rejectReason: string | null;
+}): string {
+  return [
+    "TradeStation rejected the SIM order",
+    order.orderId ? ` ${order.orderId}` : "",
+    order.status ? ` (${order.status})` : "",
+    order.rejectReason ? `: ${order.rejectReason}` : ".",
+  ].join("");
+}
+
 export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
   const config = readPaperTraderConfig();
   const trades = await listJournalTradeDetails(200);
+  const configurationIssues = buildPaperTraderConfigurationIssues(config);
 
   return {
     enabled: config.enabled,
     allowOrderPlacement: config.allowOrderPlacement,
+    liveRunReady: configurationIssues.length === 0,
     automationBaseUrl: config.automationBaseUrl,
     accountIdConfigured: config.accountId !== null,
     maxOpenTrades: config.maxOpenTrades,
@@ -519,6 +594,7 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
     openPaperTrades: trades.filter(
       (trade) => trade.account_mode === "paper" && trade.status === "open",
     ).length,
+    configurationIssues,
   };
 }
 
@@ -747,13 +823,26 @@ async function manageOpenPaperTrades(
       duration: "DAY",
     };
     const orderResult = await client.placeOrder(exitOrder);
+    if (isRejectedOrderResult(orderResult)) {
+      exitsTriggered.push({
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        reason: decision.reason,
+        action: "skipped",
+        orderId: orderResult.orderId,
+        optionExitPrice: null,
+        note: `${decision.note} ${formatRejectedOrderReason(orderResult)}`,
+      });
+      continue;
+    }
+
     let optionExitPrice = orderResult.averageFillPrice;
     if (optionExitPrice === null && orderResult.orderId) {
-      const executions = await client.getExecutions(
-        automation.accountId,
-        orderResult.orderId,
-      );
-      optionExitPrice = extractAverageFillPrice(executions);
+      optionExitPrice = await getAverageFillPriceIfAvailable({
+        getExecutions: client.getExecutions,
+        accountId: automation.accountId,
+        orderId: orderResult.orderId,
+      });
     }
     if (optionExitPrice === null) {
       optionExitPrice =
@@ -884,34 +973,61 @@ async function maybeEnterNewPaperTrade(params: {
     }
 
     const client = await createAutomationTradeStationClient(config.automationBaseUrl);
+    const entryLimitPrice = normalizeTradeStationOrderPrice({
+      symbol: automation.optionSymbol,
+      price: automation.optionLimitPrice,
+      tradeAction: automation.entryTradeAction,
+    });
     const entryOrder: TradeStationOrderRequest = {
       accountId: config.accountId as string,
       symbol: automation.optionSymbol,
       quantity: automation.contracts,
       orderType: automation.entryOrderType,
       tradeAction: automation.entryTradeAction,
-      limitPrice: automation.optionLimitPrice,
+      limitPrice: entryLimitPrice,
       duration: "DAY",
     };
     const confirmation = await client.confirmOrder(entryOrder);
+    if (isRejectedOrderResult(confirmation)) {
+      return {
+        attempted: true,
+        outcome: "trade_card_blocked",
+        symbol: scan.ticker,
+        reason: formatRejectedOrderReason(confirmation),
+        tradeCard,
+      };
+    }
+
     if (dryRun) {
       return {
         attempted: true,
         outcome: "preview_only",
         symbol: scan.ticker,
-        reason: `Previewed ${automation.contracts}x ${automation.optionSymbol} without sending the order.`,
+        reason: `Previewed ${automation.contracts}x ${automation.optionSymbol} at ${entryLimitPrice.toFixed(2)} without sending the order.`,
         tradeCard,
       };
     }
 
     const orderResult = await client.placeOrder(entryOrder);
-    let optionEntryPrice = orderResult.averageFillPrice ?? automation.optionLimitPrice;
+    if (isRejectedOrderResult(orderResult)) {
+      return {
+        attempted: true,
+        outcome: "trade_card_blocked",
+        symbol: scan.ticker,
+        reason: formatRejectedOrderReason(orderResult),
+        tradeCard,
+      };
+    }
+
+    let optionEntryPrice = orderResult.averageFillPrice ?? entryLimitPrice;
     if (orderResult.orderId) {
-      const executions = await client.getExecutions(
-        config.accountId as string,
-        orderResult.orderId,
-      );
-      optionEntryPrice = extractAverageFillPrice(executions) ?? optionEntryPrice;
+      optionEntryPrice = (
+        await getAverageFillPriceIfAvailable({
+          getExecutions: client.getExecutions,
+          accountId: config.accountId as string,
+          orderId: orderResult.orderId,
+        })
+      ) ?? optionEntryPrice;
     }
 
     const now = new Date();
@@ -946,7 +1062,7 @@ async function maybeEnterNewPaperTrade(params: {
             quantity: automation.contracts,
             entryOrderType: automation.entryOrderType,
             entryTradeAction: automation.entryTradeAction,
-            entryLimitPrice: automation.optionLimitPrice,
+            entryLimitPrice,
             intendedStopUnderlying: automation.intendedStopUnderlying,
             intendedTargetUnderlying: automation.intendedTargetUnderlying,
             activeStopUnderlying: automation.intendedStopUnderlying,
@@ -994,9 +1110,15 @@ export async function runPaperTraderCycle(
   const config = readPaperTraderConfig();
   assertPaperTraderConfig(config);
 
+  const requestedDryRun = options.dryRun === true;
   const dryRun = config.allowOrderPlacement
-    ? options.dryRun === true
+    ? requestedDryRun
     : true;
+  const dryRunReason = dryRun
+    ? requestedDryRun
+      ? "Dry run was requested explicitly."
+      : "AUTO_TRADER_ALLOW_ORDER_PLACEMENT is not enabled, so this run used preview-only mode."
+    : null;
   const allTrades = await listJournalTradeDetails(200);
   const openPaperTrades = allTrades.filter(
     (trade) => trade.account_mode === "paper" && trade.status === "open",
@@ -1010,6 +1132,7 @@ export async function runPaperTraderCycle(
       mode: "paper",
       timestamp: new Date().toISOString(),
       dryRun,
+      dryRunReason,
       config: {
         automationBaseUrl: config.automationBaseUrl,
         allowOrderPlacement: config.allowOrderPlacement,
@@ -1058,6 +1181,7 @@ export async function runPaperTraderCycle(
     mode: "paper",
     timestamp: new Date().toISOString(),
     dryRun,
+    dryRunReason,
     config: {
       automationBaseUrl: config.automationBaseUrl,
       allowOrderPlacement: config.allowOrderPlacement,

@@ -1105,6 +1105,9 @@
         if (!paperTraderArea) {
           return;
         }
+        const configurationIssues = Array.isArray(status?.configurationIssues)
+          ? status.configurationIssues
+          : [];
 
         paperTraderArea.innerHTML = `
           <div class="stats-grid" style="margin-top: 12px;">
@@ -1115,6 +1118,10 @@
             <div class="stat-card">
               <div class="stat-label">Order Placement</div>
               <div class="stat-value">${escapeHtml(status?.allowOrderPlacement ? "Live SIM" : "Preview Only")}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Live Run Ready</div>
+              <div class="stat-value">${escapeHtml(status?.liveRunReady ? "Ready" : "Not Ready")}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">SIM Account Configured</div>
@@ -1137,6 +1144,7 @@
           <div class="journal-trade">
             <div class="row"><strong>Automation base URL:</strong> ${escapeHtml(renderMaybe(status?.automationBaseUrl))}</div>
             <div class="row"><strong>Route secret required:</strong> ${escapeHtml(formatBoolean(status?.requiresSecret))}</div>
+            <div class="row"><strong>Configuration checks:</strong> ${configurationIssues.length > 0 ? renderList(configurationIssues) : "<span class=\"muted\">Live SIM configuration is ready.</span>"}</div>
             <div class="row"><strong>AI review cadence:</strong> Every 5 minutes on weekdays via <code>/api/paper-trader-run</code></div>
           </div>
         `;
@@ -1160,6 +1168,7 @@
         paperTraderArea.innerHTML = `
           <div class="summary-section">
             <div class="row"><strong>Mode:</strong> <span class="pill">${escapeHtml(renderMaybe(result?.dryRun ? "Dry Run" : "Live SIM"))}</span></div>
+            ${result?.dryRunReason ? `<div class="row"><strong>Run note:</strong> ${escapeHtml(result.dryRunReason)}</div>` : ""}
             <div class="row"><strong>Entry outcome:</strong> ${escapeHtml(renderMaybe(result?.entry?.outcome))}</div>
             <div class="row"><strong>Reason:</strong> ${escapeHtml(renderMaybe(result?.entry?.reason))}</div>
             <div class="row"><strong>Symbol:</strong> ${escapeHtml(renderMaybe(result?.entry?.symbol))}</div>
