@@ -205,6 +205,7 @@ A minimal UI is available at the project root (`/`) for running the existing sca
 - If no confirmed setup exists, the UI shows `no_trade_today`.
 - If confirmed, it shows the scan reasoning and full trade card plus an **I took this trade** modal that persists to Supabase via `POST /api/journal`.
 - Confirmed trade-card recommendations are also saved to **Past Recommendations**, so you can revisit prior reasoning after a refresh or a newer scan and journal the older setup if you actually took it.
+- Use **Late Trade Review** for trades you took before recommendation history existed. It captures the real entry, optional current prices, stop/target levels, and thesis, then asks the read-only AI manager for hold/update-levels/consider-exit decision support.
 - The page now also shows journal insights, recent journal trades, and lets you close a trade with realized P/L and review notes.
 
 This UI is intentionally thin and does not place orders.
@@ -302,6 +303,7 @@ The journal uses durable server-side persistence in Supabase Postgres.
 - `PUT /api/journal/:id` edits saved journal fills, timestamps, and review notes while recalculating derived P/L.
 - `PATCH /api/journal/:id` stores a trade closeout and review summary.
 - `GET /api/journal/insights` returns journal analytics such as win rate, weekday profitability, setup performance, and recent winner/loser reasoning comparisons.
+- `POST /api/late-trade-review` reviews and optionally journals a trade that was already taken manually before it existed in the app.
 - `GET /api/recommendations` returns recent saved trade-card recommendations.
 - `PATCH /api/recommendations/:id` marks a recommendation as journaled after it becomes an actual trade entry.
 - Schema migrations live in `supabase/migrations`.
