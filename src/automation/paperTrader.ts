@@ -193,6 +193,11 @@ type PaperTraderStatus = {
   maxPositionPct: number;
   requiresSecret: boolean;
   openPaperTrades: number;
+  sizing: {
+    accountValueUsd: number | null;
+    maxPositionCostUsd: number | null;
+    error: string | null;
+  };
   configurationIssues: string[];
   learning: {
     closedPaperTrades: number;
@@ -575,6 +580,39 @@ async function loadPaperTraderRunHistory(): Promise<{
   };
 }
 
+async function loadPaperTraderSizingSnapshot(
+  config: PaperTraderConfig,
+): Promise<PaperTraderStatus["sizing"]> {
+  if (!config.accountId) {
+    return {
+      accountValueUsd: null,
+      maxPositionCostUsd: null,
+      error: "Missing paper-trader account id.",
+    };
+  }
+
+  try {
+    const client = await createAutomationTradeStationClient(config.automationBaseUrl);
+    const accountValueUsd = extractAccountValue(await client.getBalances(config.accountId));
+    return {
+      accountValueUsd,
+      maxPositionCostUsd:
+        accountValueUsd !== null
+          ? Number((accountValueUsd * config.maxPositionPct).toFixed(2))
+          : null,
+      error: accountValueUsd === null
+        ? "Could not read SIM account value from TradeStation balances."
+        : null,
+    };
+  } catch (error) {
+    return {
+      accountValueUsd: null,
+      maxPositionCostUsd: null,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 function findFirstNumberByKeys(value: unknown, keys: string[]): number | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -950,6 +988,7 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
   const configurationIssues = buildPaperTraderConfigurationIssues(config);
   const policyModel = trainPolicyModel(trades);
   const runHistory = await loadPaperTraderRunHistory();
+  const sizing = await loadPaperTraderSizingSnapshot(config);
 
   return {
     enabled: config.enabled,
@@ -964,6 +1003,7 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
     openPaperTrades: trades.filter(
       (trade) => trade.account_mode === "paper" && trade.status === "open",
     ).length,
+    sizing,
     configurationIssues,
     learning: {
       closedPaperTrades: policyModel.closedTradeCount,
