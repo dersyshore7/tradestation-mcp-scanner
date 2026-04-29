@@ -1706,6 +1706,14 @@
             throw new Error(data?.message || "Failed to load trade recommendations.");
           }
           tradeRecommendations = Array.isArray(data.recommendations) ? data.recommendations : [];
+          if (data?.migrationRequired && tradeRecommendationsArea) {
+            tradeRecommendationsArea.innerHTML = `
+              <div class="empty-state">
+                Recommendation history is not enabled in Supabase yet. Apply <code>supabase/migrations/202604280001_trade_recommendations.sql</code>, then refresh recommendations.
+              </div>
+            `;
+            return;
+          }
           renderTradeRecommendations();
         } catch (error) {
           if (tradeRecommendationsArea) {

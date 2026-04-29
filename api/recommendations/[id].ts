@@ -1,4 +1,7 @@
-import { markTradeRecommendationJournaled } from "../../src/recommendations/repository.js";
+import {
+  isTradeRecommendationsTableMissing,
+  markTradeRecommendationJournaled,
+} from "../../src/recommendations/repository.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "../journal/shared.js";
 
 function readId(req: VercelRequestLike): string | null {
@@ -43,6 +46,15 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
     sendJson(res, 200, { recommendation });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to update trade recommendation.";
+    if (isTradeRecommendationsTableMissing(error)) {
+      sendError(
+        res,
+        409,
+        "Supabase is missing the trade_recommendations table. Apply supabase/migrations/202604280001_trade_recommendations.sql before linking recommendations to journal trades.",
+      );
+      return;
+    }
+
     const status = message.toLowerCase().includes("required") || message.toLowerCase().includes("object") ? 400 : 500;
     sendError(res, status, message);
   }

@@ -8,8 +8,8 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
   }
 
   try {
-    const recommendations = await listRecentTradeRecommendations();
-    sendJson(res, 200, { recommendations });
+    const result = await listRecentTradeRecommendations();
+    sendJson(res, 200, result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to fetch trade recommendations.";
     sendError(res, 500, message);
