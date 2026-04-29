@@ -1235,8 +1235,8 @@
               <div class="stat-value">${escapeHtml(renderMaybe(status?.openPaperTrades, "0"))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Max Open Trades</div>
-              <div class="stat-value">${escapeHtml(renderMaybe(status?.maxOpenTrades, "0"))}</div>
+              <div class="stat-label">Open Trade Cap</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(status?.maxOpenTrades, "Unlimited"))}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Daily Loss Guard</div>
@@ -1269,6 +1269,7 @@
             <div class="row"><strong>Route secret required:</strong> ${escapeHtml(formatBoolean(status?.requiresSecret))}</div>
             <div class="row"><strong>Configuration checks:</strong> ${configurationIssues.length > 0 ? renderList(configurationIssues) : "<span class=\"muted\">Live SIM configuration is ready.</span>"}</div>
             <div class="row"><strong>Autonomous cron:</strong> Every 5 minutes on weekdays via <code>/api/paper-trader-run?reconcileOrders=true</code>; can reconcile fills, manage exits, and enter new SIM trades when guards allow.</div>
+            <div class="row"><strong>Entry cadence:</strong> Every full cron cycle can scan for another excellent setup and enter one additional non-duplicate ticker if the trade card passes.</div>
             <div class="row"><strong>Position size guard:</strong> New SIM entries are capped at ${escapeHtml(formatPercent(status?.maxPositionPct, 0))} of the TradeStation SIM account value${sizing?.maxPositionCostUsd === null || sizing?.maxPositionCostUsd === undefined ? "." : ` (${escapeHtml(formatMoney(sizing.maxPositionCostUsd))}).`}</div>
             ${sizing?.error ? `<div class="row"><strong>Sizing read:</strong> ${escapeHtml(sizing.error)}</div>` : ""}
             <div class="row"><strong>Daily loss guard:</strong> Unlimited for paper trading, so the system can keep collecting loss examples and improve its policy memory.</div>

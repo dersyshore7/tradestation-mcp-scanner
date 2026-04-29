@@ -228,7 +228,7 @@ What one paper-trader cycle does:
 2. Let the AI manager reassess any open paper trades using current quotes, the original thesis, recent management history, and rewarded feedback from similar closed paper trades
 3. Feed the AI manager a first-pass trained policy prior that is learned from closed paper trades and their management outcomes
 4. Tighten active stop/target levels or exit early when the AI manager decides the thesis has weakened or protecting gains is better than waiting
-5. If guards allow, run a fresh scan
+5. Run a fresh scan, excluding tickers already open in the paper trader
 6. Build a trade card
 7. Preview the TradeStation order
 8. Enforce the configured per-position account-value cap against the SIM account balance
@@ -243,6 +243,7 @@ Safety defaults:
 - Order placement stays off until you set `AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1`
 - The automation module refuses to run unless its base URL points to TradeStation SIM
 - New entries are capped by `AUTO_TRADER_MAX_POSITION_PCT`, defaulting to 30% of the configured SIM account value
+- There is no open-trade-count cap for paper trading; each full 5-minute cron cycle can add one new non-duplicate setup if the scan and trade card both pass
 - Daily paper losses are not capped; the automation keeps collecting paper-trade outcomes so the policy memory can learn from both winners and losers
 - The API route can be protected with `AUTO_TRADER_API_SECRET` or `CRON_SECRET`
 - Live runs skip themselves outside regular US equity market hours; dry runs still work anytime
@@ -253,7 +254,6 @@ Recommended env vars for the separate automation module:
 ```bash
 AUTO_TRADER_ENABLED=1
 AUTO_TRADER_ALLOW_ORDER_PLACEMENT=0
-AUTO_TRADER_MAX_OPEN_TRADES=1
 AUTO_TRADER_MAX_POSITION_PCT=0.30
 AUTO_TRADER_SCAN_PROMPT=Run a new Scan for this week
 AUTO_TRADER_API_SECRET=your_long_random_secret

@@ -188,7 +188,7 @@ type PaperTraderStatus = {
   liveRunReady: boolean;
   automationBaseUrl: string;
   accountIdConfigured: boolean;
-  maxOpenTrades: number;
+  maxOpenTrades: number | null;
   maxDailyLossUsd: number | null;
   maxPositionPct: number;
   requiresSecret: boolean;
@@ -229,7 +229,7 @@ type PaperTraderRunResult = {
     automationBaseUrl: string;
     allowOrderPlacement: boolean;
     accountId: string;
-    maxOpenTrades: number;
+    maxOpenTrades: number | null;
     maxDailyLossUsd: number | null;
     maxPositionPct: number;
   };
@@ -1601,15 +1601,6 @@ async function maybeEnterNewPaperTrade(params: {
     prompt,
   } = params;
 
-  if (openPaperTrades.length >= config.maxOpenTrades) {
-    return {
-      attempted: false,
-      outcome: "skipped_after_guard",
-      symbol: null,
-      reason: `Max open paper trades reached (${openPaperTrades.length}/${config.maxOpenTrades}).`,
-    };
-  }
-
   const scanRunId = buildScanRunId();
   const scan = await runScan({
     prompt,
@@ -1964,7 +1955,7 @@ export async function runPaperTraderCycle(
       guards: {
         openPaperTrades: openPaperTrades.length,
         todayRealizedPlUsd,
-        newEntriesAllowed: openPaperTrades.length < config.maxOpenTrades,
+        newEntriesAllowed: false,
       },
       reconciliation,
       management: {
@@ -2023,7 +2014,7 @@ export async function runPaperTraderCycle(
     guards: {
       openPaperTrades: remainingOpenPaperTrades.length,
       todayRealizedPlUsd,
-      newEntriesAllowed: remainingOpenPaperTrades.length < config.maxOpenTrades,
+      newEntriesAllowed: true,
     },
     reconciliation,
     management,
