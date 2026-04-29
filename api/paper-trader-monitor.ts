@@ -4,7 +4,6 @@ import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } 
 
 type RequestWithHeaders = VercelRequestLike & {
   headers?: Record<string, string | undefined>;
-  query?: Record<string, string | string[] | undefined>;
 };
 
 function isAuthorized(req: RequestWithHeaders): boolean {
@@ -16,12 +15,6 @@ function isAuthorized(req: RequestWithHeaders): boolean {
   return secrets.some((secret) => req.headers?.authorization === `Bearer ${secret}`);
 }
 
-function readBooleanQuery(req: RequestWithHeaders, name: string): boolean {
-  const raw = req.query?.[name];
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  return value === "1" || value === "true";
-}
-
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
   const request = req as RequestWithHeaders;
   if (!isAuthorized(request)) {
@@ -30,23 +23,21 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
   }
 
   if (req.method !== "GET" && req.method !== "POST") {
-    sendError(res, 404, "Use GET /api/paper-trader-run");
+    sendError(res, 404, "Use GET /api/paper-trader-monitor");
     return;
   }
 
   try {
     const result = await runPaperTraderCycle({
-      dryRun: readBooleanQuery(request, "dryRun"),
-      reconcileOnly: readBooleanQuery(request, "reconcileOnly"),
-      reconcileOrders: readBooleanQuery(request, "reconcileOrders"),
-      skipNewEntry:
-        readBooleanQuery(request, "skipNewEntry")
-        || readBooleanQuery(request, "manageOnly"),
+      dryRun: true,
+      reconcileOnly: true,
+      reconcileOrders: true,
+      skipNewEntry: true,
       source: "api",
     });
     sendJson(res, 200, result);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Paper trader run failed.";
+    const message = error instanceof Error ? error.message : "Paper trader monitor failed.";
     sendError(res, 500, message);
   }
 }

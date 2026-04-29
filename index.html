@@ -478,6 +478,7 @@
           </div>
           <div class="actions">
             <button id="loadPaperTraderStatusButton" class="secondary">Load Status</button>
+            <button id="checkPaperTraderOrdersButton" class="secondary">Check Orders</button>
             <button id="runPaperTraderDryButton" class="secondary">Run Dry Cycle</button>
             <button id="runPaperTraderLiveButton">Run Live Cycle</button>
           </div>
@@ -845,6 +846,7 @@
       const paperTraderPromptInput = document.getElementById("paperTraderPrompt");
       const paperTraderArea = document.getElementById("paperTraderArea");
       const loadPaperTraderStatusButton = document.getElementById("loadPaperTraderStatusButton");
+      const checkPaperTraderOrdersButton = document.getElementById("checkPaperTraderOrdersButton");
       const runPaperTraderDryButton = document.getElementById("runPaperTraderDryButton");
       const runPaperTraderLiveButton = document.getElementById("runPaperTraderLiveButton");
       const lateSymbolInput = document.getElementById("lateSymbol");
@@ -1108,6 +1110,7 @@
         const configurationIssues = Array.isArray(status?.configurationIssues)
           ? status.configurationIssues
           : [];
+        const learning = status?.learning || {};
 
         paperTraderArea.innerHTML = `
           <div class="stats-grid" style="margin-top: 12px;">
@@ -1139,13 +1142,22 @@
               <div class="stat-label">Daily Loss Guard</div>
               <div class="stat-value">${escapeHtml(formatMoney(status?.maxDailyLossUsd))}</div>
             </div>
+            <div class="stat-card">
+              <div class="stat-label">Policy Experiences</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(learning?.managementExperiences, "0"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Learning Ready</div>
+              <div class="stat-value">${escapeHtml(learning?.readyForPolicyPrior ? "Yes" : "Sparse")}</div>
+            </div>
           </div>
 
           <div class="journal-trade">
             <div class="row"><strong>Automation base URL:</strong> ${escapeHtml(renderMaybe(status?.automationBaseUrl))}</div>
             <div class="row"><strong>Route secret required:</strong> ${escapeHtml(formatBoolean(status?.requiresSecret))}</div>
             <div class="row"><strong>Configuration checks:</strong> ${configurationIssues.length > 0 ? renderList(configurationIssues) : "<span class=\"muted\">Live SIM configuration is ready.</span>"}</div>
-            <div class="row"><strong>AI review cadence:</strong> Every 5 minutes on weekdays via <code>/api/paper-trader-run</code></div>
+            <div class="row"><strong>Order monitor:</strong> Every 5 minutes on weekdays via <code>/api/paper-trader-monitor</code></div>
+            <div class="row"><strong>Learning set:</strong> ${escapeHtml(renderMaybe(learning?.closedPaperTrades, "0"))} closed paper trades, ${escapeHtml(renderMaybe(learning?.learnedContexts, "0"))} learned contexts</div>
           </div>
         `;
       }
@@ -1164,6 +1176,19 @@
         const skipped = Array.isArray(result?.management?.skipped)
           ? result.management.skipped
           : [];
+        const reconciled = Array.isArray(result?.reconciliation?.updates)
+          ? result.reconciliation.updates
+          : [];
+        const reconciliationSkipped = Array.isArray(result?.reconciliation?.skipped)
+          ? result.reconciliation.skipped
+          : [];
+        const reasoning = result?.entry?.reasoning || null;
+        const reasoningItems = [
+          reasoning?.optionChosen ? `Option: ${reasoning.optionChosen}` : null,
+          reasoning?.whyThisWon ? `Why selected: ${reasoning.whyThisWon}` : null,
+          reasoning?.tradeRationale ? `Trade rationale: ${reasoning.tradeRationale}` : null,
+          reasoning?.conciseReasoning ? `Full reasoning: ${reasoning.conciseReasoning}` : null,
+        ].filter(Boolean);
 
         paperTraderArea.innerHTML = `
           <div class="summary-section">
@@ -1191,9 +1216,22 @@
               <div class="stat-label">Managed Trades</div>
               <div class="stat-value">${escapeHtml(renderMaybe(result?.management?.inspected, "0"))}</div>
             </div>
+            <div class="stat-card">
+              <div class="stat-label">Orders Checked</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(result?.reconciliation?.inspected, "0"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Partial Fills</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(result?.reconciliation?.partialFills, "0"))}</div>
+            </div>
           </div>
 
           <div class="section-grid" style="margin-top: 16px;">
+            <div class="comparison-card">
+              <h4>Order Reconciliation</h4>
+              ${renderList(reconciled.map((item) => `${item.symbol}: ${item.fillStatus} | filled ${renderMaybe(item.filledQuantity)} / ${renderMaybe(item.requestedQuantity)} | avg ${renderMaybe(item.averageFillPrice)}${item.note ? ` - ${item.note}` : ""}`))}
+              ${reconciliationSkipped.length > 0 ? renderList(reconciliationSkipped.map((item) => `${item.symbol}: ${item.reason}`)) : ""}
+            </div>
             <div class="comparison-card">
               <h4>AI Decisions</h4>
               ${renderList(updates.map((item) => `${item.symbol}: ${item.action} | stop ${renderMaybe(item.stopUnderlying)} | target ${renderMaybe(item.targetUnderlying)}${item.note ? ` - ${item.note}` : ""}`))}
@@ -1206,6 +1244,12 @@
               <h4>Skipped Trades</h4>
               ${renderList(skipped.map((item) => `${item.symbol}: ${item.reason}`))}
             </div>
+          </div>
+
+          <div class="comparison-card" style="margin-top: 16px;">
+            <h4>Entry Reasoning</h4>
+            ${renderList(reasoningItems)}
+            ${reasoning?.chartGeometry ? `<div class="journal-trade">${renderObjectRows(reasoning.chartGeometry)}</div>` : ""}
           </div>
 
           <details>
@@ -1255,6 +1299,26 @@
           await refreshJournalData();
         } catch (error) {
           paperTraderArea.innerHTML = `<div class="empty-state">${escapeHtml(error instanceof Error ? error.message : "Paper trader cycle failed.")}</div>`;
+        }
+      }
+
+      async function checkPaperTraderOrders() {
+        if (!paperTraderArea) {
+          return;
+        }
+
+        paperTraderArea.innerHTML = '<div class="muted">Checking open paper orders...</div>';
+
+        try {
+          const response = await fetch("/api/paper-trader-monitor", {
+            method: "POST",
+            headers: buildPaperTraderHeaders(true),
+          });
+          const data = await readJsonResponse(response, "Paper trader order check failed.");
+          renderPaperTraderRunResult(data);
+          await refreshJournalData();
+        } catch (error) {
+          paperTraderArea.innerHTML = `<div class="empty-state">${escapeHtml(error instanceof Error ? error.message : "Paper trader order check failed.")}</div>`;
         }
       }
 
@@ -2334,6 +2398,7 @@
         }
       });
       loadPaperTraderStatusButton?.addEventListener("click", loadPaperTraderStatus);
+      checkPaperTraderOrdersButton?.addEventListener("click", checkPaperTraderOrders);
       runPaperTraderDryButton?.addEventListener("click", () => {
         runPaperTraderCycle(true);
       });

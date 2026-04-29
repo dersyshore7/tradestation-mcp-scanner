@@ -70,6 +70,15 @@ export function isTradeStationSimBaseUrl(value: string): boolean {
   return value.includes("sim-api.tradestation.com");
 }
 
+export function readPaperTraderApiSecrets(): string[] {
+  return [
+    readStringEnv(AUTO_TRADER_API_SECRET_ENV),
+    readStringEnv("CRON_SECRET"),
+  ].filter((value, index, values): value is string =>
+    value !== null && values.indexOf(value) === index
+  );
+}
+
 export function readPaperTraderConfig(): PaperTraderConfig {
   const automationBaseUrl = (
     readStringEnv(TRADESTATION_AUTOMATION_BASE_URL_ENV)
@@ -83,7 +92,7 @@ export function readPaperTraderConfig(): PaperTraderConfig {
     maxOpenTrades: readPositiveIntegerEnv(AUTO_TRADER_MAX_OPEN_TRADES_ENV, 1),
     maxDailyLossUsd: readPositiveNumberEnv(AUTO_TRADER_MAX_DAILY_LOSS_USD_ENV, 300),
     scanPrompt: readStringEnv(AUTO_TRADER_SCAN_PROMPT_ENV) ?? DEFAULT_SCAN_PROMPT,
-    apiSecret: readStringEnv(AUTO_TRADER_API_SECRET_ENV) ?? readStringEnv("CRON_SECRET"),
+    apiSecret: readPaperTraderApiSecrets()[0] ?? null,
     automationBaseUrl,
     accountId:
       readStringEnv(TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV)

@@ -1,5 +1,5 @@
 import { getPaperTraderStatus, runPaperTraderCycle } from "../src/automation/paperTrader.js";
-import { readPaperTraderConfig } from "../src/automation/config.js";
+import { readPaperTraderApiSecrets } from "../src/automation/config.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 type PaperTraderRequestBody = {
@@ -12,12 +12,12 @@ type RequestWithHeaders = VercelRequestLike & {
 };
 
 function isAuthorized(req: RequestWithHeaders): boolean {
-  const config = readPaperTraderConfig();
-  if (!config.apiSecret) {
+  const secrets = readPaperTraderApiSecrets();
+  if (secrets.length === 0) {
     return true;
   }
 
-  return req.headers?.authorization === `Bearer ${config.apiSecret}`;
+  return secrets.some((secret) => req.headers?.authorization === `Bearer ${secret}`);
 }
 
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {

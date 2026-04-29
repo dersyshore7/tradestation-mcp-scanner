@@ -42,6 +42,19 @@ export type TradeStationQuoteSnapshot = {
   raw: unknown;
 };
 
+export type TradeStationExecutionSummary = {
+  filledQuantity: number | null;
+  averageFillPrice: number | null;
+  raw: unknown;
+};
+
+export type TradeStationPositionSnapshot = {
+  symbol: string;
+  quantity: number | null;
+  averagePrice: number | null;
+  raw: unknown;
+};
+
 type JsonObject = Record<string, unknown>;
 
 function asObject(value: unknown): JsonObject | null {
@@ -142,6 +155,30 @@ function collectObjects(value: unknown, depth = 0): JsonObject[] {
   return [objectValue, ...nestedObjects];
 }
 
+function normalizeSymbol(value: string): string {
+  return value.replace(/\s+/g, "").toUpperCase();
+}
+
+function pickObjectArray(payload: unknown, keys: string[]): JsonObject[] {
+  if (Array.isArray(payload)) {
+    return payload.map(asObject).filter((item): item is JsonObject => item !== null);
+  }
+
+  const objectPayload = asObject(payload);
+  if (!objectPayload) {
+    return [];
+  }
+
+  for (const key of keys) {
+    const value = objectPayload[key];
+    if (Array.isArray(value)) {
+      return value.map(asObject).filter((item): item is JsonObject => item !== null);
+    }
+  }
+
+  return [objectPayload];
+}
+
 export function extractOrderId(payload: unknown): string | null {
   for (const candidate of collectObjects(payload)) {
     const orderId = readString(candidate, ["OrderID", "OrderId", "orderId"]);
@@ -200,6 +237,94 @@ export function extractAverageFillPrice(payload: unknown): number | null {
     if (price !== null) {
       return price;
     }
+  }
+
+  return null;
+}
+
+export function summarizeExecutions(payload: unknown): TradeStationExecutionSummary {
+  const executions = pickObjectArray(payload, ["Executions", "Execution", "Items", "Data"]);
+  let filledQuantity = 0;
+  let weightedPriceTotal = 0;
+  let hasQuantity = false;
+
+  for (const execution of executions) {
+    const quantity = readNumber(execution, [
+      "Quantity",
+      "Qty",
+      "FilledQuantity",
+      "FilledQty",
+      "ExecutionQuantity",
+      "Shares",
+    ]);
+    const price = readNumber(execution, [
+      "Price",
+      "ExecutionPrice",
+      "FilledPrice",
+      "AveragePrice",
+      "AvgFilledPrice",
+    ]);
+
+    if (quantity === null || quantity <= 0) {
+      continue;
+    }
+
+    hasQuantity = true;
+    filledQuantity += quantity;
+    if (price !== null && price > 0) {
+      weightedPriceTotal += price * quantity;
+    }
+  }
+
+  const fallbackAveragePrice = extractAverageFillPrice(payload);
+  const averageFillPrice = filledQuantity > 0 && weightedPriceTotal > 0
+    ? Number((weightedPriceTotal / filledQuantity).toFixed(4))
+    : fallbackAveragePrice;
+
+  return {
+    filledQuantity: hasQuantity ? filledQuantity : null,
+    averageFillPrice,
+    raw: payload,
+  };
+}
+
+export function findPositionSnapshot(
+  payload: unknown,
+  symbol: string,
+): TradeStationPositionSnapshot | null {
+  const normalizedTarget = normalizeSymbol(symbol);
+  const positions = collectObjects(payload);
+
+  for (const position of positions) {
+    const candidateSymbol = readString(position, [
+      "Symbol",
+      "symbol",
+      "OptionSymbol",
+      "PositionSymbol",
+    ]);
+    if (!candidateSymbol || normalizeSymbol(candidateSymbol) !== normalizedTarget) {
+      continue;
+    }
+
+    return {
+      symbol: candidateSymbol,
+      quantity: readNumber(position, [
+        "Quantity",
+        "LongQuantity",
+        "PositionQuantity",
+        "OpenQuantity",
+        "Qty",
+      ]),
+      averagePrice: readNumber(position, [
+        "AveragePrice",
+        "AveragePriceOpen",
+        "AverageOpenPrice",
+        "AvgPrice",
+        "AverageCost",
+        "CostBasisPrice",
+      ]),
+      raw: position,
+    };
   }
 
   return null;
