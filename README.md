@@ -243,6 +243,7 @@ Safety defaults:
 - Order placement stays off until you set `AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1`
 - The automation module refuses to run unless its base URL points to TradeStation SIM
 - New entries are capped by `AUTO_TRADER_MAX_POSITION_PCT`, defaulting to 30% of the configured SIM account value
+- Daily paper losses are not capped; the automation keeps collecting paper-trade outcomes so the policy memory can learn from both winners and losers
 - The API route can be protected with `AUTO_TRADER_API_SECRET` or `CRON_SECRET`
 - Live runs skip themselves outside regular US equity market hours; dry runs still work anytime
 - Vercel Pro cron runs the full paper-trader cycle every 5 minutes on weekdays during the configured UTC window
@@ -253,7 +254,6 @@ Recommended env vars for the separate automation module:
 AUTO_TRADER_ENABLED=1
 AUTO_TRADER_ALLOW_ORDER_PLACEMENT=0
 AUTO_TRADER_MAX_OPEN_TRADES=1
-AUTO_TRADER_MAX_DAILY_LOSS_USD=300
 AUTO_TRADER_MAX_POSITION_PCT=0.30
 AUTO_TRADER_SCAN_PROMPT=Run a new Scan for this week
 AUTO_TRADER_API_SECRET=your_long_random_secret
@@ -306,7 +306,8 @@ Notes:
 - `vercel.json` schedules `/api/paper-trader-run?reconcileOrders=true`, so the deployed cron can reconcile fills, manage exits, and enter new SIM trades when `AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1`.
 - Use read-only monitor mode only for manual diagnostics; it reconciles partial fills and saved average entry price, but does not scan for new entries or send exit orders.
 - The current AI manager now includes a first trained contextual policy layer learned from closed paper trades, plus rewarded experience memory in the prompt.
-- The Paper Trader status panel shows the recent AI decision log, including entry thesis, order-check changes, management decisions, exits, position size, and account-value cap details.
+- The Paper Trader status panel shows durable run history, the AI decision log, and per-trade management history, including entry thesis, order-check changes, management decisions, exits, position size, and account-value cap details.
+- Apply `supabase/migrations/202604290001_paper_trader_runs.sql` to enable persisted cron/manual run history on the website.
 
 Policy-training debug:
 

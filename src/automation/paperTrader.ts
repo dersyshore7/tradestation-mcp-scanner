@@ -37,6 +37,11 @@ import {
   summarizeExecutions,
   type TradeStationOrderRequest,
 } from "./tradestation.js";
+import {
+  listRecentPaperTraderRuns,
+  recordPaperTraderRun,
+  type PaperTraderRunRecord,
+} from "./paperTraderHistory.js";
 
 type PaperTraderRunOptions = {
   prompt?: string;
@@ -138,6 +143,36 @@ type PaperTraderDecisionLogEntry = {
   reasoning?: PaperTraderEntryReasoning | null;
 };
 
+type PaperTraderTradeHistoryItem = {
+  tradeId: string;
+  symbol: string;
+  status: JournalTradeDetail["status"];
+  direction: JournalTradeDetail["direction"];
+  entryDate: string;
+  entryTime: string | null;
+  expirationDate: string | null;
+  contracts: number | null;
+  positionCostUsd: number | null;
+  entryOptionPrice: number | null;
+  entryUnderlyingPrice: number | null;
+  activeStopUnderlying: number | null;
+  activeTargetUnderlying: number | null;
+  optionSymbol: string | null;
+  orderId: string | null;
+  fillStatus: string | null;
+  filledQuantity: number | null;
+  remainingQuantity: number | null;
+  lastOrderCheckAt: string | null;
+  lastManagementAction: string | null;
+  lastManagementAt: string | null;
+  lastManagementNote: string | null;
+  latestExitReason: string | null;
+  realizedPlUsd: number | null;
+  realizedRMultiple: number | null;
+  decisionLog: PaperTraderDecisionLogEntry[];
+  managementHistory: PaperTraderManagementHistoryEntry[];
+};
+
 type PaperTraderAutomationSnapshot = NonNullable<
   NonNullable<AutomationSnapshot["automation"]>["paperTrader"]
 >;
@@ -154,7 +189,7 @@ type PaperTraderStatus = {
   automationBaseUrl: string;
   accountIdConfigured: boolean;
   maxOpenTrades: number;
-  maxDailyLossUsd: number;
+  maxDailyLossUsd: number | null;
   maxPositionPct: number;
   requiresSecret: boolean;
   openPaperTrades: number;
@@ -166,6 +201,10 @@ type PaperTraderStatus = {
     readyForPolicyPrior: boolean;
   };
   recentDecisionLog: PaperTraderDecisionLogEntry[];
+  paperTradeHistory: PaperTraderTradeHistoryItem[];
+  runHistory: PaperTraderRunRecord[];
+  runHistoryMigrationRequired: boolean;
+  runHistoryMigrationMessage: string | null;
 };
 
 type PaperTraderEntryReasoning = {
@@ -186,7 +225,7 @@ type PaperTraderRunResult = {
     allowOrderPlacement: boolean;
     accountId: string;
     maxOpenTrades: number;
-    maxDailyLossUsd: number;
+    maxDailyLossUsd: number | null;
     maxPositionPct: number;
   };
   guards: {
@@ -259,7 +298,20 @@ type PaperTraderRunResult = {
     reasoning?: PaperTraderEntryReasoning;
   };
   decisionLog: PaperTraderDecisionLogEntry[];
+  paperTradeHistory: PaperTraderTradeHistoryItem[];
+  runHistory: PaperTraderRunRecord[];
+  runHistoryMigrationRequired: boolean;
+  runHistoryMigrationMessage: string | null;
 };
+
+type PaperTraderRunResultCore = Omit<
+  PaperTraderRunResult,
+  | "decisionLog"
+  | "paperTradeHistory"
+  | "runHistory"
+  | "runHistoryMigrationRequired"
+  | "runHistoryMigrationMessage"
+>;
 
 function readNumber(value: string | number | null | undefined): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -449,7 +501,7 @@ function appendDecisionLog(
 
 function collectRecentDecisionLog(
   trades: JournalTradeDetail[],
-  limit = 25,
+  limit = 500,
 ): PaperTraderDecisionLogEntry[] {
   return trades
     .flatMap((trade) => {
@@ -462,6 +514,65 @@ function collectRecentDecisionLog(
     })
     .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
     .slice(0, limit);
+}
+
+function buildPaperTradeHistory(
+  trades: JournalTradeDetail[],
+): PaperTraderTradeHistoryItem[] {
+  return trades
+    .filter((trade) => trade.account_mode === "paper")
+    .map((trade) => {
+      const automation = readAutomationSnapshot(trade);
+      const activeLevels = automation
+        ? readActiveManagementLevels(trade, automation)
+        : {
+            stopUnderlying: readNumber(trade.intended_stop_underlying),
+            targetUnderlying: readNumber(trade.intended_target_underlying),
+          };
+
+      return {
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        status: trade.status,
+        direction: trade.direction,
+        entryDate: trade.entry_date,
+        entryTime: trade.entry_time,
+        expirationDate: trade.expiration_date,
+        contracts: trade.contracts,
+        positionCostUsd: readNumber(trade.position_cost_usd),
+        entryOptionPrice: readNumber(trade.option_entry_price),
+        entryUnderlyingPrice: readNumber(trade.underlying_entry_price),
+        activeStopUnderlying: activeLevels.stopUnderlying,
+        activeTargetUnderlying: activeLevels.targetUnderlying,
+        optionSymbol: automation?.optionSymbol ?? null,
+        orderId: automation?.orderId ?? null,
+        fillStatus: automation?.entryFillStatus ?? automation?.lastOrderStatus ?? null,
+        filledQuantity: automation?.filledQuantity ?? null,
+        remainingQuantity: automation?.remainingQuantity ?? null,
+        lastOrderCheckAt: automation?.lastOrderCheckAt ?? null,
+        lastManagementAction: automation?.lastManagementAction ?? null,
+        lastManagementAt: automation?.lastManagementAt ?? null,
+        lastManagementNote: automation?.lastManagementNote ?? null,
+        latestExitReason: trade.latest_exit?.exit_reason ?? null,
+        realizedPlUsd: readNumber(trade.review?.realized_pl_usd ?? null),
+        realizedRMultiple: readNumber(trade.review?.realized_r_multiple ?? null),
+        decisionLog: readDecisionLog(automation),
+        managementHistory: readManagementHistory(automation),
+      };
+    });
+}
+
+async function loadPaperTraderRunHistory(): Promise<{
+  runHistory: PaperTraderRunRecord[];
+  runHistoryMigrationRequired: boolean;
+  runHistoryMigrationMessage: string | null;
+}> {
+  const runHistoryResult = await listRecentPaperTraderRuns(500);
+  return {
+    runHistory: runHistoryResult.runs,
+    runHistoryMigrationRequired: runHistoryResult.migrationRequired,
+    runHistoryMigrationMessage: runHistoryResult.migrationMessage,
+  };
 }
 
 function findFirstNumberByKeys(value: unknown, keys: string[]): number | null {
@@ -795,11 +906,50 @@ function formatRejectedOrderReason(order: {
   ].join("");
 }
 
+async function finalizePaperTraderRunResult(
+  result: PaperTraderRunResultCore,
+  tradesForHistory: JournalTradeDetail[],
+): Promise<PaperTraderRunResult> {
+  const resultWithTradeHistory = {
+    ...result,
+    decisionLog: collectRecentDecisionLog(tradesForHistory),
+    paperTradeHistory: buildPaperTradeHistory(tradesForHistory),
+    runHistory: [],
+    runHistoryMigrationRequired: false,
+    runHistoryMigrationMessage: null,
+  } satisfies PaperTraderRunResult;
+
+  let writeWarning: string | null = null;
+  try {
+    await recordPaperTraderRun({
+      mode: result.mode,
+      dryRun: result.dryRun,
+      outcome: result.entry.outcome,
+      symbol: result.entry.symbol,
+      reason: result.entry.reason,
+      rawResult: resultWithTradeHistory as unknown as Record<string, unknown>,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    writeWarning = `Paper trader run history write failed: ${message}`;
+  }
+
+  const runHistory = await loadPaperTraderRunHistory();
+  return {
+    ...resultWithTradeHistory,
+    ...runHistory,
+    runHistoryMigrationMessage:
+      writeWarning
+      ?? runHistory.runHistoryMigrationMessage,
+  };
+}
+
 export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
   const config = readPaperTraderConfig();
-  const trades = await listJournalTradeDetails(200);
+  const trades = await listJournalTradeDetails(500);
   const configurationIssues = buildPaperTraderConfigurationIssues(config);
   const policyModel = trainPolicyModel(trades);
+  const runHistory = await loadPaperTraderRunHistory();
 
   return {
     enabled: config.enabled,
@@ -822,6 +972,8 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
       readyForPolicyPrior: policyModel.experienceCount >= 3,
     },
     recentDecisionLog: collectRecentDecisionLog(trades),
+    paperTradeHistory: buildPaperTradeHistory(trades),
+    ...runHistory,
   };
 }
 
@@ -1400,14 +1552,12 @@ async function maybeEnterNewPaperTrade(params: {
   config: PaperTraderConfig;
   dryRun: boolean;
   openPaperTrades: JournalTradeDetail[];
-  todayRealizedPlUsd: number;
   prompt: string;
 }): Promise<PaperTraderRunResult["entry"]> {
   const {
     config,
     dryRun,
     openPaperTrades,
-    todayRealizedPlUsd,
     prompt,
   } = params;
 
@@ -1417,15 +1567,6 @@ async function maybeEnterNewPaperTrade(params: {
       outcome: "skipped_after_guard",
       symbol: null,
       reason: `Max open paper trades reached (${openPaperTrades.length}/${config.maxOpenTrades}).`,
-    };
-  }
-
-  if (todayRealizedPlUsd <= -config.maxDailyLossUsd) {
-    return {
-      attempted: false,
-      outcome: "skipped_after_guard",
-      symbol: null,
-      reason: `Daily realized paper loss guard hit (${todayRealizedPlUsd.toFixed(2)} <= -${config.maxDailyLossUsd.toFixed(2)}).`,
     };
   }
 
@@ -1713,7 +1854,7 @@ export async function runPaperTraderCycle(
       ? "Dry run was requested explicitly."
       : "AUTO_TRADER_ALLOW_ORDER_PLACEMENT is not enabled, so this run used preview-only mode."
     : null;
-  let allTrades = await listJournalTradeDetails(200);
+  let allTrades = await listJournalTradeDetails(500);
   const shouldReconcileOrders = options.reconcileOrders === true || !dryRun;
   const reconciliation = await reconcileOpenPaperOrders(
     config,
@@ -1721,7 +1862,7 @@ export async function runPaperTraderCycle(
     shouldReconcileOrders,
   );
   if (reconciliation.updated > 0) {
-    allTrades = await listJournalTradeDetails(200);
+    allTrades = await listJournalTradeDetails(500);
   }
 
   const openPaperTrades = allTrades.filter(
@@ -1732,7 +1873,7 @@ export async function runPaperTraderCycle(
   const todayRealizedPlUsd = computeTodayRealizedPlUsd(allTrades, todayChicago);
 
   if (options.reconcileOnly) {
-    return {
+    return await finalizePaperTraderRunResult({
       mode: "paper",
       timestamp: new Date().toISOString(),
       dryRun,
@@ -1763,12 +1904,11 @@ export async function runPaperTraderCycle(
         symbol: null,
         reason: "Monitor-only run reconciled open paper orders and skipped AI exits plus new entries.",
       },
-      decisionLog: collectRecentDecisionLog(allTrades),
-    };
+    }, allTrades);
   }
 
   if (!dryRun && !isRegularUsEquitySession(new Date())) {
-    return {
+    return await finalizePaperTraderRunResult({
       mode: "paper",
       timestamp: new Date().toISOString(),
       dryRun,
@@ -1784,9 +1924,7 @@ export async function runPaperTraderCycle(
       guards: {
         openPaperTrades: openPaperTrades.length,
         todayRealizedPlUsd,
-        newEntriesAllowed:
-          openPaperTrades.length < config.maxOpenTrades
-          && todayRealizedPlUsd > -config.maxDailyLossUsd,
+        newEntriesAllowed: openPaperTrades.length < config.maxOpenTrades,
       },
       reconciliation,
       management: {
@@ -1801,8 +1939,7 @@ export async function runPaperTraderCycle(
         symbol: null,
         reason: `Skipped live paper-trader cycle outside regular US equity market hours (America/Chicago). Current Chicago time: ${chicagoNow.time}.`,
       },
-      decisionLog: collectRecentDecisionLog(allTrades),
-    };
+    }, allTrades);
   }
 
   const management = await manageOpenPaperTrades(config, dryRun, allTrades);
@@ -1813,7 +1950,7 @@ export async function runPaperTraderCycle(
       ),
   );
   const entry = options.skipNewEntry
-    ? {
+      ? {
         attempted: false,
         outcome: "monitor_only" as const,
         symbol: null,
@@ -1823,15 +1960,14 @@ export async function runPaperTraderCycle(
         config,
         dryRun,
         openPaperTrades: remainingOpenPaperTrades,
-        todayRealizedPlUsd,
         prompt: options.prompt ?? config.scanPrompt,
       });
 
   const decisionLogTrades = !dryRun || reconciliation.updated > 0
-    ? await listJournalTradeDetails(200)
+    ? await listJournalTradeDetails(500)
     : allTrades;
 
-  return {
+  return await finalizePaperTraderRunResult({
     mode: "paper",
     timestamp: new Date().toISOString(),
     dryRun,
@@ -1847,13 +1983,10 @@ export async function runPaperTraderCycle(
     guards: {
       openPaperTrades: remainingOpenPaperTrades.length,
       todayRealizedPlUsd,
-      newEntriesAllowed:
-      remainingOpenPaperTrades.length < config.maxOpenTrades
-      && todayRealizedPlUsd > -config.maxDailyLossUsd,
+      newEntriesAllowed: remainingOpenPaperTrades.length < config.maxOpenTrades,
     },
     reconciliation,
     management,
     entry,
-    decisionLog: collectRecentDecisionLog(decisionLogTrades),
-  };
+  }, decisionLogTrades);
 }

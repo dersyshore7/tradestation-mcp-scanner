@@ -3,7 +3,6 @@ import { DEFAULT_SCAN_PROMPT } from "../config/defaultScanPrompt.js";
 const AUTO_TRADER_ENABLED_ENV = "AUTO_TRADER_ENABLED";
 const AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV = "AUTO_TRADER_ALLOW_ORDER_PLACEMENT";
 const AUTO_TRADER_MAX_OPEN_TRADES_ENV = "AUTO_TRADER_MAX_OPEN_TRADES";
-const AUTO_TRADER_MAX_DAILY_LOSS_USD_ENV = "AUTO_TRADER_MAX_DAILY_LOSS_USD";
 const AUTO_TRADER_MAX_POSITION_PCT_ENV = "AUTO_TRADER_MAX_POSITION_PCT";
 const AUTO_TRADER_SCAN_PROMPT_ENV = "AUTO_TRADER_SCAN_PROMPT";
 const AUTO_TRADER_API_SECRET_ENV = "AUTO_TRADER_API_SECRET";
@@ -14,7 +13,7 @@ export type PaperTraderConfig = {
   enabled: boolean;
   allowOrderPlacement: boolean;
   maxOpenTrades: number;
-  maxDailyLossUsd: number;
+  maxDailyLossUsd: number | null;
   maxPositionPct: number;
   scanPrompt: string;
   apiSecret: string | null;
@@ -49,20 +48,6 @@ function readPositiveIntegerEnv(name: string, fallback: number): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new Error(`${name} must be an integer > 0.`);
-  }
-
-  return parsed;
-}
-
-function readPositiveNumberEnv(name: string, fallback: number): number {
-  const value = readStringEnv(name);
-  if (value === null) {
-    return fallback;
-  }
-
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a number > 0.`);
   }
 
   return parsed;
@@ -111,7 +96,7 @@ export function readPaperTraderConfig(): PaperTraderConfig {
     enabled: readBooleanEnv(AUTO_TRADER_ENABLED_ENV, false),
     allowOrderPlacement: readBooleanEnv(AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV, false),
     maxOpenTrades: readPositiveIntegerEnv(AUTO_TRADER_MAX_OPEN_TRADES_ENV, 1),
-    maxDailyLossUsd: readPositiveNumberEnv(AUTO_TRADER_MAX_DAILY_LOSS_USD_ENV, 300),
+    maxDailyLossUsd: null,
     maxPositionPct: readPositiveRatioEnv(AUTO_TRADER_MAX_POSITION_PCT_ENV, 0.3),
     scanPrompt: readStringEnv(AUTO_TRADER_SCAN_PROMPT_ENV) ?? DEFAULT_SCAN_PROMPT,
     apiSecret: readPaperTraderApiSecrets()[0] ?? null,

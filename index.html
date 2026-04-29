@@ -921,6 +921,10 @@
         return `$${parsed.toFixed(2)}`;
       }
 
+      function formatDailyLossGuard(value) {
+        return value === null || value === undefined || value === "" ? "Unlimited" : formatMoney(value);
+      }
+
       function buildLevelNote(activeValue, plannedValue, fallback) {
         const active = asNumber(activeValue);
         const planned = asNumber(plannedValue);
@@ -1049,7 +1053,7 @@
       }
 
       function renderPaperTraderDecisionLog(log) {
-        const items = Array.isArray(log) ? log.slice(0, 12) : [];
+        const items = Array.isArray(log) ? log : [];
         if (items.length === 0) {
           return `
             <div class="comparison-card" style="margin-top: 16px;">
@@ -1083,6 +1087,62 @@
                 </div>
               `;
             }).join("")}
+          </div>
+        `;
+      }
+
+      function renderPaperTraderRunHistory(history, migrationRequired, migrationMessage) {
+        const runs = Array.isArray(history) ? history : [];
+        return `
+          <div class="comparison-card" style="margin-top: 16px;">
+            <h4>Paper Trader Run History</h4>
+            ${migrationRequired && migrationMessage ? `<div class="empty-state">${escapeHtml(migrationMessage)}</div>` : ""}
+            ${runs.length === 0 && !migrationRequired ? "<div class=\"muted\">No saved paper-trader runs yet.</div>" : ""}
+            ${runs.map((run) => {
+              const raw = run.raw_result_json || {};
+              const checked = raw.reconciliation?.inspected;
+              const managed = raw.management?.inspected;
+              return `
+                <div class="journal-trade">
+                  <div class="row"><strong>${escapeHtml(renderMaybe(run.created_at))}</strong> <span class="pill">${escapeHtml(run.dry_run ? "Dry" : "Live SIM")}</span> ${escapeHtml(renderMaybe(run.outcome))}</div>
+                  <div class="row"><strong>Symbol:</strong> ${escapeHtml(renderMaybe(run.symbol))} | <strong>Orders checked:</strong> ${escapeHtml(renderMaybe(checked, "0"))} | <strong>Managed:</strong> ${escapeHtml(renderMaybe(managed, "0"))}</div>
+                  <div class="row"><strong>Reason:</strong> ${escapeHtml(renderMaybe(run.reason))}</div>
+                </div>
+              `;
+            }).join("")}
+          </div>
+        `;
+      }
+
+      function renderPaperTradeHistory(trades) {
+        const items = Array.isArray(trades) ? trades : [];
+        if (items.length === 0) {
+          return `
+            <div class="comparison-card" style="margin-top: 16px;">
+              <h4>Paper Trade Management History</h4>
+              <div class="muted">No paper-trader journal trades yet.</div>
+            </div>
+          `;
+        }
+
+        return `
+          <div class="comparison-card" style="margin-top: 16px;">
+            <h4>Paper Trade Management History</h4>
+            ${items.map((trade) => `
+              <details class="journal-trade">
+                <summary>${escapeHtml(trade.symbol)} ${escapeHtml(renderMaybe(trade.status))} | ${escapeHtml(renderMaybe(trade.direction))} | entry ${escapeHtml(renderMaybe(trade.entryDate))}</summary>
+                <div class="row"><strong>Option:</strong> ${escapeHtml(renderMaybe(trade.optionSymbol))} | <strong>Order:</strong> ${escapeHtml(renderMaybe(trade.orderId))}</div>
+                <div class="row"><strong>Position:</strong> ${escapeHtml(renderMaybe(trade.contracts))} contract(s), ${escapeHtml(formatMoney(trade.positionCostUsd))} | <strong>Entry option:</strong> ${escapeHtml(formatMoney(trade.entryOptionPrice))} | <strong>Entry underlying:</strong> ${escapeHtml(formatMoney(trade.entryUnderlyingPrice))}</div>
+                <div class="row"><strong>Active stop/target:</strong> ${escapeHtml(formatMoney(trade.activeStopUnderlying))} / ${escapeHtml(formatMoney(trade.activeTargetUnderlying))}</div>
+                <div class="row"><strong>Fill:</strong> ${escapeHtml(renderMaybe(trade.fillStatus))} | filled ${escapeHtml(renderMaybe(trade.filledQuantity))} | remaining ${escapeHtml(renderMaybe(trade.remainingQuantity))} | last check ${escapeHtml(renderMaybe(trade.lastOrderCheckAt))}</div>
+                <div class="row"><strong>Latest management:</strong> ${escapeHtml(renderMaybe(trade.lastManagementAction))} at ${escapeHtml(renderMaybe(trade.lastManagementAt))} | ${escapeHtml(renderMaybe(trade.lastManagementNote))}</div>
+                <div class="row"><strong>Exit:</strong> ${escapeHtml(renderMaybe(trade.latestExitReason))} | <strong>P/L:</strong> ${escapeHtml(formatMoney(trade.realizedPlUsd))} | <strong>R:</strong> ${escapeHtml(formatRatio(trade.realizedRMultiple))}</div>
+                <div class="row"><strong>Management history:</strong></div>
+                ${renderList((trade.managementHistory || []).map((item) => `${item.timestamp}: ${item.action}${item.confidence ? ` (${item.confidence})` : ""} | stop ${renderMaybe(item.stopUnderlying)} | target ${renderMaybe(item.targetUnderlying)} | ${item.note}`))}
+                <div class="row"><strong>Decision log:</strong></div>
+                ${renderList((trade.decisionLog || []).map((item) => `${item.timestamp}: ${item.kind}/${item.action} | ${item.note}${item.plainEnglishExplanation ? ` | ${item.plainEnglishExplanation}` : ""}`))}
+              </details>
+            `).join("")}
           </div>
         `;
       }
@@ -1179,7 +1239,7 @@
             </div>
             <div class="stat-card">
               <div class="stat-label">Daily Loss Guard</div>
-              <div class="stat-value">${escapeHtml(formatMoney(status?.maxDailyLossUsd))}</div>
+              <div class="stat-value">${escapeHtml(formatDailyLossGuard(status?.maxDailyLossUsd))}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Max Position</div>
@@ -1201,11 +1261,14 @@
             <div class="row"><strong>Configuration checks:</strong> ${configurationIssues.length > 0 ? renderList(configurationIssues) : "<span class=\"muted\">Live SIM configuration is ready.</span>"}</div>
             <div class="row"><strong>Autonomous cron:</strong> Every 5 minutes on weekdays via <code>/api/paper-trader-run?reconcileOrders=true</code>; can reconcile fills, manage exits, and enter new SIM trades when guards allow.</div>
             <div class="row"><strong>Position size guard:</strong> New SIM entries are capped at ${escapeHtml(formatPercent(status?.maxPositionPct, 0))} of the configured TradeStation account value.</div>
+            <div class="row"><strong>Daily loss guard:</strong> Unlimited for paper trading, so the system can keep collecting loss examples and improve its policy memory.</div>
             <div class="row"><strong>Manual order check:</strong> The Check Orders button still uses read-only monitor mode for diagnostics.</div>
             <div class="row"><strong>Learning set:</strong> ${escapeHtml(renderMaybe(learning?.closedPaperTrades, "0"))} closed paper trades, ${escapeHtml(renderMaybe(learning?.learnedContexts, "0"))} learned contexts</div>
           </div>
 
+          ${renderPaperTraderRunHistory(status?.runHistory, status?.runHistoryMigrationRequired, status?.runHistoryMigrationMessage)}
           ${renderPaperTraderDecisionLog(status?.recentDecisionLog)}
+          ${renderPaperTradeHistory(status?.paperTradeHistory)}
         `;
       }
 
@@ -1298,6 +1361,8 @@
           </div>
 
           ${renderPaperTraderDecisionLog(result?.decisionLog)}
+          ${renderPaperTraderRunHistory(result?.runHistory, result?.runHistoryMigrationRequired, result?.runHistoryMigrationMessage)}
+          ${renderPaperTradeHistory(result?.paperTradeHistory)}
 
           <div class="comparison-card" style="margin-top: 16px;">
             <h4>Entry Reasoning</h4>
