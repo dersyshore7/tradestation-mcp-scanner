@@ -140,10 +140,26 @@ export type JournalTradeDetail = JournalTradeRecord & {
 
 export type JournalTradeListItem = Pick<
   JournalTradeRecord,
-  "id" | "created_at" | "entry_date" | "symbol" | "direction" | "setup_type" | "status" | "account_mode" | "position_cost_usd" | "option_entry_price" | "contracts"
+  | "id"
+  | "created_at"
+  | "entry_date"
+  | "symbol"
+  | "direction"
+  | "expiration_date"
+  | "setup_type"
+  | "status"
+  | "account_mode"
+  | "position_cost_usd"
+  | "underlying_entry_price"
+  | "option_entry_price"
+  | "contracts"
+  | "intended_stop_underlying"
+  | "intended_target_underlying"
 > & {
   entry_day: string;
   entry_week: string;
+  active_stop_underlying: string | null;
+  active_target_underlying: string | null;
   exit_option_price: string | null;
   sold_for_usd: string | null;
   realized_pl_usd: string | null;

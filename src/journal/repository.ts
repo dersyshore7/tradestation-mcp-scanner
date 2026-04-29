@@ -44,6 +44,27 @@ function formatMoneyString(value: number | null): string | null {
   return value === null ? null : value.toFixed(2);
 }
 
+function formatUnderlyingString(value: number | null): string | null {
+  return value === null ? null : value.toFixed(4);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function readNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value.trim().replace(/,/g, ""));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 function buildInFilter(field: string, ids: string[]): string {
   return `${field}=in.(${ids.join(",")})`;
 }
@@ -59,6 +80,26 @@ function buildSoldForUsd(latestExit: JournalTradeExitRecord | null): string | nu
   }
 
   return formatMoneyString(optionExitPrice * latestExit.quantity_closed * 100);
+}
+
+function readActiveManagementLevels(trade: JournalTradeRecord): {
+  active_stop_underlying: string | null;
+  active_target_underlying: string | null;
+} {
+  const snapshot = asRecord(trade.signal_snapshot_json);
+  const automation = asRecord(snapshot?.automation);
+  const paperTrader = asRecord(automation?.paperTrader);
+  const activeStop = readNumber(paperTrader?.activeStopUnderlying)
+    ?? readNumber(paperTrader?.intendedStopUnderlying)
+    ?? toNumber(trade.intended_stop_underlying);
+  const activeTarget = readNumber(paperTrader?.activeTargetUnderlying)
+    ?? readNumber(paperTrader?.intendedTargetUnderlying)
+    ?? toNumber(trade.intended_target_underlying);
+
+  return {
+    active_stop_underlying: formatUnderlyingString(activeStop),
+    active_target_underlying: formatUnderlyingString(activeTarget),
+  };
 }
 
 function buildTradeDetail(
@@ -132,20 +173,28 @@ async function hydrateJournalTrades(trades: JournalTradeRecord[]): Promise<Journ
 }
 
 function toListItem(detail: JournalTradeDetail): JournalTradeListItem {
+  const activeLevels = readActiveManagementLevels(detail);
+
   return {
     id: detail.id,
     created_at: detail.created_at,
     entry_date: detail.entry_date,
     symbol: detail.symbol,
     direction: detail.direction,
+    expiration_date: detail.expiration_date,
     setup_type: detail.setup_type,
     status: detail.status,
     account_mode: detail.account_mode,
     position_cost_usd: detail.position_cost_usd,
+    underlying_entry_price: detail.underlying_entry_price,
     option_entry_price: detail.option_entry_price,
     contracts: detail.contracts,
+    intended_stop_underlying: detail.intended_stop_underlying,
+    intended_target_underlying: detail.intended_target_underlying,
     entry_day: detail.entry_day,
     entry_week: detail.entry_week,
+    active_stop_underlying: activeLevels.active_stop_underlying,
+    active_target_underlying: activeLevels.active_target_underlying,
     exit_option_price: detail.latest_exit?.option_exit_price ?? null,
     sold_for_usd: detail.sold_for_usd,
     realized_pl_usd: detail.review?.realized_pl_usd ?? null,

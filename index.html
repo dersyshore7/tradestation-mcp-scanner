@@ -810,6 +810,18 @@
         return `$${parsed.toFixed(2)}`;
       }
 
+      function buildLevelNote(activeValue, plannedValue, fallback) {
+        const active = asNumber(activeValue);
+        const planned = asNumber(plannedValue);
+        if (active !== null && planned !== null && Math.abs(active - planned) > 0.005) {
+          return `Active level; original plan ${formatMoney(planned)}`;
+        }
+        if (active !== null) {
+          return fallback;
+        }
+        return "No level saved";
+      }
+
       function formatPercent(value, digits = 1) {
         const parsed = asNumber(value);
         if (parsed === null) {
@@ -1883,6 +1895,16 @@
           const outcomeLabel = tradeOutcomeLabel(trade);
           const outcomeClass = tradeOutcomeClass(trade);
           const plTone = numberToneClass(trade.realized_pl_usd);
+          const invalidationNote = buildLevelNote(
+            trade.active_stop_underlying,
+            trade.intended_stop_underlying,
+            "Underlying invalidation",
+          );
+          const targetNote = buildLevelNote(
+            trade.active_target_underlying,
+            trade.intended_target_underlying,
+            "Underlying take profit",
+          );
 
           return `
             <div class="journal-trade">
@@ -1908,6 +1930,21 @@
                   <div class="metric-eyebrow">Entry Option Price</div>
                   <div class="metric-value">${escapeHtml(formatMoney(trade.option_entry_price))}</div>
                   <div class="metric-note">Actual fill per contract</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-eyebrow">Entry Underlying</div>
+                  <div class="metric-value">${escapeHtml(formatMoney(trade.underlying_entry_price))}</div>
+                  <div class="metric-note">Expiration ${escapeHtml(renderMaybe(trade.expiration_date))}</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-eyebrow">Invalidation</div>
+                  <div class="metric-value">${escapeHtml(formatMoney(trade.active_stop_underlying))}</div>
+                  <div class="metric-note">${escapeHtml(invalidationNote)}</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-eyebrow">Take Profit</div>
+                  <div class="metric-value">${escapeHtml(formatMoney(trade.active_target_underlying))}</div>
+                  <div class="metric-note">${escapeHtml(targetNote)}</div>
                 </div>
                 <div class="metric-card">
                   <div class="metric-eyebrow">Exit Option Price</div>
