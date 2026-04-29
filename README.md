@@ -80,7 +80,7 @@ This telemetry is debug-only. The MCP tool response shape stays unchanged:
 - `trade setup OXY`
 - `construct trade OXY`
 
-Trade construction is read-only and returns a first-pass 2:1 trade card with 33% account-equity sizing (or env fallback if account balances are unavailable).
+Trade construction is read-only and returns a first-pass 2:1 trade card with 30% account-equity sizing (or env fallback if account balances are unavailable).
 
 ### Tool input
 
@@ -231,16 +231,18 @@ What one paper-trader cycle does:
 5. If guards allow, run a fresh scan
 6. Build a trade card
 7. Preview the TradeStation order
-8. Optionally place the order in TradeStation SIM
-9. Journal the new paper trade with execution metadata for later management
+8. Enforce the configured per-position account-value cap against the SIM account balance
+9. Optionally place the order in TradeStation SIM
+10. Journal the new paper trade with execution metadata and the AI decision log for later management
 
-New paper trades now seed AI management state in `signal_snapshot_json`, including active stop/target levels plus a short management history so later 5-minute reviews can update the trade instead of re-reading the original entry only.
+New paper trades now seed AI management state in `signal_snapshot_json`, including active stop/target levels plus a short decision log so later 5-minute reviews can explain what the AI entered, held, tightened, or exited.
 
 Safety defaults:
 
 - Disabled until you set `AUTO_TRADER_ENABLED=1`
 - Order placement stays off until you set `AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1`
 - The automation module refuses to run unless its base URL points to TradeStation SIM
+- New entries are capped by `AUTO_TRADER_MAX_POSITION_PCT`, defaulting to 30% of the configured SIM account value
 - The API route can be protected with `AUTO_TRADER_API_SECRET` or `CRON_SECRET`
 - Live runs skip themselves outside regular US equity market hours; dry runs still work anytime
 - Vercel Pro cron runs the full paper-trader cycle every 5 minutes on weekdays during the configured UTC window
@@ -252,6 +254,7 @@ AUTO_TRADER_ENABLED=1
 AUTO_TRADER_ALLOW_ORDER_PLACEMENT=0
 AUTO_TRADER_MAX_OPEN_TRADES=1
 AUTO_TRADER_MAX_DAILY_LOSS_USD=300
+AUTO_TRADER_MAX_POSITION_PCT=0.30
 AUTO_TRADER_SCAN_PROMPT=Run a new Scan for this week
 AUTO_TRADER_API_SECRET=your_long_random_secret
 
@@ -303,6 +306,7 @@ Notes:
 - `vercel.json` schedules `/api/paper-trader-run?reconcileOrders=true`, so the deployed cron can reconcile fills, manage exits, and enter new SIM trades when `AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1`.
 - Use read-only monitor mode only for manual diagnostics; it reconciles partial fills and saved average entry price, but does not scan for new entries or send exit orders.
 - The current AI manager now includes a first trained contextual policy layer learned from closed paper trades, plus rewarded experience memory in the prompt.
+- The Paper Trader status panel shows the recent AI decision log, including entry thesis, order-check changes, management decisions, exits, position size, and account-value cap details.
 
 Policy-training debug:
 

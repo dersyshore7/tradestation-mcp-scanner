@@ -14,7 +14,7 @@ import {
   runSingleSymbolTradeStationAnalysis,
 } from "./runScan.js";
 
-const TARGET_ALLOCATION_PCT = 0.33;
+const TARGET_ALLOCATION_PCT = 0.3;
 const TARGET_DTE_MIN = 14;
 const TARGET_DTE_MAX = 21;
 const TARGET_DTE_CENTER = 17;
@@ -737,7 +737,7 @@ export async function constructTradeCard(input: TradeConstructionInput): Promise
     direction,
     confidence,
     expectedTiming: buildExpectedTiming(direction, confidence, trade),
-    buy: `${trade.contracts}x ${trade.optionSymbol} @ ${renderMoney(trade.optionMid)} limit (capital used ${renderMoney(trade.notional)} of 33% allocation target ${renderMoney(trade.allocation)} from equity ${renderMoney(trade.equity)})`,
+    buy: `${trade.contracts}x ${trade.optionSymbol} @ ${renderMoney(trade.optionMid)} limit (capital used ${renderMoney(trade.notional)} of 30% allocation target ${renderMoney(trade.allocation)} from equity ${renderMoney(trade.equity)})`,
     invalidationExit: `Exit if ${symbol} breaks ${trade.finalizedTradeGeometry.invalidationLevel.toFixed(2)} (${trade.finalizedTradeGeometry.invalidationReason}; approx option ${renderMoney(trade.optionAtInvalidation)}).`,
     takeProfitExit: `Take profit near ${symbol} ${trade.finalizedTradeGeometry.targetLevel.toFixed(2)} (${trade.finalizedTradeGeometry.targetReason}; approx option ${renderMoney(trade.optionAtTarget)}).`,
     timeExit: `Exit on Thursday before expiration (${timeExitDate}), or sooner if option value decays by more than 25% from entry premium (${renderMoney(trade.optionMid)}).`,

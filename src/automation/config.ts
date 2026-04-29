@@ -4,6 +4,7 @@ const AUTO_TRADER_ENABLED_ENV = "AUTO_TRADER_ENABLED";
 const AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV = "AUTO_TRADER_ALLOW_ORDER_PLACEMENT";
 const AUTO_TRADER_MAX_OPEN_TRADES_ENV = "AUTO_TRADER_MAX_OPEN_TRADES";
 const AUTO_TRADER_MAX_DAILY_LOSS_USD_ENV = "AUTO_TRADER_MAX_DAILY_LOSS_USD";
+const AUTO_TRADER_MAX_POSITION_PCT_ENV = "AUTO_TRADER_MAX_POSITION_PCT";
 const AUTO_TRADER_SCAN_PROMPT_ENV = "AUTO_TRADER_SCAN_PROMPT";
 const AUTO_TRADER_API_SECRET_ENV = "AUTO_TRADER_API_SECRET";
 const TRADESTATION_AUTOMATION_BASE_URL_ENV = "TRADESTATION_AUTOMATION_BASE_URL";
@@ -14,6 +15,7 @@ export type PaperTraderConfig = {
   allowOrderPlacement: boolean;
   maxOpenTrades: number;
   maxDailyLossUsd: number;
+  maxPositionPct: number;
   scanPrompt: string;
   apiSecret: string | null;
   automationBaseUrl: string;
@@ -66,6 +68,25 @@ function readPositiveNumberEnv(name: string, fallback: number): number {
   return parsed;
 }
 
+function readPositiveRatioEnv(name: string, fallback: number): number {
+  const value = readStringEnv(name);
+  if (value === null) {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive number.`);
+  }
+
+  const ratio = parsed > 1 ? parsed / 100 : parsed;
+  if (ratio <= 0 || ratio > 1) {
+    throw new Error(`${name} must be between 0 and 1, or a percent between 1 and 100.`);
+  }
+
+  return ratio;
+}
+
 export function isTradeStationSimBaseUrl(value: string): boolean {
   return value.includes("sim-api.tradestation.com");
 }
@@ -91,6 +112,7 @@ export function readPaperTraderConfig(): PaperTraderConfig {
     allowOrderPlacement: readBooleanEnv(AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV, false),
     maxOpenTrades: readPositiveIntegerEnv(AUTO_TRADER_MAX_OPEN_TRADES_ENV, 1),
     maxDailyLossUsd: readPositiveNumberEnv(AUTO_TRADER_MAX_DAILY_LOSS_USD_ENV, 300),
+    maxPositionPct: readPositiveRatioEnv(AUTO_TRADER_MAX_POSITION_PCT_ENV, 0.3),
     scanPrompt: readStringEnv(AUTO_TRADER_SCAN_PROMPT_ENV) ?? DEFAULT_SCAN_PROMPT,
     apiSecret: readPaperTraderApiSecrets()[0] ?? null,
     automationBaseUrl,

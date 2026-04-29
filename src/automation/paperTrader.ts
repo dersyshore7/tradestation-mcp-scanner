@@ -87,6 +87,12 @@ type AutomationSnapshot = {
       lastManagementThesis?: string;
       lastManagementAt?: string;
       managementHistory?: PaperTraderManagementHistoryEntry[];
+      decisionLog?: PaperTraderDecisionLogEntry[];
+      entryReasoning?: PaperTraderEntryReasoning;
+      accountValueAtEntry?: number | null;
+      maxPositionPct?: number;
+      maxPositionCostUsd?: number | null;
+      positionPctAtEntry?: number | null;
     };
   };
 };
@@ -106,6 +112,32 @@ type PaperTraderManagementHistoryEntry = {
   rewardR?: number | null;
 };
 
+type PaperTraderDecisionLogEntry = {
+  timestamp: string;
+  tradeId?: string | null;
+  symbol: string | null;
+  kind: "entry" | "management" | "exit" | "order_check";
+  action: string;
+  outcome?: string | null;
+  confidence?: "low" | "medium" | "high" | null;
+  reason?: string | null;
+  note: string;
+  thesis?: string | null;
+  plainEnglishExplanation?: string | null;
+  optionSymbol?: string | null;
+  orderId?: string | null;
+  quantity?: number | null;
+  positionCostUsd?: number | null;
+  accountValueUsd?: number | null;
+  maxPositionCostUsd?: number | null;
+  positionPct?: number | null;
+  stopUnderlying?: number | null;
+  targetUnderlying?: number | null;
+  currentUnderlyingPrice?: number | null;
+  currentOptionMid?: number | null;
+  reasoning?: PaperTraderEntryReasoning | null;
+};
+
 type PaperTraderAutomationSnapshot = NonNullable<
   NonNullable<AutomationSnapshot["automation"]>["paperTrader"]
 >;
@@ -123,6 +155,7 @@ type PaperTraderStatus = {
   accountIdConfigured: boolean;
   maxOpenTrades: number;
   maxDailyLossUsd: number;
+  maxPositionPct: number;
   requiresSecret: boolean;
   openPaperTrades: number;
   configurationIssues: string[];
@@ -132,6 +165,7 @@ type PaperTraderStatus = {
     learnedContexts: number;
     readyForPolicyPrior: boolean;
   };
+  recentDecisionLog: PaperTraderDecisionLogEntry[];
 };
 
 type PaperTraderEntryReasoning = {
@@ -153,6 +187,7 @@ type PaperTraderRunResult = {
     accountId: string;
     maxOpenTrades: number;
     maxDailyLossUsd: number;
+    maxPositionPct: number;
   };
   guards: {
     openPaperTrades: number;
@@ -223,6 +258,7 @@ type PaperTraderRunResult = {
     tradeCard?: TradeConstructionResult | null;
     reasoning?: PaperTraderEntryReasoning;
   };
+  decisionLog: PaperTraderDecisionLogEntry[];
 };
 
 function readNumber(value: string | number | null | undefined): number | null {
@@ -387,6 +423,117 @@ function appendManagementHistory(
   entry: PaperTraderManagementHistoryEntry,
 ): PaperTraderManagementHistoryEntry[] {
   return [...existing, entry].slice(-30);
+}
+
+function readDecisionLog(
+  automation: PaperTraderAutomationSnapshot | null,
+): PaperTraderDecisionLogEntry[] {
+  return Array.isArray(automation?.decisionLog)
+    ? automation.decisionLog.filter((item): item is PaperTraderDecisionLogEntry =>
+        !!item
+        && typeof item === "object"
+        && typeof (item as { timestamp?: unknown }).timestamp === "string"
+        && typeof (item as { kind?: unknown }).kind === "string"
+        && typeof (item as { action?: unknown }).action === "string"
+        && typeof (item as { note?: unknown }).note === "string"
+      )
+    : [];
+}
+
+function appendDecisionLog(
+  existing: PaperTraderDecisionLogEntry[],
+  entry: PaperTraderDecisionLogEntry,
+): PaperTraderDecisionLogEntry[] {
+  return [...existing, entry].slice(-50);
+}
+
+function collectRecentDecisionLog(
+  trades: JournalTradeDetail[],
+  limit = 25,
+): PaperTraderDecisionLogEntry[] {
+  return trades
+    .flatMap((trade) => {
+      const automation = readAutomationSnapshot(trade);
+      return readDecisionLog(automation).map((entry) => ({
+        ...entry,
+        tradeId: entry.tradeId ?? trade.id,
+        symbol: entry.symbol ?? trade.symbol,
+      }));
+    })
+    .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
+    .slice(0, limit);
+}
+
+function findFirstNumberByKeys(value: unknown, keys: string[]): number | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const nested = findFirstNumberByKeys(item, keys);
+      if (nested !== null) {
+        return nested;
+      }
+    }
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const key of keys) {
+    const direct = readNumber(record[key] as string | number | null | undefined);
+    if (direct !== null) {
+      return direct;
+    }
+  }
+
+  for (const nested of Object.values(record)) {
+    const nestedValue = findFirstNumberByKeys(nested, keys);
+    if (nestedValue !== null) {
+      return nestedValue;
+    }
+  }
+
+  return null;
+}
+
+function extractAccountValue(payload: unknown): number | null {
+  return findFirstNumberByKeys(payload, [
+    "NetLiquidationValue",
+    "NetLiq",
+    "TotalEquity",
+    "TotalEquityValue",
+    "Equity",
+    "AccountValue",
+    "CashBalance",
+  ]);
+}
+
+function computePositionCap(params: {
+  requestedContracts: number;
+  limitPrice: number;
+  accountValueUsd: number;
+  maxPositionPct: number;
+}): {
+  cappedContracts: number;
+  cappedPositionCostUsd: number;
+  maxPositionCostUsd: number;
+  positionPct: number | null;
+} {
+  const maxPositionCostUsd = params.accountValueUsd * params.maxPositionPct;
+  const maxContractsByCap = Math.floor(maxPositionCostUsd / (params.limitPrice * 100));
+  const cappedContracts = Math.max(0, Math.min(params.requestedContracts, maxContractsByCap));
+  const cappedPositionCostUsd = Number((cappedContracts * params.limitPrice * 100).toFixed(2));
+
+  return {
+    cappedContracts,
+    cappedPositionCostUsd,
+    maxPositionCostUsd: Number(maxPositionCostUsd.toFixed(2)),
+    positionPct:
+      params.accountValueUsd > 0
+        ? Number((cappedPositionCostUsd / params.accountValueUsd).toFixed(4))
+        : null,
+  };
 }
 
 function readActiveManagementLevels(
@@ -662,6 +809,7 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
     accountIdConfigured: config.accountId !== null,
     maxOpenTrades: config.maxOpenTrades,
     maxDailyLossUsd: config.maxDailyLossUsd,
+    maxPositionPct: config.maxPositionPct,
     requiresSecret: config.apiSecret !== null,
     openPaperTrades: trades.filter(
       (trade) => trade.account_mode === "paper" && trade.status === "open",
@@ -673,6 +821,7 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
       learnedContexts: Object.keys(policyModel.buckets).length,
       readyForPolicyPrior: policyModel.experienceCount >= 3,
     },
+    recentDecisionLog: collectRecentDecisionLog(trades),
   };
 }
 
@@ -794,6 +943,24 @@ async function reconcileOpenPaperOrders(
       partialFills += 1;
     }
 
+    const shouldLogOrderCheck =
+      fillStatus !== automation.entryFillStatus
+      || orderCheckError !== null;
+    const decisionLog = shouldLogOrderCheck
+      ? appendDecisionLog(readDecisionLog(automation), {
+          timestamp: new Date().toISOString(),
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          kind: "order_check",
+          action: fillStatus,
+          note: orderCheckError
+            ? `Order check warning: ${orderCheckError}`
+            : `Order check found ${fillStatus} fill status for ${automation.optionSymbol}.`,
+          optionSymbol: automation.optionSymbol,
+          orderId: automation.orderId,
+          quantity: filledQuantity,
+        })
+      : readDecisionLog(automation);
     const snapshotUpdates = {
       requestedQuantity,
       ...(filledQuantity !== null ? { quantity: filledQuantity } : {}),
@@ -805,6 +972,7 @@ async function reconcileOpenPaperOrders(
       lastOrderCheckAt: new Date().toISOString(),
       lastOrderCheckError: orderCheckError,
       lastPositionQuantity: positionQuantity,
+      ...(shouldLogOrderCheck ? { decisionLog } : {}),
     };
 
     if (updateJournal) {
@@ -880,6 +1048,8 @@ async function manageOpenPaperTrades(
       continue;
     }
 
+    let decisionLog = readDecisionLog(automation);
+    let currentSnapshotUpdates: Record<string, unknown> = {};
     const [underlyingQuote, optionQuote] = await Promise.all([
       client.fetchQuote(trade.symbol),
       client.fetchQuote(automation.optionSymbol),
@@ -971,21 +1141,42 @@ async function manageOpenPaperTrades(
         note: aiDecision.note,
         thesis: aiDecision.thesis,
       };
+      const decisionLogEntry: PaperTraderDecisionLogEntry = {
+        timestamp: nowIso,
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        kind: "management",
+        action: aiDecision.action,
+        confidence: aiDecision.confidence,
+        note: aiDecision.note,
+        thesis: aiDecision.thesis,
+        plainEnglishExplanation: aiDecision.plainEnglishExplanation,
+        optionSymbol: automation.optionSymbol,
+        quantity: automation.quantity,
+        stopUnderlying: nextStopUnderlying,
+        targetUnderlying: nextTargetUnderlying,
+        currentUnderlyingPrice: underlyingQuote.last,
+        currentOptionMid: optionQuote.mid,
+        positionPct: null,
+      };
+      decisionLog = appendDecisionLog(decisionLog, decisionLogEntry);
+      currentSnapshotUpdates = {
+        activeStopUnderlying: nextStopUnderlying,
+        activeTargetUnderlying: nextTargetUnderlying,
+        managementStyle: "ai",
+        lastManagementAction: aiDecision.action,
+        lastManagementConfidence: aiDecision.confidence,
+        lastManagementNote: aiDecision.note,
+        lastManagementThesis: aiDecision.thesis,
+        lastManagementAt: nowIso,
+        managementHistory: appendManagementHistory(managementHistory, historyEntry),
+        decisionLog,
+      };
 
       if (!dryRun) {
         await updateJournalTradeSignalSnapshot(
           trade.id,
-          buildUpdatedSignalSnapshot(trade, {
-            activeStopUnderlying: nextStopUnderlying,
-            activeTargetUnderlying: nextTargetUnderlying,
-            managementStyle: "ai",
-            lastManagementAction: aiDecision.action,
-            lastManagementConfidence: aiDecision.confidence,
-            lastManagementNote: aiDecision.note,
-            lastManagementThesis: aiDecision.thesis,
-            lastManagementAt: nowIso,
-            managementHistory: appendManagementHistory(managementHistory, historyEntry),
-          }),
+          buildUpdatedSignalSnapshot(trade, currentSnapshotUpdates),
         );
       }
 
@@ -1079,6 +1270,24 @@ async function manageOpenPaperTrades(
     };
     const orderResult = await client.placeOrder(exitOrder);
     if (isRejectedOrderResult(orderResult)) {
+      decisionLog = appendDecisionLog(decisionLog, {
+        timestamp: nowIso,
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        kind: "exit",
+        action: "exit_rejected",
+        reason: decision.reason,
+        note: `${decision.note} ${formatRejectedOrderReason(orderResult)}`,
+        optionSymbol: automation.optionSymbol,
+        orderId: orderResult.orderId,
+        quantity: automation.quantity,
+        currentUnderlyingPrice: underlyingQuote.last,
+        currentOptionMid: optionQuote.mid,
+      });
+      await updateJournalTradeSignalSnapshot(
+        trade.id,
+        buildUpdatedSignalSnapshot(trade, { ...currentSnapshotUpdates, decisionLog }),
+      );
       exitsTriggered.push({
         tradeId: trade.id,
         symbol: trade.symbol,
@@ -1106,6 +1315,24 @@ async function manageOpenPaperTrades(
         ?? readNumber(trade.option_entry_price);
     }
     if (optionExitPrice === null || optionExitPrice <= 0) {
+      decisionLog = appendDecisionLog(decisionLog, {
+        timestamp: nowIso,
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        kind: "exit",
+        action: "exit_price_missing",
+        reason: decision.reason,
+        note: `${decision.note} Exit order was sent, but no usable fill price was available for journaling.`,
+        optionSymbol: automation.optionSymbol,
+        orderId: orderResult.orderId,
+        quantity: automation.quantity,
+        currentUnderlyingPrice: underlyingQuote.last,
+        currentOptionMid: optionQuote.mid,
+      });
+      await updateJournalTradeSignalSnapshot(
+        trade.id,
+        buildUpdatedSignalSnapshot(trade, { ...currentSnapshotUpdates, decisionLog }),
+      );
       exitsTriggered.push({
         tradeId: trade.id,
         symbol: trade.symbol,
@@ -1117,6 +1344,26 @@ async function manageOpenPaperTrades(
       });
       continue;
     }
+
+    decisionLog = appendDecisionLog(decisionLog, {
+      timestamp: nowIso,
+      tradeId: trade.id,
+      symbol: trade.symbol,
+      kind: "exit",
+      action: "closed",
+      reason: decision.reason,
+      note: decision.note,
+      optionSymbol: automation.optionSymbol,
+      orderId: orderResult.orderId,
+      quantity: automation.quantity,
+      positionCostUsd: readNumber(trade.position_cost_usd),
+      currentUnderlyingPrice: underlyingQuote.last,
+      currentOptionMid: optionQuote.mid,
+    });
+    await updateJournalTradeSignalSnapshot(
+      trade.id,
+      buildUpdatedSignalSnapshot(trade, { ...currentSnapshotUpdates, decisionLog }),
+    );
 
     await closeJournalTrade(trade.id, {
       option_exit_price: optionExitPrice,
@@ -1218,6 +1465,7 @@ async function maybeEnterNewPaperTrade(params: {
     });
 
     const automation = tradeCard.automationMetadata;
+    const entryReasoning = buildEntryReasoning(scan, tradeCard);
     if (automation.contracts < 1) {
       return {
         attempted: true,
@@ -1225,7 +1473,7 @@ async function maybeEnterNewPaperTrade(params: {
         symbol: scan.ticker,
         reason: `Trade card sized ${automation.contracts} contracts, so the paper trader skipped the entry.`,
         tradeCard,
-        reasoning: buildEntryReasoning(scan, tradeCard),
+        reasoning: entryReasoning,
       };
     }
 
@@ -1235,10 +1483,63 @@ async function maybeEnterNewPaperTrade(params: {
       price: automation.optionLimitPrice,
       tradeAction: automation.entryTradeAction,
     });
+    let accountValueUsd: number | null = null;
+    try {
+      accountValueUsd = extractAccountValue(await client.getBalances(config.accountId as string));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        attempted: true,
+        outcome: "trade_card_blocked",
+        symbol: scan.ticker,
+        reason: `Could not enforce the ${(config.maxPositionPct * 100).toFixed(0)}% account-value cap from TradeStation balances, so the paper trader skipped the entry. ${message}`,
+        tradeCard,
+        reasoning: entryReasoning,
+      };
+    }
+    if (accountValueUsd === null || accountValueUsd <= 0) {
+      return {
+        attempted: true,
+        outcome: "trade_card_blocked",
+        symbol: scan.ticker,
+        reason: `Could not read a positive SIM account value from TradeStation balances, so the paper trader skipped the entry instead of risking an oversized position.`,
+        tradeCard,
+        reasoning: entryReasoning,
+      };
+    }
+
+    const positionCap = computePositionCap({
+      requestedContracts: automation.contracts,
+      limitPrice: entryLimitPrice,
+      accountValueUsd,
+      maxPositionPct: config.maxPositionPct,
+    });
+    if (positionCap.cappedContracts < 1) {
+      return {
+        attempted: true,
+        outcome: "zero_contract_trade",
+        symbol: scan.ticker,
+        reason: `The ${(config.maxPositionPct * 100).toFixed(0)}% account-value cap allows ${positionCap.maxPositionCostUsd.toFixed(2)} of buying power, which is below one ${automation.optionSymbol} contract at ${entryLimitPrice.toFixed(2)}.`,
+        tradeCard,
+        reasoning: entryReasoning,
+      };
+    }
+
+    const cappedContracts = positionCap.cappedContracts;
+    const positionScale = cappedContracts / automation.contracts;
+    const cappedPlannedJournalFields = {
+      ...tradeCard.plannedJournalFields,
+      position_cost_usd: positionCap.cappedPositionCostUsd,
+      planned_risk_usd: Number((tradeCard.plannedJournalFields.planned_risk_usd * positionScale).toFixed(2)),
+      planned_profit_usd: Number((tradeCard.plannedJournalFields.planned_profit_usd * positionScale).toFixed(2)),
+    };
+    const capNote = cappedContracts < automation.contracts
+      ? ` Size reduced from ${automation.contracts} to ${cappedContracts} contracts by the ${(config.maxPositionPct * 100).toFixed(0)}% account-value cap.`
+      : "";
     const entryOrder: TradeStationOrderRequest = {
       accountId: config.accountId as string,
       symbol: automation.optionSymbol,
-      quantity: automation.contracts,
+      quantity: cappedContracts,
       orderType: automation.entryOrderType,
       tradeAction: automation.entryTradeAction,
       limitPrice: entryLimitPrice,
@@ -1252,7 +1553,7 @@ async function maybeEnterNewPaperTrade(params: {
         symbol: scan.ticker,
         reason: formatRejectedOrderReason(confirmation),
         tradeCard,
-        reasoning: buildEntryReasoning(scan, tradeCard),
+        reasoning: entryReasoning,
       };
     }
 
@@ -1261,9 +1562,9 @@ async function maybeEnterNewPaperTrade(params: {
         attempted: true,
         outcome: "preview_only",
         symbol: scan.ticker,
-        reason: `Previewed ${automation.contracts}x ${automation.optionSymbol} at ${entryLimitPrice.toFixed(2)} without sending the order.`,
+        reason: `Previewed ${cappedContracts}x ${automation.optionSymbol} at ${entryLimitPrice.toFixed(2)} without sending the order.${capNote}`,
         tradeCard,
-        reasoning: buildEntryReasoning(scan, tradeCard),
+        reasoning: entryReasoning,
       };
     }
 
@@ -1275,7 +1576,7 @@ async function maybeEnterNewPaperTrade(params: {
         symbol: scan.ticker,
         reason: formatRejectedOrderReason(orderResult),
         tradeCard,
-        reasoning: buildEntryReasoning(scan, tradeCard),
+        reasoning: entryReasoning,
       };
     }
 
@@ -1297,16 +1598,38 @@ async function maybeEnterNewPaperTrade(params: {
       telemetry: scan.telemetry ?? null,
       tradeCard,
     });
+    const entryDecisionLog: PaperTraderDecisionLogEntry[] = [{
+      timestamp: now.toISOString(),
+      symbol: scan.ticker,
+      kind: "entry",
+      action: "entered_paper_trade",
+      outcome: "entered_paper_trade",
+      note: `AI selected ${scan.ticker} and entered ${cappedContracts}x ${automation.optionSymbol}.${capNote}`,
+      thesis: entryReasoning.whyThisWon ?? entryReasoning.tradeRationale,
+      plainEnglishExplanation: entryReasoning.conciseReasoning,
+      optionSymbol: automation.optionSymbol,
+      orderId: orderResult.orderId,
+      quantity: cappedContracts,
+      positionCostUsd: Number((cappedContracts * optionEntryPrice * 100).toFixed(2)),
+      accountValueUsd,
+      maxPositionCostUsd: positionCap.maxPositionCostUsd,
+      positionPct: accountValueUsd > 0
+        ? Number(((cappedContracts * optionEntryPrice * 100) / accountValueUsd).toFixed(4))
+        : positionCap.positionPct,
+      stopUnderlying: automation.intendedStopUnderlying,
+      targetUnderlying: automation.intendedTargetUnderlying,
+      reasoning: entryReasoning,
+    }];
 
     const createdTrade = await createJournalTrade({
       account_mode: "paper",
       entry_date: chicagoNow.date,
       entry_time: chicagoNow.time,
-      contracts: automation.contracts,
+      contracts: cappedContracts,
       option_entry_price: optionEntryPrice,
       entry_notes: "Entered automatically by paper trader module.",
       planned_trade: {
-        ...tradeCard.plannedJournalFields,
+        ...cappedPlannedJournalFields,
         scan_run_id: scanRunId,
       },
       signal_snapshot_json: {
@@ -1319,7 +1642,8 @@ async function maybeEnterNewPaperTrade(params: {
           paperTrader: {
             accountId: config.accountId,
             optionSymbol: automation.optionSymbol,
-            quantity: automation.contracts,
+            quantity: cappedContracts,
+            requestedQuantity: cappedContracts,
             entryOrderType: automation.entryOrderType,
             entryTradeAction: automation.entryTradeAction,
             entryLimitPrice,
@@ -1336,6 +1660,12 @@ async function maybeEnterNewPaperTrade(params: {
             lastManagementThesis: "Original thesis accepted at entry.",
             lastManagementAt: now.toISOString(),
             managementHistory: [],
+            decisionLog: entryDecisionLog,
+            entryReasoning,
+            accountValueAtEntry: accountValueUsd,
+            maxPositionPct: config.maxPositionPct,
+            maxPositionCostUsd: positionCap.maxPositionCostUsd,
+            positionPctAtEntry: entryDecisionLog[0]?.positionPct ?? null,
             confirmationStatus: confirmation.status,
             orderStatus: orderResult.status,
           },
@@ -1348,11 +1678,11 @@ async function maybeEnterNewPaperTrade(params: {
       attempted: true,
       outcome: "entered_paper_trade",
       symbol: scan.ticker,
-      reason: `Entered ${automation.contracts}x ${automation.optionSymbol} in the paper account.`,
+      reason: `Entered ${cappedContracts}x ${automation.optionSymbol} in the paper account.${capNote}`,
       orderId: orderResult.orderId,
       journalTradeId: createdTrade.id,
       tradeCard,
-      reasoning: buildEntryReasoning(scan, tradeCard),
+      reasoning: entryReasoning,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Trade construction failed.";
@@ -1413,6 +1743,7 @@ export async function runPaperTraderCycle(
         accountId: config.accountId as string,
         maxOpenTrades: config.maxOpenTrades,
         maxDailyLossUsd: config.maxDailyLossUsd,
+        maxPositionPct: config.maxPositionPct,
       },
       guards: {
         openPaperTrades: openPaperTrades.length,
@@ -1432,6 +1763,7 @@ export async function runPaperTraderCycle(
         symbol: null,
         reason: "Monitor-only run reconciled open paper orders and skipped AI exits plus new entries.",
       },
+      decisionLog: collectRecentDecisionLog(allTrades),
     };
   }
 
@@ -1447,6 +1779,7 @@ export async function runPaperTraderCycle(
         accountId: config.accountId as string,
         maxOpenTrades: config.maxOpenTrades,
         maxDailyLossUsd: config.maxDailyLossUsd,
+        maxPositionPct: config.maxPositionPct,
       },
       guards: {
         openPaperTrades: openPaperTrades.length,
@@ -1468,6 +1801,7 @@ export async function runPaperTraderCycle(
         symbol: null,
         reason: `Skipped live paper-trader cycle outside regular US equity market hours (America/Chicago). Current Chicago time: ${chicagoNow.time}.`,
       },
+      decisionLog: collectRecentDecisionLog(allTrades),
     };
   }
 
@@ -1493,6 +1827,10 @@ export async function runPaperTraderCycle(
         prompt: options.prompt ?? config.scanPrompt,
       });
 
+  const decisionLogTrades = !dryRun || reconciliation.updated > 0
+    ? await listJournalTradeDetails(200)
+    : allTrades;
+
   return {
     mode: "paper",
     timestamp: new Date().toISOString(),
@@ -1504,6 +1842,7 @@ export async function runPaperTraderCycle(
       accountId: config.accountId as string,
       maxOpenTrades: config.maxOpenTrades,
       maxDailyLossUsd: config.maxDailyLossUsd,
+      maxPositionPct: config.maxPositionPct,
     },
     guards: {
       openPaperTrades: remainingOpenPaperTrades.length,
@@ -1515,5 +1854,6 @@ export async function runPaperTraderCycle(
     reconciliation,
     management,
     entry,
+    decisionLog: collectRecentDecisionLog(decisionLogTrades),
   };
 }

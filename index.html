@@ -1048,6 +1048,45 @@
           .join("");
       }
 
+      function renderPaperTraderDecisionLog(log) {
+        const items = Array.isArray(log) ? log.slice(0, 12) : [];
+        if (items.length === 0) {
+          return `
+            <div class="comparison-card" style="margin-top: 16px;">
+              <h4>AI Decision Log</h4>
+              <div class="muted">No paper-trader decisions have been saved yet.</div>
+            </div>
+          `;
+        }
+
+        return `
+          <div class="comparison-card" style="margin-top: 16px;">
+            <h4>AI Decision Log</h4>
+            ${items.map((item) => {
+              const details = [
+                item.optionSymbol ? `Option ${item.optionSymbol}` : null,
+                item.quantity ? `${item.quantity} contract(s)` : null,
+                item.positionCostUsd ? `position ${formatMoney(item.positionCostUsd)}` : null,
+                item.positionPct ? `${formatPercent(item.positionPct, 1)} of account` : null,
+                item.accountValueUsd ? `account ${formatMoney(item.accountValueUsd)}` : null,
+                item.maxPositionCostUsd ? `cap ${formatMoney(item.maxPositionCostUsd)}` : null,
+                item.stopUnderlying ? `stop ${formatMoney(item.stopUnderlying)}` : null,
+                item.targetUnderlying ? `target ${formatMoney(item.targetUnderlying)}` : null,
+              ].filter(Boolean).join(" | ");
+              const explanation = item.plainEnglishExplanation || item.thesis || item.reason || "";
+              return `
+                <div class="journal-trade">
+                  <div class="row"><strong>${escapeHtml(renderMaybe(item.timestamp))}</strong> <span class="pill">${escapeHtml(renderMaybe(item.kind))}</span> ${escapeHtml(renderMaybe(item.symbol))} ${escapeHtml(renderMaybe(item.action))}${item.confidence ? ` (${escapeHtml(item.confidence)})` : ""}</div>
+                  ${details ? `<div class="row">${escapeHtml(details)}</div>` : ""}
+                  <div class="row"><strong>Decision:</strong> ${escapeHtml(renderMaybe(item.note))}</div>
+                  ${explanation ? `<div class="row"><strong>Reasoning:</strong> ${escapeHtml(explanation)}</div>` : ""}
+                </div>
+              `;
+            }).join("")}
+          </div>
+        `;
+      }
+
       function buildPaperTraderHeaders(includeJson = false) {
         const headers = {};
         const secret = paperTraderSecretInput?.value?.trim() || "";
@@ -1143,6 +1182,10 @@
               <div class="stat-value">${escapeHtml(formatMoney(status?.maxDailyLossUsd))}</div>
             </div>
             <div class="stat-card">
+              <div class="stat-label">Max Position</div>
+              <div class="stat-value">${escapeHtml(formatPercent(status?.maxPositionPct, 0))}</div>
+            </div>
+            <div class="stat-card">
               <div class="stat-label">Policy Experiences</div>
               <div class="stat-value">${escapeHtml(renderMaybe(learning?.managementExperiences, "0"))}</div>
             </div>
@@ -1157,9 +1200,12 @@
             <div class="row"><strong>Route secret required:</strong> ${escapeHtml(formatBoolean(status?.requiresSecret))}</div>
             <div class="row"><strong>Configuration checks:</strong> ${configurationIssues.length > 0 ? renderList(configurationIssues) : "<span class=\"muted\">Live SIM configuration is ready.</span>"}</div>
             <div class="row"><strong>Autonomous cron:</strong> Every 5 minutes on weekdays via <code>/api/paper-trader-run?reconcileOrders=true</code>; can reconcile fills, manage exits, and enter new SIM trades when guards allow.</div>
+            <div class="row"><strong>Position size guard:</strong> New SIM entries are capped at ${escapeHtml(formatPercent(status?.maxPositionPct, 0))} of the configured TradeStation account value.</div>
             <div class="row"><strong>Manual order check:</strong> The Check Orders button still uses read-only monitor mode for diagnostics.</div>
             <div class="row"><strong>Learning set:</strong> ${escapeHtml(renderMaybe(learning?.closedPaperTrades, "0"))} closed paper trades, ${escapeHtml(renderMaybe(learning?.learnedContexts, "0"))} learned contexts</div>
           </div>
+
+          ${renderPaperTraderDecisionLog(status?.recentDecisionLog)}
         `;
       }
 
@@ -1225,6 +1271,10 @@
               <div class="stat-label">Partial Fills</div>
               <div class="stat-value">${escapeHtml(renderMaybe(result?.reconciliation?.partialFills, "0"))}</div>
             </div>
+            <div class="stat-card">
+              <div class="stat-label">Max Position</div>
+              <div class="stat-value">${escapeHtml(formatPercent(result?.config?.maxPositionPct, 0))}</div>
+            </div>
           </div>
 
           <div class="section-grid" style="margin-top: 16px;">
@@ -1246,6 +1296,8 @@
               ${renderList(skipped.map((item) => `${item.symbol}: ${item.reason}`))}
             </div>
           </div>
+
+          ${renderPaperTraderDecisionLog(result?.decisionLog)}
 
           <div class="comparison-card" style="margin-top: 16px;">
             <h4>Entry Reasoning</h4>
