@@ -29,6 +29,13 @@ type SupabaseDeleteQuery = {
   filters: string[];
 };
 
+type SupabaseRestResponse = {
+  response: Response;
+  text: string;
+};
+
+const SUPABASE_RETRY_DELAYS_MS = [250, 1000, 2500] as const;
+
 function readEnv(name: string): string {
   const value = process.env[name];
   if (!value || value.trim().length === 0) {
@@ -74,9 +81,44 @@ function buildQueryParams(filters?: string[], order?: string[], limit?: number):
   return params;
 }
 
+function isRetryableSupabaseResponse(status: number, text: string): boolean {
+  if (status === 503) {
+    return true;
+  }
+
+  try {
+    const payload = JSON.parse(text) as { code?: string };
+    return payload.code === "PGRST002";
+  } catch {
+    return text.includes("PGRST002") || text.toLowerCase().includes("schema cache");
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function fetchSupabaseRest(url: string, init: RequestInit): Promise<SupabaseRestResponse> {
+  for (let attempt = 0; ; attempt += 1) {
+    const response = await fetch(url, init);
+    const text = await response.text();
+    if (
+      response.ok
+      || !isRetryableSupabaseResponse(response.status, text)
+      || attempt >= SUPABASE_RETRY_DELAYS_MS.length
+    ) {
+      return { response, text };
+    }
+
+    await sleep(SUPABASE_RETRY_DELAYS_MS[attempt] ?? 0);
+  }
+}
+
 export async function supabaseInsertAndSelectOne<T>(query: SupabaseInsertQuery): Promise<T> {
   const params = new URLSearchParams();
-  const response = await fetch(buildRestUrl(query.table, params), {
+  const { response, text } = await fetchSupabaseRest(buildRestUrl(query.table, params), {
     method: "POST",
     headers: {
       ...buildBaseHeaders(),
@@ -84,11 +126,10 @@ export async function supabaseInsertAndSelectOne<T>(query: SupabaseInsertQuery):
     },
     body: JSON.stringify(query.values),
   });
-  const text = await response.text();
-  const payload = text.length > 0 ? (JSON.parse(text) as T[]) : null;
   if (!response.ok) {
     throw new Error(`Supabase insert failed (${response.status}): ${text}`);
   }
+  const payload = text.length > 0 ? (JSON.parse(text) as T[]) : null;
   if (!Array.isArray(payload) || payload.length === 0) {
     throw new Error(`Supabase insert returned no rows for table ${query.table}.`);
   }
@@ -99,7 +140,7 @@ export async function supabaseUpsertAndSelectOne<T>(query: SupabaseUpsertQuery):
   const params = new URLSearchParams();
   params.set("on_conflict", query.onConflict);
 
-  const response = await fetch(buildRestUrl(query.table, params), {
+  const { response, text } = await fetchSupabaseRest(buildRestUrl(query.table, params), {
     method: "POST",
     headers: {
       ...buildBaseHeaders(),
@@ -107,11 +148,10 @@ export async function supabaseUpsertAndSelectOne<T>(query: SupabaseUpsertQuery):
     },
     body: JSON.stringify(query.values),
   });
-  const text = await response.text();
-  const payload = text.length > 0 ? (JSON.parse(text) as T[]) : null;
   if (!response.ok) {
     throw new Error(`Supabase upsert failed (${response.status}): ${text}`);
   }
+  const payload = text.length > 0 ? (JSON.parse(text) as T[]) : null;
   if (!Array.isArray(payload) || payload.length === 0) {
     throw new Error(`Supabase upsert returned no rows for table ${query.table}.`);
   }
@@ -120,7 +160,7 @@ export async function supabaseUpsertAndSelectOne<T>(query: SupabaseUpsertQuery):
 
 export async function supabaseUpdateAndSelectOne<T>(query: SupabaseUpdateQuery): Promise<T> {
   const params = buildQueryParams(query.filters);
-  const response = await fetch(buildRestUrl(query.table, params), {
+  const { response, text } = await fetchSupabaseRest(buildRestUrl(query.table, params), {
     method: "PATCH",
     headers: {
       ...buildBaseHeaders(),
@@ -128,11 +168,10 @@ export async function supabaseUpdateAndSelectOne<T>(query: SupabaseUpdateQuery):
     },
     body: JSON.stringify(query.values),
   });
-  const text = await response.text();
-  const payload = text.length > 0 ? (JSON.parse(text) as T[]) : null;
   if (!response.ok) {
     throw new Error(`Supabase update failed (${response.status}): ${text}`);
   }
+  const payload = text.length > 0 ? (JSON.parse(text) as T[]) : null;
   if (!Array.isArray(payload) || payload.length === 0) {
     throw new Error(`Supabase update returned no rows for table ${query.table}.`);
   }
@@ -141,14 +180,13 @@ export async function supabaseUpdateAndSelectOne<T>(query: SupabaseUpdateQuery):
 
 export async function supabaseDelete(query: SupabaseDeleteQuery): Promise<void> {
   const params = buildQueryParams(query.filters);
-  const response = await fetch(buildRestUrl(query.table, params), {
+  const { response, text } = await fetchSupabaseRest(buildRestUrl(query.table, params), {
     method: "DELETE",
     headers: {
       ...buildBaseHeaders(),
       Prefer: "return=minimal",
     },
   });
-  const text = await response.text();
 
   if (!response.ok) {
     throw new Error(`Supabase delete failed (${response.status}): ${text}`);
@@ -164,11 +202,10 @@ export async function supabaseSelect<T>(query: SupabaseSelectQuery): Promise<T[]
     headers.Accept = "application/vnd.pgrst.object+json";
   }
 
-  const response = await fetch(buildRestUrl(query.table, params), {
+  const { response, text } = await fetchSupabaseRest(buildRestUrl(query.table, params), {
     method: "GET",
     headers,
   });
-  const text = await response.text();
 
   if (!response.ok) {
     if (query.single === "maybeSingle" && response.status === 406) {

@@ -1096,8 +1096,8 @@
         return `
           <div class="comparison-card" style="margin-top: 16px;">
             <h4>Paper Trader Run History</h4>
-            ${migrationRequired && migrationMessage ? `<div class="empty-state">${escapeHtml(migrationMessage)}</div>` : ""}
-            ${runs.length === 0 && !migrationRequired ? "<div class=\"muted\">No saved paper-trader runs yet.</div>" : ""}
+            ${migrationMessage ? `<div class="empty-state">${escapeHtml(migrationMessage)}</div>` : ""}
+            ${runs.length === 0 && !migrationMessage ? "<div class=\"muted\">No saved paper-trader runs yet.</div>" : ""}
             ${runs.map((run) => {
               const raw = run.raw_result_json || {};
               const checked = raw.reconciliation?.inspected;
@@ -1119,8 +1119,8 @@
         return `
           <div class="comparison-card" style="margin-top: 16px;">
             <h4>Entry Candidate Audit</h4>
-            ${migrationRequired && migrationMessage ? `<div class="empty-state">${escapeHtml(migrationMessage)}</div>` : ""}
-            ${candidates.length === 0 && !migrationRequired ? "<div class=\"muted\">No entry candidates have been saved yet.</div>" : ""}
+            ${migrationMessage ? `<div class="empty-state">${escapeHtml(migrationMessage)}</div>` : ""}
+            ${candidates.length === 0 && !migrationMessage ? "<div class=\"muted\">No entry candidates have been saved yet.</div>" : ""}
             ${candidates.slice(0, 30).map((item) => {
               const metrics = [
                 item.direction ? `direction ${item.direction}` : null,

@@ -641,17 +641,41 @@ function buildPaperTradeHistory(
     });
 }
 
+function formatNonCriticalHistoryError(label: string, error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    message.includes("PGRST002")
+    || message.includes("schema cache")
+    || message.includes("Supabase select failed (503)")
+  ) {
+    return `${label} is temporarily unavailable while Supabase refreshes its schema cache. Try Load Status again in a minute.`;
+  }
+
+  return `${label} is temporarily unavailable: ${message}`;
+}
+
 async function loadPaperTraderRunHistory(): Promise<{
   runHistory: PaperTraderRunRecord[];
   runHistoryMigrationRequired: boolean;
   runHistoryMigrationMessage: string | null;
 }> {
-  const runHistoryResult = await listRecentPaperTraderRuns(500);
-  return {
-    runHistory: runHistoryResult.runs,
-    runHistoryMigrationRequired: runHistoryResult.migrationRequired,
-    runHistoryMigrationMessage: runHistoryResult.migrationMessage,
-  };
+  try {
+    const runHistoryResult = await listRecentPaperTraderRuns(500);
+    return {
+      runHistory: runHistoryResult.runs,
+      runHistoryMigrationRequired: runHistoryResult.migrationRequired,
+      runHistoryMigrationMessage: runHistoryResult.migrationMessage,
+    };
+  } catch (error) {
+    return {
+      runHistory: [],
+      runHistoryMigrationRequired: false,
+      runHistoryMigrationMessage: formatNonCriticalHistoryError(
+        "Paper trader run history",
+        error,
+      ),
+    };
+  }
 }
 
 async function loadPaperEntryCandidateHistory(): Promise<{
@@ -659,12 +683,23 @@ async function loadPaperEntryCandidateHistory(): Promise<{
   entryCandidateHistoryMigrationRequired: boolean;
   entryCandidateHistoryMigrationMessage: string | null;
 }> {
-  const result = await listRecentPaperEntryCandidates(200);
-  return {
-    entryCandidateHistory: result.candidates,
-    entryCandidateHistoryMigrationRequired: result.migrationRequired,
-    entryCandidateHistoryMigrationMessage: result.migrationMessage,
-  };
+  try {
+    const result = await listRecentPaperEntryCandidates(200);
+    return {
+      entryCandidateHistory: result.candidates,
+      entryCandidateHistoryMigrationRequired: result.migrationRequired,
+      entryCandidateHistoryMigrationMessage: result.migrationMessage,
+    };
+  } catch (error) {
+    return {
+      entryCandidateHistory: [],
+      entryCandidateHistoryMigrationRequired: false,
+      entryCandidateHistoryMigrationMessage: formatNonCriticalHistoryError(
+        "Entry candidate audit",
+        error,
+      ),
+    };
+  }
 }
 
 async function loadPaperTraderSizingSnapshot(
@@ -1058,8 +1093,7 @@ async function finalizePaperTraderRunResult(
       rawResult: resultWithTradeHistory as unknown as Record<string, unknown>,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    writeWarning = `Paper trader run history write failed: ${message}`;
+    writeWarning = formatNonCriticalHistoryError("Paper trader run history write", error);
   }
 
   const runHistory = await loadPaperTraderRunHistory();
