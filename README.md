@@ -228,14 +228,17 @@ What one paper-trader cycle does:
 2. Let the AI manager reassess any open paper trades using current quotes, the original thesis, recent management history, and rewarded feedback from similar closed paper trades
 3. Feed the AI manager a first-pass trained policy prior that is learned from closed paper trades and their management outcomes
 4. Tighten active stop/target levels or exit early when the AI manager decides the thesis has weakened or protecting gains is better than waiting
-5. Run a fresh scan, excluding tickers already open in the paper trader
-6. Build a trade card
-7. Preview the TradeStation order
-8. Enforce the configured per-position account-value cap against the SIM account balance
-9. Optionally place the order in TradeStation SIM
-10. Journal the new paper trade with execution metadata and the AI decision log for later management
+5. Train an entry reward model from closed paper entries using realized R as the reward signal
+6. Run a fresh scan, excluding tickers already open in the paper trader
+7. Build a trade card, then consult the entry reward model before placement
+8. Skip historically poor entry contexts with enough evidence and rescan for another candidate
+9. Preview the TradeStation order
+10. Enforce the configured per-position account-value cap against the SIM account balance
+11. Optionally place the order in TradeStation SIM
+12. Journal the new paper trade with execution metadata, entry-policy context, and the AI decision log for later management
+13. Save the evaluated entry candidate to the candidate audit log when the migration is applied
 
-New paper trades now seed AI management state in `signal_snapshot_json`, including active stop/target levels plus a short decision log so later 5-minute reviews can explain what the AI entered, held, tightened, or exited.
+New paper trades now seed AI management state in `signal_snapshot_json`, including active stop/target levels, entry reward-policy context, plus a short decision log so later 5-minute reviews can explain what the AI entered, held, tightened, or exited.
 
 Safety defaults:
 
@@ -306,8 +309,10 @@ Notes:
 - `vercel.json` schedules `/api/paper-trader-run?reconcileOrders=true`, so the deployed cron can reconcile fills, manage exits, and enter new SIM trades when `AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1`.
 - Use read-only monitor mode only for manual diagnostics; it reconciles partial fills and saved average entry price, but does not scan for new entries or send exit orders.
 - The current AI manager now includes a first trained contextual policy layer learned from closed paper trades, plus rewarded experience memory in the prompt.
+- New entries now include a separate realized-R entry reward model. It learns which entry contexts have produced better or worse closed paper-trade R multiples, uses a 5R outlier cap to keep bad journal math from dominating, audits feature coverage for missing variables, can block repeatedly poor contexts when enough evidence exists, and then asks the scanner for another non-duplicate candidate.
 - The Paper Trader status panel shows durable run history, the AI decision log, and per-trade management history, including entry thesis, order-check changes, management decisions, exits, position size, and account-value cap details.
 - Apply `supabase/migrations/202604290001_paper_trader_runs.sql` to enable persisted cron/manual run history on the website.
+- Apply `supabase/migrations/202604300001_paper_entry_candidates.sql` to enable persisted entry candidate audit history on the website.
 
 Policy-training debug:
 

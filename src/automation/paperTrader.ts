@@ -30,6 +30,20 @@ import {
   trainPolicyModel,
 } from "./policyModel.js";
 import {
+  buildEntryRewardFeatureInput,
+  buildEntryRewardFeatureSnapshot,
+  recommendEntryPolicy,
+  summarizeEntryRewardModel,
+  trainEntryRewardModel,
+  type EntryPolicyRecommendation,
+  type EntryRewardFeatureInput,
+} from "./entryRewardModel.js";
+import {
+  listRecentPaperEntryCandidates,
+  recordPaperEntryCandidate,
+  type PaperEntryCandidateRecord,
+} from "./entryCandidateHistory.js";
+import {
   createAutomationTradeStationClient,
   extractAverageFillPrice,
   findPositionSnapshot,
@@ -42,6 +56,8 @@ import {
   recordPaperTraderRun,
   type PaperTraderRunRecord,
 } from "./paperTraderHistory.js";
+
+const MAX_ENTRY_POLICY_SCAN_ATTEMPTS = 3;
 
 type PaperTraderRunOptions = {
   prompt?: string;
@@ -141,6 +157,7 @@ type PaperTraderDecisionLogEntry = {
   currentUnderlyingPrice?: number | null;
   currentOptionMid?: number | null;
   reasoning?: PaperTraderEntryReasoning | null;
+  entryPolicy?: EntryPolicyRecommendation | null;
 };
 
 type PaperTraderTradeHistoryItem = {
@@ -202,11 +219,18 @@ type PaperTraderStatus = {
   learning: {
     closedPaperTrades: number;
     managementExperiences: number;
+    entryExperiences: number;
+    entryLearnedContexts: number;
     learnedContexts: number;
     readyForPolicyPrior: boolean;
+    entryFeatureCoverage: ReturnType<typeof trainEntryRewardModel>["featureCoverage"];
+    entryPolicySummary: string | null;
   };
   recentDecisionLog: PaperTraderDecisionLogEntry[];
   paperTradeHistory: PaperTraderTradeHistoryItem[];
+  entryCandidateHistory: PaperEntryCandidateRecord[];
+  entryCandidateHistoryMigrationRequired: boolean;
+  entryCandidateHistoryMigrationMessage: string | null;
   runHistory: PaperTraderRunRecord[];
   runHistoryMigrationRequired: boolean;
   runHistoryMigrationMessage: string | null;
@@ -218,6 +242,14 @@ type PaperTraderEntryReasoning = {
   tradeRationale: string | null;
   optionChosen: string | null;
   chartGeometry: Record<string, unknown> | null;
+};
+
+type PaperTraderEntryCandidateEvaluation = {
+  symbol: string | null;
+  decision: string;
+  reason: string;
+  entryPolicy: EntryPolicyRecommendation | null;
+  features: EntryRewardFeatureInput | null;
 };
 
 type PaperTraderRunResult = {
@@ -301,9 +333,13 @@ type PaperTraderRunResult = {
     journalTradeId?: string | null;
     tradeCard?: TradeConstructionResult | null;
     reasoning?: PaperTraderEntryReasoning;
+    evaluatedCandidates?: PaperTraderEntryCandidateEvaluation[];
   };
   decisionLog: PaperTraderDecisionLogEntry[];
   paperTradeHistory: PaperTraderTradeHistoryItem[];
+  entryCandidateHistory: PaperEntryCandidateRecord[];
+  entryCandidateHistoryMigrationRequired: boolean;
+  entryCandidateHistoryMigrationMessage: string | null;
   runHistory: PaperTraderRunRecord[];
   runHistoryMigrationRequired: boolean;
   runHistoryMigrationMessage: string | null;
@@ -313,6 +349,9 @@ type PaperTraderRunResultCore = Omit<
   PaperTraderRunResult,
   | "decisionLog"
   | "paperTradeHistory"
+  | "entryCandidateHistory"
+  | "entryCandidateHistoryMigrationRequired"
+  | "entryCandidateHistoryMigrationMessage"
   | "runHistory"
   | "runHistoryMigrationRequired"
   | "runHistoryMigrationMessage"
@@ -424,6 +463,41 @@ function buildEntryReasoning(
 
 function buildScanRunId(): string {
   return `paper_scan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+async function recordEntryCandidateAudit(input: {
+  scanRunId: string;
+  dryRun: boolean;
+  symbol: string | null;
+  decision: string;
+  decisionReason: string | null;
+  paperTradeId?: string | null;
+  orderId?: string | null;
+  features?: EntryRewardFeatureInput | null;
+  entryPolicy?: EntryPolicyRecommendation | null;
+  scan?: unknown;
+  tradeCard?: unknown;
+}): Promise<void> {
+  try {
+    await recordPaperEntryCandidate({
+      scanRunId: input.scanRunId,
+      dryRun: input.dryRun,
+      symbol: input.symbol,
+      decision: input.decision,
+      decisionReason: input.decisionReason,
+      paperTradeId: input.paperTradeId ?? null,
+      orderId: input.orderId ?? null,
+      features: input.features ?? null,
+      entryPolicy: input.entryPolicy ?? null,
+      scan: asRecord(input.scan) ?? null,
+      tradeCard: asRecord(input.tradeCard) ?? null,
+    });
+  } catch (error) {
+    console.warn(
+      "paper entry candidate audit write failed",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
 }
 
 function readAutomationSnapshot(
@@ -577,6 +651,19 @@ async function loadPaperTraderRunHistory(): Promise<{
     runHistory: runHistoryResult.runs,
     runHistoryMigrationRequired: runHistoryResult.migrationRequired,
     runHistoryMigrationMessage: runHistoryResult.migrationMessage,
+  };
+}
+
+async function loadPaperEntryCandidateHistory(): Promise<{
+  entryCandidateHistory: PaperEntryCandidateRecord[];
+  entryCandidateHistoryMigrationRequired: boolean;
+  entryCandidateHistoryMigrationMessage: string | null;
+}> {
+  const result = await listRecentPaperEntryCandidates(200);
+  return {
+    entryCandidateHistory: result.candidates,
+    entryCandidateHistoryMigrationRequired: result.migrationRequired,
+    entryCandidateHistoryMigrationMessage: result.migrationMessage,
   };
 }
 
@@ -952,6 +1039,9 @@ async function finalizePaperTraderRunResult(
     ...result,
     decisionLog: collectRecentDecisionLog(tradesForHistory),
     paperTradeHistory: buildPaperTradeHistory(tradesForHistory),
+    entryCandidateHistory: [],
+    entryCandidateHistoryMigrationRequired: false,
+    entryCandidateHistoryMigrationMessage: null,
     runHistory: [],
     runHistoryMigrationRequired: false,
     runHistoryMigrationMessage: null,
@@ -973,9 +1063,11 @@ async function finalizePaperTraderRunResult(
   }
 
   const runHistory = await loadPaperTraderRunHistory();
+  const entryCandidateHistory = await loadPaperEntryCandidateHistory();
   return {
     ...resultWithTradeHistory,
     ...runHistory,
+    ...entryCandidateHistory,
     runHistoryMigrationMessage:
       writeWarning
       ?? runHistory.runHistoryMigrationMessage,
@@ -987,7 +1079,9 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
   const trades = await listJournalTradeDetails(500);
   const configurationIssues = buildPaperTraderConfigurationIssues(config);
   const policyModel = trainPolicyModel(trades);
+  const entryRewardModel = trainEntryRewardModel(trades);
   const runHistory = await loadPaperTraderRunHistory();
+  const entryCandidateHistory = await loadPaperEntryCandidateHistory();
   const sizing = await loadPaperTraderSizingSnapshot(config);
 
   return {
@@ -1008,11 +1102,16 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
     learning: {
       closedPaperTrades: policyModel.closedTradeCount,
       managementExperiences: policyModel.experienceCount,
+      entryExperiences: entryRewardModel.experienceCount,
+      entryLearnedContexts: Object.keys(entryRewardModel.buckets).length,
       learnedContexts: Object.keys(policyModel.buckets).length,
       readyForPolicyPrior: policyModel.experienceCount >= 3,
+      entryFeatureCoverage: entryRewardModel.featureCoverage,
+      entryPolicySummary: summarizeEntryRewardModel(entryRewardModel),
     },
     recentDecisionLog: collectRecentDecisionLog(trades),
     paperTradeHistory: buildPaperTradeHistory(trades),
+    ...entryCandidateHistory,
     ...runHistory,
   };
 }
@@ -1591,61 +1690,176 @@ async function manageOpenPaperTrades(
 async function maybeEnterNewPaperTrade(params: {
   config: PaperTraderConfig;
   dryRun: boolean;
+  allTrades: JournalTradeDetail[];
   openPaperTrades: JournalTradeDetail[];
   prompt: string;
 }): Promise<PaperTraderRunResult["entry"]> {
   const {
     config,
     dryRun,
+    allTrades,
     openPaperTrades,
     prompt,
   } = params;
 
   const scanRunId = buildScanRunId();
-  const scan = await runScan({
-    prompt,
-    excludedTickers: openPaperTrades.map((trade) => trade.symbol),
-    tradestationBaseUrlOverride: config.automationBaseUrl,
-  });
+  const entryRewardModel = trainEntryRewardModel(allTrades);
+  const openSymbols = openPaperTrades.map((trade) => trade.symbol);
+  const policySkippedSymbols: string[] = [];
+  const policySkipReasons: string[] = [];
+  const evaluatedCandidates: PaperTraderEntryCandidateEvaluation[] = [];
+  let selectedScan: Awaited<ReturnType<typeof runScan>> | null = null;
+  let selectedTradeCard: TradeConstructionResult | null = null;
+  let selectedEntryReasoning: PaperTraderEntryReasoning | null = null;
+  let selectedEntryPolicy: EntryPolicyRecommendation | null = null;
+  let selectedEntryFeatures: EntryRewardFeatureInput | null = null;
 
-  if (
-    scan.conclusion !== "confirmed"
-    || !scan.ticker
-    || !scan.direction
-    || !scan.confidence
-  ) {
-    return {
-      attempted: true,
-      outcome: "no_trade_today",
-      symbol: scan.ticker,
-      reason: scan.reason,
-      reasoning: buildEntryReasoning(scan, null),
-    };
-  }
-
-  try {
-    const finalizedTradeGeometry = extractFinalizedTradeGeometryFromTelemetry(
-      scan.telemetry,
-      scan.ticker,
-    );
-    const tradeCard = await constructTradeCard({
-      prompt: `build trade ${scan.ticker}`,
-      confirmedDirection: scan.direction,
-      confirmedConfidence: scan.confidence,
-      ...(finalizedTradeGeometry ? { finalizedTradeGeometry } : {}),
+  for (let attempt = 0; attempt < MAX_ENTRY_POLICY_SCAN_ATTEMPTS; attempt += 1) {
+    const scan = await runScan({
+      prompt,
+      excludedTickers: [...openSymbols, ...policySkippedSymbols],
       tradestationBaseUrlOverride: config.automationBaseUrl,
     });
 
+    if (
+      scan.conclusion !== "confirmed"
+      || !scan.ticker
+      || !scan.direction
+      || !scan.confidence
+    ) {
+      const skippedNote = policySkipReasons.length > 0
+        ? ` Entry reward policy skipped earlier candidate(s): ${policySkipReasons.join(" ")}`
+        : "";
+      return {
+        attempted: true,
+        outcome: "no_trade_today",
+        symbol: scan.ticker,
+        reason: `${scan.reason}${skippedNote}`,
+        reasoning: buildEntryReasoning(scan, null),
+        evaluatedCandidates,
+      };
+    }
+
+    try {
+      const finalizedTradeGeometry = extractFinalizedTradeGeometryFromTelemetry(
+        scan.telemetry,
+        scan.ticker,
+      );
+      const tradeCard = await constructTradeCard({
+        prompt: `build trade ${scan.ticker}`,
+        confirmedDirection: scan.direction,
+        confirmedConfidence: scan.confidence,
+        ...(finalizedTradeGeometry ? { finalizedTradeGeometry } : {}),
+        tradestationBaseUrlOverride: config.automationBaseUrl,
+      });
+      const entryFeatures = buildEntryRewardFeatureInput({
+        scan,
+        tradeCard,
+        entryTimestamp: new Date(),
+      });
+      const entryPolicy = recommendEntryPolicy(
+        entryRewardModel,
+        entryFeatures,
+      );
+
+      if (entryPolicy.decision === "block") {
+        const decisionReason = entryPolicy.summary;
+        policySkippedSymbols.push(scan.ticker);
+        policySkipReasons.push(`${scan.ticker}: ${decisionReason}`);
+        evaluatedCandidates.push({
+          symbol: scan.ticker,
+          decision: "policy_blocked",
+          reason: decisionReason,
+          entryPolicy,
+          features: entryFeatures,
+        });
+        await recordEntryCandidateAudit({
+          scanRunId,
+          dryRun,
+          symbol: scan.ticker,
+          decision: "policy_blocked",
+          decisionReason,
+          features: entryFeatures,
+          entryPolicy,
+          scan,
+          tradeCard,
+        });
+        continue;
+      }
+
+      selectedScan = scan;
+      selectedTradeCard = tradeCard;
+      selectedEntryReasoning = buildEntryReasoning(scan, tradeCard);
+      selectedEntryPolicy = entryPolicy;
+      selectedEntryFeatures = entryFeatures;
+      evaluatedCandidates.push({
+        symbol: scan.ticker,
+        decision: entryPolicy.decision,
+        reason: entryPolicy.summary,
+        entryPolicy,
+        features: entryFeatures,
+      });
+      break;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Trade construction failed.";
+      await recordEntryCandidateAudit({
+        scanRunId,
+        dryRun,
+        symbol: scan.ticker,
+        decision: "trade_card_blocked",
+        decisionReason: message,
+        scan,
+      });
+      return {
+        attempted: true,
+        outcome: "trade_card_blocked",
+        symbol: scan.ticker,
+        reason: message,
+        reasoning: buildEntryReasoning(scan, null),
+        evaluatedCandidates,
+      };
+    }
+  }
+
+  if (!selectedScan || !selectedTradeCard || !selectedEntryReasoning || !selectedEntryPolicy || !selectedEntryFeatures) {
+    return {
+      attempted: true,
+      outcome: "trade_card_blocked",
+      symbol: policySkippedSymbols.at(-1) ?? null,
+      reason: `Entry reward policy blocked ${policySkippedSymbols.length} candidate(s) after ${MAX_ENTRY_POLICY_SCAN_ATTEMPTS} scan attempt(s): ${policySkipReasons.join(" ")}`,
+      evaluatedCandidates,
+    };
+  }
+
+  const scan = selectedScan;
+  const tradeCard = selectedTradeCard;
+  const entryReasoning = selectedEntryReasoning;
+  const entryPolicyRecommendation = selectedEntryPolicy;
+  const entryFeatures = selectedEntryFeatures;
+
+  try {
     const automation = tradeCard.automationMetadata;
-    const entryReasoning = buildEntryReasoning(scan, tradeCard);
     if (automation.contracts < 1) {
+      const reason = `Trade card sized ${automation.contracts} contracts, so the paper trader skipped the entry.`;
+      await recordEntryCandidateAudit({
+        scanRunId,
+        dryRun,
+        symbol: scan.ticker,
+        decision: "zero_contract_trade",
+        decisionReason: reason,
+        features: entryFeatures,
+        entryPolicy: entryPolicyRecommendation,
+        scan,
+        tradeCard,
+      });
       return {
         attempted: true,
         outcome: "zero_contract_trade",
         symbol: scan.ticker,
-        reason: `Trade card sized ${automation.contracts} contracts, so the paper trader skipped the entry.`,
+        reason,
         tradeCard,
         reasoning: entryReasoning,
+        evaluatedCandidates,
       };
     }
 
@@ -1660,23 +1874,49 @@ async function maybeEnterNewPaperTrade(params: {
       accountValueUsd = extractAccountValue(await client.getBalances(config.accountId as string));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const reason = `Could not enforce the ${(config.maxPositionPct * 100).toFixed(0)}% account-value cap from TradeStation balances, so the paper trader skipped the entry. ${message}`;
+      await recordEntryCandidateAudit({
+        scanRunId,
+        dryRun,
+        symbol: scan.ticker,
+        decision: "balance_read_failed",
+        decisionReason: reason,
+        features: entryFeatures,
+        entryPolicy: entryPolicyRecommendation,
+        scan,
+        tradeCard,
+      });
       return {
         attempted: true,
         outcome: "trade_card_blocked",
         symbol: scan.ticker,
-        reason: `Could not enforce the ${(config.maxPositionPct * 100).toFixed(0)}% account-value cap from TradeStation balances, so the paper trader skipped the entry. ${message}`,
+        reason,
         tradeCard,
         reasoning: entryReasoning,
+        evaluatedCandidates,
       };
     }
     if (accountValueUsd === null || accountValueUsd <= 0) {
+      const reason = "Could not read a positive SIM account value from TradeStation balances, so the paper trader skipped the entry instead of risking an oversized position.";
+      await recordEntryCandidateAudit({
+        scanRunId,
+        dryRun,
+        symbol: scan.ticker,
+        decision: "balance_missing",
+        decisionReason: reason,
+        features: entryFeatures,
+        entryPolicy: entryPolicyRecommendation,
+        scan,
+        tradeCard,
+      });
       return {
         attempted: true,
         outcome: "trade_card_blocked",
         symbol: scan.ticker,
-        reason: `Could not read a positive SIM account value from TradeStation balances, so the paper trader skipped the entry instead of risking an oversized position.`,
+        reason,
         tradeCard,
         reasoning: entryReasoning,
+        evaluatedCandidates,
       };
     }
 
@@ -1687,13 +1927,26 @@ async function maybeEnterNewPaperTrade(params: {
       maxPositionPct: config.maxPositionPct,
     });
     if (positionCap.cappedContracts < 1) {
+      const reason = `The ${(config.maxPositionPct * 100).toFixed(0)}% account-value cap allows ${positionCap.maxPositionCostUsd.toFixed(2)} of buying power, which is below one ${automation.optionSymbol} contract at ${entryLimitPrice.toFixed(2)}.`;
+      await recordEntryCandidateAudit({
+        scanRunId,
+        dryRun,
+        symbol: scan.ticker,
+        decision: "position_cap_blocked",
+        decisionReason: reason,
+        features: entryFeatures,
+        entryPolicy: entryPolicyRecommendation,
+        scan,
+        tradeCard,
+      });
       return {
         attempted: true,
         outcome: "zero_contract_trade",
         symbol: scan.ticker,
-        reason: `The ${(config.maxPositionPct * 100).toFixed(0)}% account-value cap allows ${positionCap.maxPositionCostUsd.toFixed(2)} of buying power, which is below one ${automation.optionSymbol} contract at ${entryLimitPrice.toFixed(2)}.`,
+        reason,
         tradeCard,
         reasoning: entryReasoning,
+        evaluatedCandidates,
       };
     }
 
@@ -1719,36 +1972,76 @@ async function maybeEnterNewPaperTrade(params: {
     };
     const confirmation = await client.confirmOrder(entryOrder);
     if (isRejectedOrderResult(confirmation)) {
+      const reason = formatRejectedOrderReason(confirmation);
+      await recordEntryCandidateAudit({
+        scanRunId,
+        dryRun,
+        symbol: scan.ticker,
+        decision: "confirmation_rejected",
+        decisionReason: reason,
+        features: entryFeatures,
+        entryPolicy: entryPolicyRecommendation,
+        scan,
+        tradeCard,
+      });
       return {
         attempted: true,
         outcome: "trade_card_blocked",
         symbol: scan.ticker,
-        reason: formatRejectedOrderReason(confirmation),
+        reason,
         tradeCard,
         reasoning: entryReasoning,
+        evaluatedCandidates,
       };
     }
 
     if (dryRun) {
+      const reason = `Previewed ${cappedContracts}x ${automation.optionSymbol} at ${entryLimitPrice.toFixed(2)} without sending the order.${capNote} Entry policy: ${entryPolicyRecommendation.summary}`;
+      await recordEntryCandidateAudit({
+        scanRunId,
+        dryRun,
+        symbol: scan.ticker,
+        decision: "preview_only",
+        decisionReason: reason,
+        features: entryFeatures,
+        entryPolicy: entryPolicyRecommendation,
+        scan,
+        tradeCard,
+      });
       return {
         attempted: true,
         outcome: "preview_only",
         symbol: scan.ticker,
-        reason: `Previewed ${cappedContracts}x ${automation.optionSymbol} at ${entryLimitPrice.toFixed(2)} without sending the order.${capNote}`,
+        reason,
         tradeCard,
         reasoning: entryReasoning,
+        evaluatedCandidates,
       };
     }
 
     const orderResult = await client.placeOrder(entryOrder);
     if (isRejectedOrderResult(orderResult)) {
+      const reason = formatRejectedOrderReason(orderResult);
+      await recordEntryCandidateAudit({
+        scanRunId,
+        dryRun,
+        symbol: scan.ticker,
+        decision: "order_rejected",
+        decisionReason: reason,
+        orderId: orderResult.orderId,
+        features: entryFeatures,
+        entryPolicy: entryPolicyRecommendation,
+        scan,
+        tradeCard,
+      });
       return {
         attempted: true,
         outcome: "trade_card_blocked",
         symbol: scan.ticker,
-        reason: formatRejectedOrderReason(orderResult),
+        reason,
         tradeCard,
         reasoning: entryReasoning,
+        evaluatedCandidates,
       };
     }
 
@@ -1770,13 +2063,14 @@ async function maybeEnterNewPaperTrade(params: {
       telemetry: scan.telemetry ?? null,
       tradeCard,
     });
+    const entryPolicyModelSummary = summarizeEntryRewardModel(entryRewardModel);
     const entryDecisionLog: PaperTraderDecisionLogEntry[] = [{
       timestamp: now.toISOString(),
       symbol: scan.ticker,
       kind: "entry",
       action: "entered_paper_trade",
       outcome: "entered_paper_trade",
-      note: `AI selected ${scan.ticker} and entered ${cappedContracts}x ${automation.optionSymbol}.${capNote}`,
+      note: `AI selected ${scan.ticker} and entered ${cappedContracts}x ${automation.optionSymbol}.${capNote} Entry policy: ${entryPolicyRecommendation.summary}`,
       thesis: entryReasoning.whyThisWon ?? entryReasoning.tradeRationale,
       plainEnglishExplanation: entryReasoning.conciseReasoning,
       optionSymbol: automation.optionSymbol,
@@ -1791,6 +2085,7 @@ async function maybeEnterNewPaperTrade(params: {
       stopUnderlying: automation.intendedStopUnderlying,
       targetUnderlying: automation.intendedTargetUnderlying,
       reasoning: entryReasoning,
+      entryPolicy: entryPolicyRecommendation,
     }];
 
     const createdTrade = await createJournalTrade({
@@ -1834,6 +2129,8 @@ async function maybeEnterNewPaperTrade(params: {
             managementHistory: [],
             decisionLog: entryDecisionLog,
             entryReasoning,
+            entryPolicyRecommendation,
+            entryPolicyModelSummary,
             accountValueAtEntry: accountValueUsd,
             maxPositionPct: config.maxPositionPct,
             maxPositionCostUsd: positionCap.maxPositionCostUsd,
@@ -1846,24 +2143,52 @@ async function maybeEnterNewPaperTrade(params: {
       status: "open",
     });
 
+    const enteredReason = `Entered ${cappedContracts}x ${automation.optionSymbol} in the paper account.${capNote} Entry policy: ${entryPolicyRecommendation.summary}`;
+    await recordEntryCandidateAudit({
+      scanRunId,
+      dryRun,
+      symbol: scan.ticker,
+      decision: "entered_paper_trade",
+      decisionReason: enteredReason,
+      paperTradeId: createdTrade.id,
+      orderId: orderResult.orderId,
+      features: entryFeatures,
+      entryPolicy: entryPolicyRecommendation,
+      scan,
+      tradeCard,
+    });
+
     return {
       attempted: true,
       outcome: "entered_paper_trade",
       symbol: scan.ticker,
-      reason: `Entered ${cappedContracts}x ${automation.optionSymbol} in the paper account.${capNote}`,
+      reason: enteredReason,
       orderId: orderResult.orderId,
       journalTradeId: createdTrade.id,
       tradeCard,
       reasoning: entryReasoning,
+      evaluatedCandidates,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Trade construction failed.";
+    await recordEntryCandidateAudit({
+      scanRunId,
+      dryRun,
+      symbol: scan.ticker,
+      decision: "entry_failed",
+      decisionReason: message,
+      features: entryFeatures,
+      entryPolicy: entryPolicyRecommendation,
+      scan,
+      tradeCard,
+    });
     return {
       attempted: true,
       outcome: "trade_card_blocked",
       symbol: scan.ticker,
       reason: message,
       reasoning: buildEntryReasoning(scan, null),
+      evaluatedCandidates,
     };
   }
 }
@@ -1990,6 +2315,7 @@ export async function runPaperTraderCycle(
     : await maybeEnterNewPaperTrade({
         config,
         dryRun,
+        allTrades,
         openPaperTrades: remainingOpenPaperTrades,
         prompt: options.prompt ?? config.scanPrompt,
       });

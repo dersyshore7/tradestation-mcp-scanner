@@ -1,9 +1,11 @@
 import { listJournalTradeDetails } from "../journal/repository.js";
+import { summarizeEntryRewardModel, trainEntryRewardModel } from "./entryRewardModel.js";
 import { recommendPolicyAction, trainPolicyModel } from "./policyModel.js";
 
 async function main(): Promise<void> {
   const trades = await listJournalTradeDetails(500);
   const model = trainPolicyModel(trades);
+  const entryModel = trainEntryRewardModel(trades);
 
   const sampleRecommendations = [
     recommendPolicyAction(model, {
@@ -29,6 +31,16 @@ async function main(): Promise<void> {
     closedTradeCount: model.closedTradeCount,
     experienceCount: model.experienceCount,
     learnedContextCount: Object.keys(model.buckets).length,
+    entryRewardModel: {
+      generatedAt: entryModel.generatedAt,
+      closedTradeCount: entryModel.closedTradeCount,
+      experienceCount: entryModel.experienceCount,
+      learnedContextCount: Object.keys(entryModel.buckets).length,
+      summary: summarizeEntryRewardModel(entryModel),
+      featureCoverage: entryModel.featureCoverage,
+      topContexts: entryModel.topContexts,
+      weakContexts: entryModel.weakContexts,
+    },
     sampleRecommendations,
   }, null, 2));
 }

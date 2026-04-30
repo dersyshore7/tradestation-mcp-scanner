@@ -1114,6 +1114,44 @@
         `;
       }
 
+      function renderEntryCandidateHistory(history, migrationRequired, migrationMessage) {
+        const candidates = Array.isArray(history) ? history : [];
+        return `
+          <div class="comparison-card" style="margin-top: 16px;">
+            <h4>Entry Candidate Audit</h4>
+            ${migrationRequired && migrationMessage ? `<div class="empty-state">${escapeHtml(migrationMessage)}</div>` : ""}
+            ${candidates.length === 0 && !migrationRequired ? "<div class=\"muted\">No entry candidates have been saved yet.</div>" : ""}
+            ${candidates.slice(0, 30).map((item) => {
+              const metrics = [
+                item.direction ? `direction ${item.direction}` : null,
+                item.setup_type ? `setup ${item.setup_type}` : null,
+                item.confidence_bucket ? `confidence ${item.confidence_bucket}` : null,
+                item.dte_at_entry !== null && item.dte_at_entry !== undefined ? `DTE ${item.dte_at_entry}` : null,
+                item.planned_reward_risk ? `planned ${Number(item.planned_reward_risk).toFixed(2)}R` : null,
+                item.chart_review_score ? `chart ${Number(item.chart_review_score).toFixed(1)}` : null,
+                item.volume_ratio ? `volume ${Number(item.volume_ratio).toFixed(2)}x` : null,
+                item.option_spread ? `spread ${Number(item.option_spread).toFixed(2)}` : null,
+                item.scan_tier ? `tier ${item.scan_tier}` : null,
+                item.entry_time_bucket ? `time ${item.entry_time_bucket}` : null,
+              ].filter(Boolean).join(" | ");
+              const policy = item.entry_policy_summary
+                ? item.entry_policy_summary
+                : item.entry_policy_decision
+                  ? `${item.entry_policy_decision} | samples ${renderMaybe(item.entry_policy_sample_size, "0")}`
+                  : "";
+              return `
+                <div class="journal-trade">
+                  <div class="row"><strong>${escapeHtml(renderMaybe(item.created_at))}</strong> <span class="pill">${escapeHtml(renderMaybe(item.decision))}</span> ${escapeHtml(renderMaybe(item.symbol))}</div>
+                  ${metrics ? `<div class="row">${escapeHtml(metrics)}</div>` : ""}
+                  ${policy ? `<div class="row"><strong>Entry policy:</strong> ${escapeHtml(policy)}</div>` : ""}
+                  <div class="row"><strong>Reason:</strong> ${escapeHtml(renderMaybe(item.decision_reason))}</div>
+                </div>
+              `;
+            }).join("")}
+          </div>
+        `;
+      }
+
       function renderPaperTradeHistory(trades) {
         const items = Array.isArray(trades) ? trades : [];
         if (items.length === 0) {
@@ -1259,6 +1297,14 @@
               <div class="stat-value">${escapeHtml(renderMaybe(learning?.managementExperiences, "0"))}</div>
             </div>
             <div class="stat-card">
+              <div class="stat-label">Entry Experiences</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(learning?.entryExperiences, "0"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Entry Contexts</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(learning?.entryLearnedContexts, "0"))}</div>
+            </div>
+            <div class="stat-card">
               <div class="stat-label">Learning Ready</div>
               <div class="stat-value">${escapeHtml(learning?.readyForPolicyPrior ? "Yes" : "Sparse")}</div>
             </div>
@@ -1274,10 +1320,13 @@
             ${sizing?.error ? `<div class="row"><strong>Sizing read:</strong> ${escapeHtml(sizing.error)}</div>` : ""}
             <div class="row"><strong>Daily loss guard:</strong> Unlimited for paper trading, so the system can keep collecting loss examples and improve its policy memory.</div>
             <div class="row"><strong>Manual order check:</strong> The Check Orders button still uses read-only monitor mode for diagnostics.</div>
-            <div class="row"><strong>Learning set:</strong> ${escapeHtml(renderMaybe(learning?.closedPaperTrades, "0"))} closed paper trades, ${escapeHtml(renderMaybe(learning?.learnedContexts, "0"))} learned contexts</div>
+            <div class="row"><strong>Learning set:</strong> ${escapeHtml(renderMaybe(learning?.closedPaperTrades, "0"))} closed paper trades, ${escapeHtml(renderMaybe(learning?.learnedContexts, "0"))} management contexts, ${escapeHtml(renderMaybe(learning?.entryLearnedContexts, "0"))} entry contexts</div>
+            <div class="row"><strong>Entry policy:</strong></div>
+            <pre>${escapeHtml(learning?.entryPolicySummary || "No closed paper-entry outcomes yet; new entries use the scanner/trade-card rules and become training data after close.")}</pre>
           </div>
 
           ${renderPaperTraderRunHistory(status?.runHistory, status?.runHistoryMigrationRequired, status?.runHistoryMigrationMessage)}
+          ${renderEntryCandidateHistory(status?.entryCandidateHistory, status?.entryCandidateHistoryMigrationRequired, status?.entryCandidateHistoryMigrationMessage)}
           ${renderPaperTraderDecisionLog(status?.recentDecisionLog)}
           ${renderPaperTradeHistory(status?.paperTradeHistory)}
         `;
@@ -1373,6 +1422,7 @@
 
           ${renderPaperTraderDecisionLog(result?.decisionLog)}
           ${renderPaperTraderRunHistory(result?.runHistory, result?.runHistoryMigrationRequired, result?.runHistoryMigrationMessage)}
+          ${renderEntryCandidateHistory(result?.entryCandidateHistory, result?.entryCandidateHistoryMigrationRequired, result?.entryCandidateHistoryMigrationMessage)}
           ${renderPaperTradeHistory(result?.paperTradeHistory)}
 
           <div class="comparison-card" style="margin-top: 16px;">
