@@ -291,6 +291,12 @@
       .comparison-card {
         margin-top: 0;
       }
+      .decision-module .journal-trade {
+        background: #fff;
+      }
+      .decision-record > summary {
+        line-height: 1.4;
+      }
       .status-chip {
         display: inline-block;
         padding: 4px 9px;
@@ -1052,41 +1058,80 @@
           .join("");
       }
 
-      function renderPaperTraderDecisionLog(log) {
-        const items = Array.isArray(log) ? log : [];
-        if (items.length === 0) {
-          return `
-            <div class="comparison-card" style="margin-top: 16px;">
-              <h4>AI Decision Log</h4>
-              <div class="muted">No paper-trader decisions have been saved yet.</div>
-            </div>
-          `;
-        }
+      function sortByTimestampDesc(items, key = "timestamp") {
+        return [...items].sort((left, right) => {
+          const leftTime = String(left?.[key] || "");
+          const rightTime = String(right?.[key] || "");
+          return rightTime.localeCompare(leftTime);
+        });
+      }
+
+      function hasRenderableNumber(value) {
+        return asNumber(value) !== null;
+      }
+
+      function renderDecisionDetails(item) {
+        const executionDetails = [
+          item.optionSymbol ? `Option ${item.optionSymbol}` : null,
+          hasRenderableNumber(item.quantity) ? `${item.quantity} contract(s)` : null,
+          hasRenderableNumber(item.positionCostUsd) ? `position ${formatMoney(item.positionCostUsd)}` : null,
+          hasRenderableNumber(item.positionPct) ? `${formatPercent(item.positionPct, 1)} of account` : null,
+          hasRenderableNumber(item.accountValueUsd) ? `account ${formatMoney(item.accountValueUsd)}` : null,
+          hasRenderableNumber(item.maxPositionCostUsd) ? `cap ${formatMoney(item.maxPositionCostUsd)}` : null,
+          item.orderId ? `order ${item.orderId}` : null,
+        ].filter(Boolean).join(" | ");
+        const levelDetails = [
+          hasRenderableNumber(item.stopUnderlying) ? `stop ${formatMoney(item.stopUnderlying)}` : null,
+          hasRenderableNumber(item.targetUnderlying) ? `target ${formatMoney(item.targetUnderlying)}` : null,
+          hasRenderableNumber(item.currentUnderlyingPrice) ? `underlying ${formatMoney(item.currentUnderlyingPrice)}` : null,
+          hasRenderableNumber(item.currentOptionMid) ? `option mid ${formatMoney(item.currentOptionMid)}` : null,
+        ].filter(Boolean).join(" | ");
+        const explanation = item.plainEnglishExplanation || item.thesis || item.reason || "";
+        const policy = item.entryPolicy?.summary
+          || (
+            item.entryPolicy?.decision
+              ? `${item.entryPolicy.decision} | samples ${renderMaybe(item.entryPolicy.sampleSize, "0")}`
+              : ""
+          );
 
         return `
-          <div class="comparison-card" style="margin-top: 16px;">
-            <h4>AI Decision Log</h4>
-            ${items.map((item) => {
-              const details = [
-                item.optionSymbol ? `Option ${item.optionSymbol}` : null,
-                item.quantity ? `${item.quantity} contract(s)` : null,
-                item.positionCostUsd ? `position ${formatMoney(item.positionCostUsd)}` : null,
-                item.positionPct ? `${formatPercent(item.positionPct, 1)} of account` : null,
-                item.accountValueUsd ? `account ${formatMoney(item.accountValueUsd)}` : null,
-                item.maxPositionCostUsd ? `cap ${formatMoney(item.maxPositionCostUsd)}` : null,
-                item.stopUnderlying ? `stop ${formatMoney(item.stopUnderlying)}` : null,
-                item.targetUnderlying ? `target ${formatMoney(item.targetUnderlying)}` : null,
-              ].filter(Boolean).join(" | ");
-              const explanation = item.plainEnglishExplanation || item.thesis || item.reason || "";
-              return `
-                <div class="journal-trade">
-                  <div class="row"><strong>${escapeHtml(renderMaybe(item.timestamp))}</strong> <span class="pill">${escapeHtml(renderMaybe(item.kind))}</span> ${escapeHtml(renderMaybe(item.symbol))} ${escapeHtml(renderMaybe(item.action))}${item.confidence ? ` (${escapeHtml(item.confidence)})` : ""}</div>
-                  ${details ? `<div class="row">${escapeHtml(details)}</div>` : ""}
-                  <div class="row"><strong>Decision:</strong> ${escapeHtml(renderMaybe(item.note))}</div>
-                  ${explanation ? `<div class="row"><strong>Reasoning:</strong> ${escapeHtml(explanation)}</div>` : ""}
-                </div>
-              `;
-            }).join("")}
+          <div class="row"><strong>Type:</strong> ${escapeHtml(renderMaybe(item.kind))}${item.outcome ? ` | <strong>Outcome:</strong> ${escapeHtml(item.outcome)}` : ""}${item.confidence ? ` | <strong>Confidence:</strong> ${escapeHtml(item.confidence)}` : ""}</div>
+          ${executionDetails ? `<div class="row"><strong>Execution:</strong> ${escapeHtml(executionDetails)}</div>` : ""}
+          ${levelDetails ? `<div class="row"><strong>Levels:</strong> ${escapeHtml(levelDetails)}</div>` : ""}
+          <div class="row"><strong>Decision:</strong> ${escapeHtml(renderMaybe(item.note))}</div>
+          ${item.reason && item.reason !== explanation ? `<div class="row"><strong>Reason:</strong> ${escapeHtml(item.reason)}</div>` : ""}
+          ${explanation ? `<div class="row"><strong>Reasoning:</strong> ${escapeHtml(explanation)}</div>` : ""}
+          ${policy ? `<div class="row"><strong>Entry policy:</strong> ${escapeHtml(policy)}</div>` : ""}
+        `;
+      }
+
+      function renderDecisionModule(title, items, emptyMessage) {
+        const sortedItems = sortByTimestampDesc(Array.isArray(items) ? items : []);
+        return `
+          <div class="comparison-card decision-module">
+            <h4>${escapeHtml(title)}</h4>
+            ${sortedItems.length === 0 ? `<div class="muted">${escapeHtml(emptyMessage)}</div>` : ""}
+            ${sortedItems.map((item) => `
+              <details class="journal-trade decision-record">
+                <summary>${escapeHtml(renderMaybe(item.timestamp))} | ${escapeHtml(renderMaybe(item.symbol))} | ${escapeHtml(renderMaybe(item.action))}${item.confidence ? ` (${escapeHtml(item.confidence)})` : ""}</summary>
+                ${renderDecisionDetails(item)}
+              </details>
+            `).join("")}
+          </div>
+        `;
+      }
+
+      function renderPaperTraderDecisionLog(log) {
+        const items = Array.isArray(log) ? log : [];
+        const entryItems = items.filter((item) => item?.kind === "entry");
+        const managementItems = items.filter((item) => item?.kind === "management" || item?.kind === "exit");
+        const orderItems = items.filter((item) => item?.kind === "order_check");
+
+        return `
+          <div class="section-grid" style="margin-top: 16px;">
+            ${renderDecisionModule("Entry Decisions", entryItems, "No entry decisions have been saved yet.")}
+            ${renderDecisionModule("Management Decisions", managementItems, "No management decisions have been saved yet.")}
+            ${orderItems.length > 0 ? renderDecisionModule("Order Checks", orderItems, "No order checks have been saved yet.") : ""}
           </div>
         `;
       }
@@ -1115,7 +1160,7 @@
       }
 
       function renderEntryCandidateHistory(history, migrationRequired, migrationMessage) {
-        const candidates = Array.isArray(history) ? history : [];
+        const candidates = sortByTimestampDesc(Array.isArray(history) ? history : [], "created_at");
         return `
           <div class="comparison-card" style="margin-top: 16px;">
             <h4>Entry Candidate Audit</h4>
@@ -1140,20 +1185,32 @@
                   ? `${item.entry_policy_decision} | samples ${renderMaybe(item.entry_policy_sample_size, "0")}`
                   : "";
               return `
-                <div class="journal-trade">
-                  <div class="row"><strong>${escapeHtml(renderMaybe(item.created_at))}</strong> <span class="pill">${escapeHtml(renderMaybe(item.decision))}</span> ${escapeHtml(renderMaybe(item.symbol))}</div>
+                <details class="journal-trade decision-record">
+                  <summary>${escapeHtml(renderMaybe(item.created_at))} | ${escapeHtml(renderMaybe(item.symbol))} | ${escapeHtml(renderMaybe(item.decision))}</summary>
                   ${metrics ? `<div class="row">${escapeHtml(metrics)}</div>` : ""}
                   ${policy ? `<div class="row"><strong>Entry policy:</strong> ${escapeHtml(policy)}</div>` : ""}
                   <div class="row"><strong>Reason:</strong> ${escapeHtml(renderMaybe(item.decision_reason))}</div>
-                </div>
+                </details>
               `;
             }).join("")}
           </div>
         `;
       }
 
+      function renderRunSection(title, rows) {
+        return `
+          <details class="comparison-card">
+            <summary>${escapeHtml(title)}</summary>
+            ${renderList(rows)}
+          </details>
+        `;
+      }
+
       function renderPaperTradeHistory(trades) {
-        const items = Array.isArray(trades) ? trades : [];
+        const items = sortByTimestampDesc(
+          Array.isArray(trades) ? trades : [],
+          "lastManagementAt",
+        );
         if (items.length === 0) {
           return `
             <div class="comparison-card" style="margin-top: 16px;">
@@ -1176,9 +1233,9 @@
                 <div class="row"><strong>Latest management:</strong> ${escapeHtml(renderMaybe(trade.lastManagementAction))} at ${escapeHtml(renderMaybe(trade.lastManagementAt))} | ${escapeHtml(renderMaybe(trade.lastManagementNote))}</div>
                 <div class="row"><strong>Exit:</strong> ${escapeHtml(renderMaybe(trade.latestExitReason))} | <strong>P/L:</strong> ${escapeHtml(formatMoney(trade.realizedPlUsd))} | <strong>R:</strong> ${escapeHtml(formatRatio(trade.realizedRMultiple))}</div>
                 <div class="row"><strong>Management history:</strong></div>
-                ${renderList((trade.managementHistory || []).map((item) => `${item.timestamp}: ${item.action}${item.confidence ? ` (${item.confidence})` : ""} | stop ${renderMaybe(item.stopUnderlying)} | target ${renderMaybe(item.targetUnderlying)} | ${item.note}`))}
+                ${renderList(sortByTimestampDesc(trade.managementHistory || []).map((item) => `${item.timestamp}: ${item.action}${item.confidence ? ` (${item.confidence})` : ""} | stop ${renderMaybe(item.stopUnderlying)} | target ${renderMaybe(item.targetUnderlying)} | ${item.note}`))}
                 <div class="row"><strong>Decision log:</strong></div>
-                ${renderList((trade.decisionLog || []).map((item) => `${item.timestamp}: ${item.kind}/${item.action} | ${item.note}${item.plainEnglishExplanation ? ` | ${item.plainEnglishExplanation}` : ""}`))}
+                ${renderList(sortByTimestampDesc(trade.decisionLog || []).map((item) => `${item.timestamp}: ${item.kind}/${item.action} | ${item.note}${item.plainEnglishExplanation ? ` | ${item.plainEnglishExplanation}` : ""}`))}
               </details>
             `).join("")}
           </div>
@@ -1401,23 +1458,25 @@
           </div>
 
           <div class="section-grid" style="margin-top: 16px;">
-            <div class="comparison-card">
-              <h4>Order Reconciliation</h4>
-              ${renderList(reconciled.map((item) => `${item.symbol}: ${item.fillStatus} | filled ${renderMaybe(item.filledQuantity)} / ${renderMaybe(item.requestedQuantity)} | avg ${renderMaybe(item.averageFillPrice)}${item.note ? ` - ${item.note}` : ""}`))}
-              ${reconciliationSkipped.length > 0 ? renderList(reconciliationSkipped.map((item) => `${item.symbol}: ${item.reason}`)) : ""}
-            </div>
-            <div class="comparison-card">
-              <h4>AI Decisions</h4>
-              ${renderList(updates.map((item) => `${item.symbol}: ${item.action} | stop ${renderMaybe(item.stopUnderlying)} | target ${renderMaybe(item.targetUnderlying)}${item.note ? ` - ${item.note}` : ""}`))}
-            </div>
-            <div class="comparison-card">
-              <h4>Triggered Exits</h4>
-              ${renderList(exitsTriggered.map((item) => `${item.symbol}: ${item.reason} (${item.action})${item.note ? ` - ${item.note}` : ""}`))}
-            </div>
-            <div class="comparison-card">
-              <h4>Skipped Trades</h4>
-              ${renderList(skipped.map((item) => `${item.symbol}: ${item.reason}`))}
-            </div>
+            ${renderRunSection(
+              "Order Reconciliation",
+              [
+                ...reconciled.map((item) => `${item.symbol}: ${item.fillStatus} | filled ${renderMaybe(item.filledQuantity)} / ${renderMaybe(item.requestedQuantity)} | avg ${renderMaybe(item.averageFillPrice)}${item.note ? ` - ${item.note}` : ""}`),
+                ...reconciliationSkipped.map((item) => `${item.symbol}: ${item.reason}`),
+              ],
+            )}
+            ${renderRunSection(
+              "Management Decisions This Run",
+              updates.map((item) => `${item.symbol}: ${item.action} | stop ${renderMaybe(item.stopUnderlying)} | target ${renderMaybe(item.targetUnderlying)}${item.note ? ` - ${item.note}` : ""}`),
+            )}
+            ${renderRunSection(
+              "Triggered Exits",
+              exitsTriggered.map((item) => `${item.symbol}: ${item.reason} (${item.action})${item.note ? ` - ${item.note}` : ""}`),
+            )}
+            ${renderRunSection(
+              "Skipped Trades",
+              skipped.map((item) => `${item.symbol}: ${item.reason}`),
+            )}
           </div>
 
           ${renderPaperTraderDecisionLog(result?.decisionLog)}
@@ -1425,11 +1484,11 @@
           ${renderEntryCandidateHistory(result?.entryCandidateHistory, result?.entryCandidateHistoryMigrationRequired, result?.entryCandidateHistoryMigrationMessage)}
           ${renderPaperTradeHistory(result?.paperTradeHistory)}
 
-          <div class="comparison-card" style="margin-top: 16px;">
-            <h4>Entry Reasoning</h4>
+          <details class="comparison-card" style="margin-top: 16px;">
+            <summary>Entry Reasoning</summary>
             ${renderList(reasoningItems)}
             ${reasoning?.chartGeometry ? `<div class="journal-trade">${renderObjectRows(reasoning.chartGeometry)}</div>` : ""}
-          </div>
+          </details>
 
           <details>
             <summary>Raw Paper Trader Response</summary>
