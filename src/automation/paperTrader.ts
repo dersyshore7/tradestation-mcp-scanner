@@ -212,10 +212,14 @@ type PaperTraderStatus = {
   openPaperTrades: number;
   sizing: {
     accountValueUsd: number | null;
+    unrealizedPlUsd: number | null;
+    equitiesBuyingPowerUsd: number | null;
+    optionsBuyingPowerUsd: number | null;
     maxPositionCostUsd: number | null;
     error: string | null;
   };
   configurationIssues: string[];
+  dataWarnings: string[];
   learning: {
     closedPaperTrades: number;
     managementExperiences: number;
@@ -645,13 +649,40 @@ function formatNonCriticalHistoryError(label: string, error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (
     message.includes("PGRST002")
+    || message.includes("57014")
+    || message.toLowerCase().includes("statement timeout")
     || message.includes("schema cache")
     || message.includes("Supabase select failed (503)")
   ) {
-    return `${label} is temporarily unavailable while Supabase refreshes its schema cache. Try Load Status again in a minute.`;
+    return `${label} is temporarily unavailable while Supabase catches up. Try Load Status again in a minute.`;
   }
 
   return `${label} is temporarily unavailable: ${message}`;
+}
+
+async function loadJournalTradesForPaperTraderStatus(): Promise<{
+  trades: JournalTradeDetail[];
+  warning: string | null;
+}> {
+  try {
+    return {
+      trades: await listJournalTradeDetails(250),
+      warning: null,
+    };
+  } catch (error) {
+    const warning = formatNonCriticalHistoryError("Detailed journal history", error);
+    try {
+      return {
+        trades: await listJournalTradeDetails(250, { includeSignalSnapshot: false }),
+        warning: `${warning} Loaded compact journal rows without saved AI snapshots.`,
+      };
+    } catch {
+      return {
+        trades: [],
+        warning,
+      };
+    }
+  }
 }
 
 async function loadPaperTraderRunHistory(): Promise<{
@@ -708,6 +739,9 @@ async function loadPaperTraderSizingSnapshot(
   if (!config.accountId) {
     return {
       accountValueUsd: null,
+      unrealizedPlUsd: null,
+      equitiesBuyingPowerUsd: null,
+      optionsBuyingPowerUsd: null,
       maxPositionCostUsd: null,
       error: "Missing paper-trader account id.",
     };
@@ -715,9 +749,21 @@ async function loadPaperTraderSizingSnapshot(
 
   try {
     const client = await createAutomationTradeStationClient(config.automationBaseUrl);
-    const accountValueUsd = extractAccountValue(await client.getBalances(config.accountId));
+    const balancesPayload = await client.getBalances(config.accountId);
+    let positionsPayload: unknown = null;
+    try {
+      positionsPayload = await client.getPositions(config.accountId);
+    } catch {
+      positionsPayload = null;
+    }
+    const accountValueUsd = extractAccountValue(balancesPayload);
+    const unrealizedPlUsd = extractUnrealizedPl(balancesPayload)
+      ?? extractPositionsUnrealizedPl(positionsPayload);
     return {
       accountValueUsd,
+      unrealizedPlUsd,
+      equitiesBuyingPowerUsd: extractEquitiesBuyingPower(balancesPayload),
+      optionsBuyingPowerUsd: extractOptionsBuyingPower(balancesPayload),
       maxPositionCostUsd:
         accountValueUsd !== null
           ? Number((accountValueUsd * config.maxPositionPct).toFixed(2))
@@ -729,6 +775,9 @@ async function loadPaperTraderSizingSnapshot(
   } catch (error) {
     return {
       accountValueUsd: null,
+      unrealizedPlUsd: null,
+      equitiesBuyingPowerUsd: null,
+      optionsBuyingPowerUsd: null,
       maxPositionCostUsd: null,
       error: error instanceof Error ? error.message : String(error),
     };
@@ -768,6 +817,46 @@ function findFirstNumberByKeys(value: unknown, keys: string[]): number | null {
   return null;
 }
 
+function sumNumbersByKeys(value: unknown, keys: string[]): number | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    let found = false;
+    const sum = value.reduce((total, item) => {
+      const nested = sumNumbersByKeys(item, keys);
+      if (nested !== null) {
+        found = true;
+        return total + nested;
+      }
+      return total;
+    }, 0);
+    return found ? Number(sum.toFixed(2)) : null;
+  }
+
+  const record = value as Record<string, unknown>;
+  let sum = 0;
+  let found = false;
+  for (const key of keys) {
+    const direct = readNumber(record[key] as string | number | null | undefined);
+    if (direct !== null) {
+      sum += direct;
+      found = true;
+    }
+  }
+
+  for (const nested of Object.values(record)) {
+    const nestedSum = sumNumbersByKeys(nested, keys);
+    if (nestedSum !== null) {
+      sum += nestedSum;
+      found = true;
+    }
+  }
+
+  return found ? Number(sum.toFixed(2)) : null;
+}
+
 function extractAccountValue(payload: unknown): number | null {
   return findFirstNumberByKeys(payload, [
     "NetLiquidationValue",
@@ -777,6 +866,46 @@ function extractAccountValue(payload: unknown): number | null {
     "Equity",
     "AccountValue",
     "CashBalance",
+  ]);
+}
+
+function extractUnrealizedPl(payload: unknown): number | null {
+  return findFirstNumberByKeys(payload, [
+    "UnrealizedProfitLoss",
+    "UnrealizedProfitLossUSD",
+    "UnrealizedPL",
+    "UnrealizedPnL",
+    "UnrealizedPnl",
+    "OpenTradeEquity",
+  ]);
+}
+
+function extractPositionsUnrealizedPl(payload: unknown): number | null {
+  return sumNumbersByKeys(payload, [
+    "UnrealizedProfitLoss",
+    "UnrealizedProfitLossUSD",
+    "UnrealizedPL",
+    "UnrealizedPnL",
+    "UnrealizedPnl",
+  ]);
+}
+
+function extractEquitiesBuyingPower(payload: unknown): number | null {
+  return findFirstNumberByKeys(payload, [
+    "EquitiesBuyingPower",
+    "EquityBuyingPower",
+    "StockBuyingPower",
+    "BuyingPower",
+  ]);
+}
+
+function extractOptionsBuyingPower(payload: unknown): number | null {
+  return findFirstNumberByKeys(payload, [
+    "OptionsBuyingPower",
+    "OptionBuyingPower",
+    "OptionBP",
+    "OptionsBP",
+    "BuyingPower",
   ]);
 }
 
@@ -1110,7 +1239,8 @@ async function finalizePaperTraderRunResult(
 
 export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
   const config = readPaperTraderConfig();
-  const trades = await listJournalTradeDetails(500);
+  const loadedTrades = await loadJournalTradesForPaperTraderStatus();
+  const trades = loadedTrades.trades;
   const configurationIssues = buildPaperTraderConfigurationIssues(config);
   const policyModel = trainPolicyModel(trades);
   const entryRewardModel = trainEntryRewardModel(trades);
@@ -1133,6 +1263,7 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
     ).length,
     sizing,
     configurationIssues,
+    dataWarnings: loadedTrades.warning ? [loadedTrades.warning] : [],
     learning: {
       closedPaperTrades: policyModel.closedTradeCount,
       managementExperiences: policyModel.experienceCount,

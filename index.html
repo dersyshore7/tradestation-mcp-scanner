@@ -1307,6 +1307,9 @@
         const configurationIssues = Array.isArray(status?.configurationIssues)
           ? status.configurationIssues
           : [];
+        const dataWarnings = Array.isArray(status?.dataWarnings)
+          ? status.dataWarnings
+          : [];
         const learning = status?.learning || {};
         const sizing = status?.sizing || {};
 
@@ -1345,12 +1348,24 @@
               <div class="stat-value">${escapeHtml(formatPercent(status?.maxPositionPct, 0))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">SIM Account Value</div>
+              <div class="stat-label">SIM Net Worth</div>
               <div class="stat-value">${escapeHtml(formatMoney(sizing?.accountValueUsd))}</div>
+            </div>
+            <div class="stat-card ${escapeHtml(numberToneClass(sizing?.unrealizedPlUsd))}">
+              <div class="stat-label">SIM Unrealized P/L</div>
+              <div class="stat-value ${escapeHtml(numberToneClass(sizing?.unrealizedPlUsd))}">${escapeHtml(formatMoney(sizing?.unrealizedPlUsd))}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Max Position $</div>
               <div class="stat-value">${escapeHtml(formatMoney(sizing?.maxPositionCostUsd))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Options Buying Power</div>
+              <div class="stat-value">${escapeHtml(formatMoney(sizing?.optionsBuyingPowerUsd))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Equities Buying Power</div>
+              <div class="stat-value">${escapeHtml(formatMoney(sizing?.equitiesBuyingPowerUsd))}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Policy Experiences</div>
@@ -1374,6 +1389,7 @@
             <div class="row"><strong>Automation base URL:</strong> ${escapeHtml(renderMaybe(status?.automationBaseUrl))}</div>
             <div class="row"><strong>Route secret required:</strong> ${escapeHtml(formatBoolean(status?.requiresSecret))}</div>
             <div class="row"><strong>Configuration checks:</strong> ${configurationIssues.length > 0 ? renderList(configurationIssues) : "<span class=\"muted\">Live SIM configuration is ready.</span>"}</div>
+            ${dataWarnings.length > 0 ? `<div class="row"><strong>Data warnings:</strong> ${renderList(dataWarnings)}</div>` : ""}
             <div class="row"><strong>Autonomous cron:</strong> Every 5 minutes on weekdays via <code>/api/paper-trader-run?reconcileOrders=true</code>; can reconcile fills, manage exits, and enter new SIM trades when guards allow.</div>
             <div class="row"><strong>Entry cadence:</strong> Every full cron cycle can scan for another excellent setup and enter one additional non-duplicate ticker if the trade card passes.</div>
             <div class="row"><strong>Position size guard:</strong> New SIM entries are capped at ${escapeHtml(formatPercent(status?.maxPositionPct, 0))} of the TradeStation SIM account value${sizing?.maxPositionCostUsd === null || sizing?.maxPositionCostUsd === undefined ? "." : ` (${escapeHtml(formatMoney(sizing.maxPositionCostUsd))}).`}</div>
@@ -2300,7 +2316,8 @@
           <div class="comparison-card">
             <h4>${escapeHtml(title)}</h4>
             ${items.map((item) => `
-              <div class="journal-trade">
+              <details class="journal-trade">
+                <summary>${escapeHtml(renderMaybe(item.symbol))} | ${escapeHtml(renderMaybe(item.entry_date))} | ${escapeHtml(formatMoney(item.realized_pl_usd))} | ${escapeHtml(formatRatio(item.realized_r_multiple))}</summary>
                 ${(() => {
                   const reasoning = item.reasoning || {};
                   const technical = reasoning.technical_snapshot || null;
@@ -2310,7 +2327,7 @@
                     : null;
 
                   return `
-                <div class="row"><strong>${escapeHtml(renderMaybe(item.symbol))}</strong> | ${escapeHtml(renderMaybe(item.entry_date))} | ${escapeHtml(renderMaybe(item.setup_type))}</div>
+                <div class="row"><strong>Setup:</strong> ${escapeHtml(renderMaybe(item.setup_type))}</div>
                 <div class="row"><strong>P/L:</strong> ${escapeHtml(formatMoney(item.realized_pl_usd))} | <strong>Realized:</strong> ${escapeHtml(formatRatio(item.realized_r_multiple))}</div>
                 <div class="row"><strong>Exit reason:</strong> ${escapeHtml(renderMaybe(item.exit_reason))}</div>
                 <div class="row"><strong>Reasoning:</strong> ${escapeHtml(renderMaybe(primaryReasoning))}</div>
@@ -2325,7 +2342,7 @@
                 <div class="row"><strong>Notes:</strong> ${escapeHtml(renderMaybe(item.review_notes || item.entry_notes, "n/a"))}</div>
                   `;
                 })()}
-              </div>
+              </details>
             `).join("")}
           </div>
         `;

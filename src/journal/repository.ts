@@ -8,15 +8,47 @@ import {
 } from "../supabase/serverClient.js";
 import type {
   JournalInsights,
+  JournalTradeRecord,
   JournalTradeCloseInput,
   JournalTradeCreateInput,
   JournalTradeDetail,
   JournalTradeExitRecord,
   JournalTradeListItem,
-  JournalTradeRecord,
   JournalTradeReviewRecord,
   JournalTradeUpdateInput,
 } from "./types.js";
+
+const JOURNAL_TRADE_RECORD_SELECT_WITHOUT_SIGNAL = [
+  "id",
+  "created_at",
+  "updated_at",
+  "scan_run_id",
+  "account_mode",
+  "entry_date",
+  "entry_time",
+  "symbol",
+  "direction",
+  "expiration_date",
+  "dte_at_entry",
+  "contracts",
+  "position_cost_usd",
+  "underlying_entry_price",
+  "option_entry_price",
+  "planned_risk_usd",
+  "planned_profit_usd",
+  "setup_type",
+  "setup_subtype",
+  "confidence_bucket",
+  "intended_stop_underlying",
+  "intended_target_underlying",
+  "market_regime",
+  "entry_notes",
+  "status",
+].join(",");
+
+type JournalTradeListOptions = {
+  includeSignalSnapshot?: boolean;
+};
 
 function buildEntryWeek(entryDate: string): string {
   const date = new Date(`${entryDate}T00:00:00Z`);
@@ -205,13 +237,25 @@ function toListItem(detail: JournalTradeDetail): JournalTradeListItem {
   };
 }
 
-async function listJournalTradeRecords(limit = 50): Promise<JournalTradeRecord[]> {
-  return await supabaseSelect<JournalTradeRecord>({
+function normalizeJournalTradeRecord(record: JournalTradeRecord): JournalTradeRecord {
+  return {
+    ...record,
+    signal_snapshot_json: record.signal_snapshot_json ?? null,
+  };
+}
+
+async function listJournalTradeRecords(
+  limit = 50,
+  options: JournalTradeListOptions = {},
+): Promise<JournalTradeRecord[]> {
+  const includeSignalSnapshot = options.includeSignalSnapshot !== false;
+  const records = await supabaseSelect<JournalTradeRecord>({
     table: "journal_trades",
-    select: "*",
+    select: includeSignalSnapshot ? "*" : JOURNAL_TRADE_RECORD_SELECT_WITHOUT_SIGNAL,
     order: ["entry_date.desc", "created_at.desc"],
     limit,
   });
+  return records.map(normalizeJournalTradeRecord);
 }
 
 function inferQuantityClosed(trade: JournalTradeRecord, requestedQuantity: number | null | undefined): number {
@@ -327,13 +371,16 @@ export async function createJournalTrade(input: JournalTradeCreateInput): Promis
 }
 
 export async function listRecentJournalTrades(limit = 50): Promise<JournalTradeListItem[]> {
-  const trades = await listJournalTradeRecords(limit);
+  const trades = await listJournalTradeRecords(limit, { includeSignalSnapshot: false });
   const details = await hydrateJournalTrades(trades);
   return details.map(toListItem);
 }
 
-export async function listJournalTradeDetails(limit = 200): Promise<JournalTradeDetail[]> {
-  const trades = await listJournalTradeRecords(limit);
+export async function listJournalTradeDetails(
+  limit = 200,
+  options: JournalTradeListOptions = {},
+): Promise<JournalTradeDetail[]> {
+  const trades = await listJournalTradeRecords(limit, options);
   return await hydrateJournalTrades(trades);
 }
 
