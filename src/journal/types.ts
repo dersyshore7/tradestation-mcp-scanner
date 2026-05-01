@@ -217,7 +217,9 @@ export type JournalInsightBucket = {
   key: string;
   label: string;
   trade_count: number;
+  open_trade_count: number;
   closed_trade_count: number;
+  open_position_cost_usd: number;
   winner_count: number;
   loser_count: number;
   win_rate: number | null;
@@ -245,6 +247,7 @@ export type JournalInsights = {
     total_trades: number;
     open_trades: number;
     closed_trades: number;
+    open_position_cost_usd: number;
     winners: number;
     losers: number;
     win_rate: number | null;
@@ -255,6 +258,7 @@ export type JournalInsights = {
     best_setup_type: string | null;
   };
   by_day_of_week: JournalInsightBucket[];
+  by_account_mode: JournalInsightBucket[];
   by_setup_type: JournalInsightBucket[];
   by_symbol: JournalInsightBucket[];
   recent_winners: JournalReasoningComparisonItem[];

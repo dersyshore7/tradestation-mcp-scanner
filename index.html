@@ -624,7 +624,7 @@
         <div class="panel-header">
           <div>
             <h2>Journal Insights</h2>
-            <p class="section-description">Quick readouts on trade quality, outcomes, and the reasoning patterns behind winners and losers.</p>
+            <p class="section-description">Closed-journal readouts on realized outcomes. Open TradeStation unrealized P/L is separate and appears in the SIM account.</p>
           </div>
           <div class="actions">
             <button id="refreshInsightsButton" class="secondary">Refresh Insights</button>
@@ -1266,6 +1266,9 @@
 
         const data = await response.json();
         if (!response.ok) {
+          if (response.status === 401) {
+            throw new Error("Unauthorized. Re-enter the current Paper Trader secret from Vercel, then try again.");
+          }
           throw new Error(data?.message || fallbackMessage);
         }
         return data;
@@ -2407,7 +2410,7 @@
         journalInsightsArea.innerHTML = `
           <div class="stats-grid">
             <div class="stat-card">
-              <div class="stat-label">Total Trades</div>
+              <div class="stat-label">Journal Trades</div>
               <div class="stat-value">${escapeHtml(renderMaybe(totals.total_trades, "0"))}</div>
             </div>
             <div class="stat-card">
@@ -2415,7 +2418,7 @@
               <div class="stat-value">${escapeHtml(renderMaybe(totals.open_trades, "0"))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Closed Trades</div>
+              <div class="stat-label">Closed Realized</div>
               <div class="stat-value">${escapeHtml(renderMaybe(totals.closed_trades, "0"))}</div>
             </div>
             <div class="stat-card ${escapeHtml(winRateTone)}">
@@ -2423,12 +2426,16 @@
               <div class="stat-value ${escapeHtml(winRateTone)}">${escapeHtml(formatPercent(totals.win_rate, 1))}</div>
             </div>
             <div class="stat-card ${escapeHtml(netPlTone)}">
-              <div class="stat-label">Net P/L</div>
+              <div class="stat-label">Closed Realized P/L</div>
               <div class="stat-value ${escapeHtml(netPlTone)}">${escapeHtml(formatMoney(totals.total_realized_pl_usd))}</div>
             </div>
             <div class="stat-card ${escapeHtml(avgRTone)}">
-              <div class="stat-label">Average R</div>
+              <div class="stat-label">Avg Realized R</div>
               <div class="stat-value ${escapeHtml(avgRTone)}">${escapeHtml(formatRatio(totals.average_r_multiple))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Open Journal Cost</div>
+              <div class="stat-value">${escapeHtml(formatMoney(totals.open_position_cost_usd))}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Winners</div>
@@ -2440,10 +2447,15 @@
             </div>
           </div>
 
+          <div class="empty-state" style="margin-top: 16px;">
+            Journal Insights is closed-trade realized P/L only. It does not include current open-position unrealized gains/losses from TradeStation, so it can disagree with a green SIM account screen while open trades are profitable.
+          </div>
+
           <div class="section-grid" style="margin-top: 16px;">
-            ${renderInsightBucketList("Profitability by Day", journalInsights.by_day_of_week, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`)}
-            ${renderInsightBucketList("Performance by Setup", journalInsights.by_setup_type, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)}`)}
-            ${renderInsightBucketList("Best Symbols", journalInsights.by_symbol, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`)}
+            ${renderInsightBucketList("Realized by Account", journalInsights.by_account_mode, (bucket) => `${formatMoney(bucket.realized_pl_usd)} closed | open cost ${formatMoney(bucket.open_position_cost_usd)} | win ${formatPercent(bucket.win_rate, 1)}`)}
+            ${renderInsightBucketList("Realized by Day", journalInsights.by_day_of_week, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`)}
+            ${renderInsightBucketList("Realized by Setup", journalInsights.by_setup_type, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)}`)}
+            ${renderInsightBucketList("Best Closed Symbols", journalInsights.by_symbol, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`)}
           </div>
 
           <div class="section-grid" style="margin-top: 16px;">

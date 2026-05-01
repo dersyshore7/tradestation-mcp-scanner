@@ -213,9 +213,11 @@ function toClosedTrades(trades: JournalTradeDetail[]): JournalTradeDetail[] {
 
 function buildBucket(key: string, label: string, trades: JournalTradeDetail[]): JournalInsightBucket {
   const closedTrades = toClosedTrades(trades);
+  const openTrades = trades.filter((trade) => trade.status === "open");
   const winners = closedTrades.filter((trade) => trade.review?.winner === true);
   const losers = closedTrades.filter((trade) => trade.review?.winner === false);
   const totalPl = closedTrades.reduce((sum, trade) => sum + (toNumber(trade.review?.realized_pl_usd ?? null) ?? 0), 0);
+  const openPositionCost = openTrades.reduce((sum, trade) => sum + (toNumber(trade.position_cost_usd) ?? 0), 0);
   const rValues = closedTrades
     .map((trade) => toNumber(trade.review?.realized_r_multiple ?? null))
     .filter((value): value is number => value !== null);
@@ -227,7 +229,9 @@ function buildBucket(key: string, label: string, trades: JournalTradeDetail[]): 
     key,
     label,
     trade_count: trades.length,
+    open_trade_count: openTrades.length,
     closed_trade_count: closedTrades.length,
+    open_position_cost_usd: openPositionCost,
     winner_count: winners.length,
     loser_count: losers.length,
     win_rate: closedTrades.length > 0 ? winners.length / closedTrades.length : null,
@@ -273,6 +277,17 @@ export function buildJournalInsights(trades: JournalTradeDetail[]): JournalInsig
     .map(([setupType, setupTrades]) => buildBucket(setupType, setupType, setupTrades))
     .sort((left, right) => right.realized_pl_usd - left.realized_pl_usd);
 
+  const accountModeBuckets = Array.from(
+    trades.reduce((map, trade) => {
+      const existing = map.get(trade.account_mode) ?? [];
+      existing.push(trade);
+      map.set(trade.account_mode, existing);
+      return map;
+    }, new Map<string, JournalTradeDetail[]>()),
+  )
+    .map(([accountMode, modeTrades]) => buildBucket(accountMode, accountMode, modeTrades))
+    .sort((left, right) => left.label.localeCompare(right.label));
+
   const symbolBuckets = Array.from(
     trades.reduce((map, trade) => {
       const existing = map.get(trade.symbol) ?? [];
@@ -286,6 +301,9 @@ export function buildJournalInsights(trades: JournalTradeDetail[]): JournalInsig
     .slice(0, 10);
 
   const totalPl = closedTrades.reduce((sum, trade) => sum + (toNumber(trade.review?.realized_pl_usd ?? null) ?? 0), 0);
+  const openPositionCost = trades
+    .filter((trade) => trade.status === "open")
+    .reduce((sum, trade) => sum + (toNumber(trade.position_cost_usd) ?? 0), 0);
   const rValues = closedTrades
     .map((trade) => toNumber(trade.review?.realized_r_multiple ?? null))
     .filter((value): value is number => value !== null);
@@ -311,6 +329,7 @@ export function buildJournalInsights(trades: JournalTradeDetail[]): JournalInsig
       total_trades: trades.length,
       open_trades: trades.filter((trade) => trade.status === "open").length,
       closed_trades: closedTrades.length,
+      open_position_cost_usd: openPositionCost,
       winners: winners.length,
       losers: losers.length,
       win_rate: closedTrades.length > 0 ? winners.length / closedTrades.length : null,
@@ -321,6 +340,7 @@ export function buildJournalInsights(trades: JournalTradeDetail[]): JournalInsig
       best_setup_type: bestSetup?.label ?? null,
     },
     by_day_of_week: weekdayBuckets,
+    by_account_mode: accountModeBuckets,
     by_setup_type: setupBuckets,
     by_symbol: symbolBuckets,
     recent_winners: winners.sort(sortByLatestExitDesc).slice(0, 5).map(buildReasoningComparisonItem),
