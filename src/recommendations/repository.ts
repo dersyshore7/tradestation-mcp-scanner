@@ -38,6 +38,19 @@ export type TradeRecommendationListResult = {
   migrationMessage: string | null;
 };
 
+const TRADE_RECOMMENDATION_SUMMARY_SELECT = [
+  "id",
+  "created_at",
+  "updated_at",
+  "scan_run_id",
+  "prompt",
+  "symbol",
+  "direction",
+  "confidence_bucket",
+  "planned_trade_json",
+  "journal_trade_id",
+].join(",");
+
 export function isTradeRecommendationsTableMissing(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return (
@@ -53,13 +66,16 @@ export async function listRecentTradeRecommendations(limit = 25): Promise<TradeR
   try {
     const recommendations = await supabaseSelect<TradeRecommendationRecord>({
       table: "trade_recommendations",
-      select: "*",
+      select: TRADE_RECOMMENDATION_SUMMARY_SELECT,
       order: ["created_at.desc"],
       limit,
     });
 
     return {
-      recommendations,
+      recommendations: recommendations.map((recommendation) => ({
+        ...recommendation,
+        signal_snapshot_json: recommendation.signal_snapshot_json ?? null,
+      })),
       migrationRequired: false,
       migrationMessage: null,
     };

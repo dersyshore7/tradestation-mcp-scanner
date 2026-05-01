@@ -82,15 +82,21 @@ function buildQueryParams(filters?: string[], order?: string[], limit?: number):
 }
 
 function isRetryableSupabaseResponse(status: number, text: string): boolean {
-  if (status === 503) {
+  if (status === 503 || status === 504 || status === 522) {
     return true;
   }
 
   try {
     const payload = JSON.parse(text) as { code?: string };
-    return payload.code === "PGRST002";
+    return payload.code === "PGRST002" || payload.code === "57014";
   } catch {
-    return text.includes("PGRST002") || text.toLowerCase().includes("schema cache");
+    const normalized = text.toLowerCase();
+    return text.includes("PGRST002")
+      || text.includes("57014")
+      || normalized.includes("schema cache")
+      || normalized.includes("statement timeout")
+      || normalized.includes("upstream request timeout")
+      || normalized.includes("connection timed out");
   }
 }
 

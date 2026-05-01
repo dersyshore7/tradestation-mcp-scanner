@@ -10,7 +10,7 @@ export type TradeRecommendationRecord = {
   direction: PlannedTradeSnapshot["direction"];
   confidence_bucket: string | null;
   planned_trade_json: PlannedTradeSnapshot;
-  signal_snapshot_json: Record<string, unknown>;
+  signal_snapshot_json: Record<string, unknown> | null;
   journal_trade_id: string | null;
 };
 

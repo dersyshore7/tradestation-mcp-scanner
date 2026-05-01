@@ -666,22 +666,14 @@ async function loadJournalTradesForPaperTraderStatus(): Promise<{
 }> {
   try {
     return {
-      trades: await listJournalTradeDetails(250),
+      trades: await listJournalTradeDetails(250, { includeSignalSnapshot: false }),
       warning: null,
     };
   } catch (error) {
-    const warning = formatNonCriticalHistoryError("Detailed journal history", error);
-    try {
-      return {
-        trades: await listJournalTradeDetails(250, { includeSignalSnapshot: false }),
-        warning: `${warning} Loaded compact journal rows without saved AI snapshots.`,
-      };
-    } catch {
-      return {
-        trades: [],
-        warning,
-      };
-    }
+    return {
+      trades: [],
+      warning: formatNonCriticalHistoryError("Compact journal dashboard rows", error),
+    };
   }
 }
 
@@ -1270,7 +1262,7 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
       entryExperiences: entryRewardModel.experienceCount,
       entryLearnedContexts: Object.keys(entryRewardModel.buckets).length,
       learnedContexts: Object.keys(policyModel.buckets).length,
-      readyForPolicyPrior: policyModel.experienceCount >= 3,
+      readyForPolicyPrior: entryRewardModel.experienceCount >= 3,
       entryFeatureCoverage: entryRewardModel.featureCoverage,
       entryPolicySummary: summarizeEntryRewardModel(entryRewardModel),
     },

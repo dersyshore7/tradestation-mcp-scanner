@@ -580,6 +580,6 @@ export async function deleteJournalTrade(id: string): Promise<void> {
 }
 
 export async function getJournalInsights(limit = 500): Promise<JournalInsights> {
-  const details = await listJournalTradeDetails(limit);
+  const details = await listJournalTradeDetails(limit, { includeSignalSnapshot: false });
   return buildJournalInsights(details);
 }

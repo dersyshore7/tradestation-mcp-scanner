@@ -617,7 +617,7 @@
             <button id="refreshRecommendationsButton" class="secondary">Refresh Recommendations</button>
           </div>
         </div>
-        <div id="tradeRecommendationsArea" class="muted">Loading recommendations...</div>
+        <div id="tradeRecommendationsArea" class="muted">Recommendations load on demand. Use Refresh Recommendations when you need recent saved cards.</div>
       </div>
 
       <div class="card">
@@ -643,7 +643,7 @@
             <button id="refreshJournalButton" class="secondary">Refresh Trades</button>
           </div>
         </div>
-        <div id="journalTradesArea" class="muted">Loading trades...</div>
+        <div id="journalTradesArea" class="muted">Trade rows load on demand. Use Refresh Trades when you want the editable journal list.</div>
       </div>
     </main>
 
@@ -1274,6 +1274,20 @@
         return data;
       }
 
+      function compactErrorMessage(error, fallbackMessage) {
+        const raw = error instanceof Error ? error.message : fallbackMessage;
+        if (raw.includes("FUNCTION_INVOCATION_TIMEOUT")) {
+          return `${fallbackMessage} The server function timed out before returning. Try again, or load a smaller detail section.`;
+        }
+        if (raw.includes("522") || raw.includes("Connection timed out")) {
+          return `${fallbackMessage} Supabase timed out before returning data. Try again in a minute.`;
+        }
+        if (raw.includes("504") || raw.includes("upstream request timeout")) {
+          return `${fallbackMessage} Supabase hit an upstream timeout. Try again in a minute.`;
+        }
+        return raw.length > 240 ? `${raw.slice(0, 240)}...` : raw;
+      }
+
       function buildBackendDataFromRecommendation(recommendation) {
         const snapshot = recommendation?.signal_snapshot_json || {};
         const scan = snapshot.scan || null;
@@ -1368,11 +1382,7 @@
               <div class="stat-value">${escapeHtml(formatMoney(sizing?.equitiesBuyingPowerUsd))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Policy Experiences</div>
-              <div class="stat-value">${escapeHtml(renderMaybe(learning?.managementExperiences, "0"))}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-label">Entry Experiences</div>
+              <div class="stat-label">Learning Outcomes</div>
               <div class="stat-value">${escapeHtml(renderMaybe(learning?.entryExperiences, "0"))}</div>
             </div>
             <div class="stat-card">
@@ -1530,7 +1540,7 @@
           const data = await readJsonResponse(response, "Failed to load paper-trader status.");
           renderPaperTraderStatus(data?.status || null);
         } catch (error) {
-          paperTraderArea.innerHTML = `<div class="empty-state">${escapeHtml(error instanceof Error ? error.message : "Failed to load paper-trader status.")}</div>`;
+          paperTraderArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Failed to load paper-trader status."))}</div>`;
         }
       }
 
@@ -1555,7 +1565,7 @@
           renderPaperTraderRunResult(data);
           await refreshJournalData();
         } catch (error) {
-          paperTraderArea.innerHTML = `<div class="empty-state">${escapeHtml(error instanceof Error ? error.message : "Paper trader cycle failed.")}</div>`;
+          paperTraderArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Paper trader cycle failed."))}</div>`;
         }
       }
 
@@ -1575,7 +1585,7 @@
           renderPaperTraderRunResult(data);
           await refreshJournalData();
         } catch (error) {
-          paperTraderArea.innerHTML = `<div class="empty-state">${escapeHtml(error instanceof Error ? error.message : "Paper trader order check failed.")}</div>`;
+          paperTraderArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Paper trader order check failed."))}</div>`;
         }
       }
 
@@ -1999,7 +2009,7 @@
           renderJournalTrades();
         } catch (error) {
           if (journalTradesArea) {
-            journalTradesArea.innerHTML = `<div class="muted">${escapeHtml(error instanceof Error ? error.message : "Failed to load journal trades.")}</div>`;
+            journalTradesArea.innerHTML = `<div class="muted">${escapeHtml(compactErrorMessage(error, "Failed to load journal trades."))}</div>`;
           }
         }
       }
@@ -2019,7 +2029,7 @@
           renderJournalInsights();
         } catch (error) {
           if (journalInsightsArea) {
-            journalInsightsArea.innerHTML = `<div class="muted">${escapeHtml(error instanceof Error ? error.message : "Failed to load journal insights.")}</div>`;
+            journalInsightsArea.innerHTML = `<div class="muted">${escapeHtml(compactErrorMessage(error, "Failed to load journal insights."))}</div>`;
           }
         }
       }
@@ -2047,7 +2057,7 @@
           renderTradeRecommendations();
         } catch (error) {
           if (tradeRecommendationsArea) {
-            tradeRecommendationsArea.innerHTML = `<div class="muted">${escapeHtml(error instanceof Error ? error.message : "Failed to load trade recommendations.")}</div>`;
+            tradeRecommendationsArea.innerHTML = `<div class="muted">${escapeHtml(compactErrorMessage(error, "Failed to load trade recommendations."))}</div>`;
           }
         }
       }
@@ -2069,7 +2079,7 @@
       }
 
       async function refreshJournalData() {
-        await Promise.all([loadJournalTrades(), loadJournalInsights(), loadTradeRecommendations()]);
+        await Promise.all([loadJournalTrades(), loadJournalInsights()]);
       }
 
       function renderDebugDetailsPanel() {
@@ -2752,10 +2762,7 @@
       });
 
       loadDefaults();
-      refreshJournalData();
-      if (paperTraderSecretInput?.value) {
-        loadPaperTraderStatus();
-      }
+      loadJournalInsights();
 
       saveTradeLogButton.addEventListener("click", async () => {
         try {
