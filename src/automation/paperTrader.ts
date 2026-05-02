@@ -374,6 +374,35 @@ function readNumber(value: string | number | null | undefined): number | null {
   return null;
 }
 
+function validateEntryGeometry(tradeCard: TradeConstructionResult): string | null {
+  const fields = tradeCard.plannedJournalFields;
+  const entry = readNumber(fields.underlying_entry_price);
+  const stop = readNumber(fields.intended_stop_underlying);
+  const target = readNumber(fields.intended_target_underlying);
+
+  if (entry === null || stop === null || target === null) {
+    return "Trade card is missing entry, stop, or target geometry.";
+  }
+
+  if (fields.direction === "CALL") {
+    if (stop >= entry) {
+      return `Bullish CALL geometry is invalid: entry ${entry.toFixed(2)} must be above stop ${stop.toFixed(2)}.`;
+    }
+    if (target <= entry) {
+      return `Bullish CALL geometry is invalid: target ${target.toFixed(2)} must be above entry ${entry.toFixed(2)}.`;
+    }
+  } else {
+    if (stop <= entry) {
+      return `Bearish PUT geometry is invalid: entry ${entry.toFixed(2)} must be below stop ${stop.toFixed(2)}.`;
+    }
+    if (target >= entry) {
+      return `Bearish PUT geometry is invalid: target ${target.toFixed(2)} must be below entry ${entry.toFixed(2)}.`;
+    }
+  }
+
+  return null;
+}
+
 function formatChicagoParts(date = new Date()): ChicagoClockParts {
   const formatter = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/Chicago",
@@ -2014,6 +2043,30 @@ async function maybeEnterNewPaperTrade(params: {
         outcome: "zero_contract_trade",
         symbol: scan.ticker,
         reason,
+        tradeCard,
+        reasoning: entryReasoning,
+        evaluatedCandidates,
+      };
+    }
+
+    const geometryError = validateEntryGeometry(tradeCard);
+    if (geometryError) {
+      await recordEntryCandidateAudit({
+        scanRunId,
+        dryRun,
+        symbol: scan.ticker,
+        decision: "trade_card_blocked",
+        decisionReason: geometryError,
+        features: entryFeatures,
+        entryPolicy: entryPolicyRecommendation,
+        scan,
+        tradeCard,
+      });
+      return {
+        attempted: true,
+        outcome: "trade_card_blocked",
+        symbol: scan.ticker,
+        reason: geometryError,
         tradeCard,
         reasoning: entryReasoning,
         evaluatedCandidates,

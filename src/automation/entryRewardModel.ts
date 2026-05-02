@@ -5,6 +5,7 @@ import type { JournalTradeDetail, TradeDirection } from "../journal/types.js";
 export type EntryPolicyDecision = "favor" | "allow" | "caution" | "block";
 
 const ENTRY_REWARD_R_CAP = 5;
+const MAX_USABLE_REWARD_R = 25;
 const MIN_ENTRY_POLICY_SAMPLE = 3;
 
 export type EntryRewardFeatureInput = {
@@ -533,7 +534,7 @@ function extractEntryRewardExperiences(trades: JournalTradeDetail[]): EntryRewar
     }
 
     const realizedR = asFiniteNumber(trade.review.realized_r_multiple);
-    if (realizedR === null) {
+    if (realizedR === null || Math.abs(realizedR) > MAX_USABLE_REWARD_R) {
       continue;
     }
 

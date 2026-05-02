@@ -628,6 +628,7 @@
           </div>
           <div class="actions">
             <button id="refreshInsightsButton" class="secondary">Refresh Insights</button>
+            <button id="loadInsightReasoningButton" class="secondary">Load Reasoning Examples</button>
           </div>
         </div>
         <div id="journalInsightsArea" class="muted">Loading insights...</div>
@@ -816,6 +817,7 @@
       const journalInsightsArea = document.getElementById("journalInsightsArea");
       const journalTradesArea = document.getElementById("journalTradesArea");
       const refreshInsightsButton = document.getElementById("refreshInsightsButton");
+      const loadInsightReasoningButton = document.getElementById("loadInsightReasoningButton");
       const refreshJournalButton = document.getElementById("refreshJournalButton");
       const closeTradeModal = document.getElementById("closeTradeModal");
       const closeTradeTitle = document.getElementById("closeTradeTitle");
@@ -955,6 +957,9 @@
         const parsed = asNumber(value);
         if (parsed === null) {
           return "n/a";
+        }
+        if (Math.abs(parsed) > 25) {
+          return "invalid risk basis";
         }
         return `${parsed.toFixed(2)}R`;
       }
@@ -2014,13 +2019,17 @@
         }
       }
 
-      async function loadJournalInsights() {
+      async function loadJournalInsights(includeReasoning = false) {
         if (journalInsightsArea) {
-          journalInsightsArea.innerHTML = '<div class="muted">Loading insights...</div>';
+          journalInsightsArea.innerHTML = includeReasoning
+            ? '<div class="muted">Loading detailed reasoning examples...</div>'
+            : '<div class="muted">Loading insights...</div>';
         }
 
         try {
-          const response = await fetch("/api/journal/insights");
+          const response = await fetch(includeReasoning
+            ? "/api/journal/insights?includeReasoning=true&limit=75"
+            : "/api/journal/insights");
           const data = await response.json();
           if (!response.ok) {
             throw new Error(data?.message || "Failed to load journal insights.");
@@ -2332,9 +2341,20 @@
                   const reasoning = item.reasoning || {};
                   const technical = reasoning.technical_snapshot || null;
                   const primaryReasoning = reasoning.concise_reasoning || reasoning.scan_reason || null;
+                  const hasReasoningSnapshot = Boolean(item.reasoning);
                   const finalLevels = reasoning.chart_geometry
                     ? `${renderMaybe(reasoning.chart_geometry.reference)} -> ${renderMaybe(technical?.final_invalidation || reasoning.chart_geometry.invalidation)} / ${renderMaybe(technical?.final_target || reasoning.chart_geometry.target)}`
                     : null;
+
+                  if (!hasReasoningSnapshot) {
+                    return `
+                <div class="row"><strong>Setup:</strong> ${escapeHtml(renderMaybe(item.setup_type))}</div>
+                <div class="row"><strong>P/L:</strong> ${escapeHtml(formatMoney(item.realized_pl_usd))} | <strong>Realized:</strong> ${escapeHtml(formatRatio(item.realized_r_multiple))}</div>
+                <div class="row"><strong>Exit reason:</strong> ${escapeHtml(renderMaybe(item.exit_reason))}</div>
+                <div class="empty-state">No saved reasoning snapshot is available for this trade.</div>
+                <div class="row"><strong>Notes:</strong> ${escapeHtml(renderMaybe(item.review_notes || item.entry_notes, "n/a"))}</div>
+                    `;
+                  }
 
                   return `
                 <div class="row"><strong>Setup:</strong> ${escapeHtml(renderMaybe(item.setup_type))}</div>
@@ -2431,6 +2451,8 @@
         }
 
         const totals = journalInsights.totals || {};
+        const reasoningIncluded = journalInsights.reasoning_included === true;
+        const invalidRMultipleCount = asNumber(totals.invalid_r_multiple_count) ?? 0;
         const netPlTone = numberToneClass(totals.total_realized_pl_usd);
         const avgRTone = numberToneClass(totals.average_r_multiple);
         const winRateTone = winRateToneClass(totals.win_rate);
@@ -2457,7 +2479,7 @@
               <div class="stat-value ${escapeHtml(netPlTone)}">${escapeHtml(formatMoney(totals.total_realized_pl_usd))}</div>
             </div>
             <div class="stat-card ${escapeHtml(avgRTone)}">
-              <div class="stat-label">Avg Realized R</div>
+              <div class="stat-label">Avg Valid R</div>
               <div class="stat-value ${escapeHtml(avgRTone)}">${escapeHtml(formatRatio(totals.average_r_multiple))}</div>
             </div>
             <div class="stat-card">
@@ -2477,6 +2499,9 @@
           <div class="empty-state" style="margin-top: 16px;">
             Journal Insights is closed-trade realized P/L only. It does not include current open-position unrealized gains/losses from TradeStation, so it can disagree with a green SIM account screen while open trades are profitable.
           </div>
+          ${invalidRMultipleCount > 0
+            ? `<div class="empty-state" style="margin-top: 12px;">${escapeHtml(invalidRMultipleCount)} closed trade(s) have an invalid R basis from a tiny planned-risk denominator, so they are excluded from Avg Valid R and shown as invalid risk basis.</div>`
+            : ""}
 
           <div class="section-grid" style="margin-top: 16px;">
             ${renderInsightBucketList("Realized by Account", journalInsights.by_account_mode, (bucket) => `${formatMoney(bucket.realized_pl_usd)} closed | open cost ${formatMoney(bucket.open_position_cost_usd)} | win ${formatPercent(bucket.win_rate, 1)}`)}
@@ -2485,11 +2510,22 @@
             ${renderInsightBucketList("Best Closed Symbols", journalInsights.by_symbol, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`)}
           </div>
 
-          <div class="section-grid" style="margin-top: 16px;">
-            ${renderReasoningExamples("Recent Winner Reasoning", journalInsights.recent_winners)}
-            ${renderReasoningExamples("Recent Loser Reasoning", journalInsights.recent_losers)}
-          </div>
+          ${reasoningIncluded
+            ? `<div class="section-grid" style="margin-top: 16px;">
+                ${renderReasoningExamples("Recent Winner Reasoning", journalInsights.recent_winners)}
+                ${renderReasoningExamples("Recent Loser Reasoning", journalInsights.recent_losers)}
+              </div>`
+            : `<div class="comparison-card" style="margin-top: 16px;">
+                <h4>Reasoning Examples</h4>
+                <div class="empty-state">Detailed winner and loser reasoning is loaded on demand so the dashboard can stay fast and avoid pulling large saved snapshots on every refresh.</div>
+                <div class="inline-actions">
+                  <button class="secondary" data-load-insight-reasoning="true">Load Recent Reasoning</button>
+                </div>
+              </div>`}
         `;
+        journalInsightsArea
+          .querySelector("[data-load-insight-reasoning]")
+          ?.addEventListener("click", () => loadJournalInsights(true));
       }
 
       function renderJournalTrades() {
@@ -2664,7 +2700,8 @@
         }
       });
 
-      refreshInsightsButton?.addEventListener("click", loadJournalInsights);
+      refreshInsightsButton?.addEventListener("click", () => loadJournalInsights(false));
+      loadInsightReasoningButton?.addEventListener("click", () => loadJournalInsights(true));
       refreshJournalButton?.addEventListener("click", loadJournalTrades);
       refreshRecommendationsButton?.addEventListener("click", loadTradeRecommendations);
       paperTraderSecretInput?.addEventListener("input", () => {

@@ -2,6 +2,9 @@ import type { JournalTradeDetail, TradeDirection } from "../journal/types.js";
 
 export type PolicyAction = "hold" | "update_levels" | "exit_now";
 
+const POLICY_REWARD_R_CAP = 5;
+const MAX_USABLE_REWARD_R = 25;
+
 type PaperTraderManagementHistoryEntry = {
   action?: unknown;
   progressToTargetPct?: unknown;
@@ -80,6 +83,10 @@ function asFiniteNumber(value: unknown): number | null {
     }
   }
   return null;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 function readManagementHistory(trade: JournalTradeDetail): PaperTraderManagementHistoryEntry[] {
@@ -234,9 +241,10 @@ function extractPolicyExperiences(trades: JournalTradeDetail[]): PolicyExperienc
     }
 
     const realizedR = asFiniteNumber(trade.review.realized_r_multiple);
-    if (realizedR === null) {
+    if (realizedR === null || Math.abs(realizedR) > MAX_USABLE_REWARD_R) {
       continue;
     }
+    const cappedRealizedR = clamp(realizedR, -POLICY_REWARD_R_CAP, POLICY_REWARD_R_CAP);
 
     const managementHistory = readManagementHistory(trade);
     if (managementHistory.length === 0) {
@@ -252,7 +260,7 @@ function extractPolicyExperiences(trades: JournalTradeDetail[]): PolicyExperienc
       const recencyWeight = (index + 1) / managementHistory.length;
       experiences.push({
         action,
-        rewardR: Number((realizedR * recencyWeight).toFixed(3)),
+        rewardR: Number((cappedRealizedR * recencyWeight).toFixed(3)),
         buckets: buildFeatureBuckets({
           direction: trade.direction,
           setupType: trade.setup_type,

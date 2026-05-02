@@ -243,6 +243,7 @@ export type JournalReasoningComparisonItem = {
 };
 
 export type JournalInsights = {
+  reasoning_included: boolean;
   totals: {
     total_trades: number;
     open_trades: number;
@@ -254,6 +255,7 @@ export type JournalInsights = {
     total_realized_pl_usd: number;
     average_r_multiple: number | null;
     average_return_pct: number | null;
+    invalid_r_multiple_count: number;
     best_day_of_week: string | null;
     best_setup_type: string | null;
   };
