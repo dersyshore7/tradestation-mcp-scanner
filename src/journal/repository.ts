@@ -54,9 +54,6 @@ type JournalInsightsOptions = {
   includeReasoning?: boolean;
 };
 
-const MIN_REALIZED_R_RISK_USD = 25;
-const MIN_REALIZED_R_POSITION_RISK_PCT = 0.0025;
-
 function buildEntryWeek(entryDate: string): string {
   const date = new Date(`${entryDate}T00:00:00Z`);
   const day = date.getUTCDay() || 7;
@@ -319,8 +316,7 @@ function calculateCloseReviewValues(
   const slippageUsd = toNumber(latestExit.slippage_usd) ?? 0;
   const soldForUsd = optionExitPrice * latestExit.quantity_closed * 100;
   const realizedPlUsd = soldForUsd - positionCostUsd - feesUsd - slippageUsd;
-  const minUsableRiskUsd = Math.max(MIN_REALIZED_R_RISK_USD, positionCostUsd * MIN_REALIZED_R_POSITION_RISK_PCT);
-  const realizedRMultiple = plannedRiskUsd !== null && plannedRiskUsd >= minUsableRiskUsd
+  const realizedRMultiple = plannedRiskUsd !== null && plannedRiskUsd > 0
     ? realizedPlUsd / plannedRiskUsd
     : null;
   const realizedReturnPct = positionCostUsd > 0 ? (realizedPlUsd / positionCostUsd) * 100 : null;

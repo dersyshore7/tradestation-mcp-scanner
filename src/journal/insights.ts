@@ -7,7 +7,6 @@ import type {
 } from "./types.js";
 
 const WEEKDAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const MAX_USABLE_R_MULTIPLE = 25;
 
 type JournalInsightBuildOptions = {
   reasoningIncluded?: boolean;
@@ -216,10 +215,6 @@ function toClosedTrades(trades: JournalTradeDetail[]): JournalTradeDetail[] {
   return trades.filter((trade) => trade.review?.realized_pl_usd !== null);
 }
 
-function isUsableRMultiple(value: number | null): value is number {
-  return value !== null && Math.abs(value) <= MAX_USABLE_R_MULTIPLE;
-}
-
 function buildBucket(key: string, label: string, trades: JournalTradeDetail[]): JournalInsightBucket {
   const closedTrades = toClosedTrades(trades);
   const openTrades = trades.filter((trade) => trade.status === "open");
@@ -229,7 +224,7 @@ function buildBucket(key: string, label: string, trades: JournalTradeDetail[]): 
   const openPositionCost = openTrades.reduce((sum, trade) => sum + (toNumber(trade.position_cost_usd) ?? 0), 0);
   const rValues = closedTrades
     .map((trade) => toNumber(trade.review?.realized_r_multiple ?? null))
-    .filter(isUsableRMultiple);
+    .filter((value): value is number => value !== null);
   const returnPcts = closedTrades
     .map((trade) => toNumber(trade.review?.realized_return_pct ?? null))
     .filter((value): value is number => value !== null);
@@ -318,11 +313,7 @@ export function buildJournalInsights(
     .reduce((sum, trade) => sum + (toNumber(trade.position_cost_usd) ?? 0), 0);
   const rValues = closedTrades
     .map((trade) => toNumber(trade.review?.realized_r_multiple ?? null))
-    .filter(isUsableRMultiple);
-  const invalidRMultipleCount = closedTrades
-    .map((trade) => toNumber(trade.review?.realized_r_multiple ?? null))
-    .filter((value) => value !== null && !isUsableRMultiple(value))
-    .length;
+    .filter((value): value is number => value !== null);
   const returnPcts = closedTrades
     .map((trade) => toNumber(trade.review?.realized_return_pct ?? null))
     .filter((value): value is number => value !== null);
@@ -353,7 +344,6 @@ export function buildJournalInsights(
       total_realized_pl_usd: totalPl,
       average_r_multiple: rValues.length > 0 ? rValues.reduce((sum, value) => sum + value, 0) / rValues.length : null,
       average_return_pct: returnPcts.length > 0 ? returnPcts.reduce((sum, value) => sum + value, 0) / returnPcts.length : null,
-      invalid_r_multiple_count: invalidRMultipleCount,
       best_day_of_week: bestDay?.label ?? null,
       best_setup_type: bestSetup?.label ?? null,
     },

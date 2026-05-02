@@ -199,7 +199,7 @@ type ExitDecision = {
   note: string;
 };
 
-type PaperTraderStatus = {
+export type PaperTraderStatus = {
   enabled: boolean;
   allowOrderPlacement: boolean;
   liveRunReady: boolean;
@@ -803,6 +803,10 @@ async function loadPaperTraderSizingSnapshot(
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+export async function getPaperTraderSizingSnapshot(): Promise<PaperTraderStatus["sizing"]> {
+  return await loadPaperTraderSizingSnapshot(readPaperTraderConfig());
 }
 
 function findFirstNumberByKeys(value: unknown, keys: string[]): number | null {

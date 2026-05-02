@@ -624,7 +624,7 @@
         <div class="panel-header">
           <div>
             <h2>Journal Insights</h2>
-            <p class="section-description">Closed-journal readouts on realized outcomes. Open TradeStation unrealized P/L is separate and appears in the SIM account.</p>
+            <p class="section-description">TradeStation SIM account snapshot plus local journal readouts. The SIM account is the source of truth for net worth.</p>
           </div>
           <div class="actions">
             <button id="refreshInsightsButton" class="secondary">Refresh Insights</button>
@@ -957,9 +957,6 @@
         const parsed = asNumber(value);
         if (parsed === null) {
           return "n/a";
-        }
-        if (Math.abs(parsed) > 25) {
-          return "invalid risk basis";
         }
         return `${parsed.toFixed(2)}R`;
       }
@@ -2027,9 +2024,19 @@
         }
 
         try {
-          const response = await fetch(includeReasoning
-            ? "/api/journal/insights?includeReasoning=true&limit=75"
-            : "/api/journal/insights");
+          const secret = paperTraderSecretInput?.value?.trim() || "";
+          const params = new URLSearchParams();
+          if (includeReasoning) {
+            params.set("includeReasoning", "true");
+            params.set("limit", "75");
+          }
+          if (secret) {
+            params.set("includeSimAccount", "true");
+          }
+          const query = params.toString();
+          const response = await fetch(`/api/journal/insights${query ? `?${query}` : ""}`, {
+            headers: secret ? { authorization: `Bearer ${secret}` } : {},
+          });
           const data = await response.json();
           if (!response.ok) {
             throw new Error(data?.message || "Failed to load journal insights.");
@@ -2451,12 +2458,38 @@
         }
 
         const totals = journalInsights.totals || {};
+        const simAccount = journalInsights.sim_account || null;
         const reasoningIncluded = journalInsights.reasoning_included === true;
-        const invalidRMultipleCount = asNumber(totals.invalid_r_multiple_count) ?? 0;
         const netPlTone = numberToneClass(totals.total_realized_pl_usd);
         const avgRTone = numberToneClass(totals.average_r_multiple);
         const winRateTone = winRateToneClass(totals.win_rate);
+        const simNetWorthTone = "";
+        const simUnrealizedTone = numberToneClass(simAccount?.unrealizedPlUsd);
         journalInsightsArea.innerHTML = `
+          ${simAccount
+            ? `<div class="stats-grid">
+                <div class="stat-card ${escapeHtml(simNetWorthTone)}">
+                  <div class="stat-label">SIM Net Worth</div>
+                  <div class="stat-value ${escapeHtml(simNetWorthTone)}">${escapeHtml(formatMoney(simAccount.accountValueUsd))}</div>
+                </div>
+                <div class="stat-card ${escapeHtml(simUnrealizedTone)}">
+                  <div class="stat-label">SIM Unrealized P/L</div>
+                  <div class="stat-value ${escapeHtml(simUnrealizedTone)}">${escapeHtml(formatMoney(simAccount.unrealizedPlUsd))}</div>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-label">Options Buying Power</div>
+                  <div class="stat-value">${escapeHtml(formatMoney(simAccount.optionsBuyingPowerUsd))}</div>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-label">Max Position</div>
+                  <div class="stat-value">${escapeHtml(formatMoney(simAccount.maxPositionCostUsd))}</div>
+                </div>
+              </div>
+              ${simAccount.error
+                ? `<div class="empty-state" style="margin-top: 12px;">${escapeHtml(simAccount.error)}</div>`
+                : `<div class="empty-state" style="margin-top: 12px;">SIM account cards come directly from TradeStation balances. Journal cards below come from local saved trade rows and can be out of sync until reconciliation/backfill fixes the journal data.</div>`}`
+            : `<div class="empty-state">Enter the paper-trader secret above and refresh insights to include the live TradeStation SIM account snapshot.</div>`}
+
           <div class="stats-grid">
             <div class="stat-card">
               <div class="stat-label">Journal Trades</div>
@@ -2479,7 +2512,7 @@
               <div class="stat-value ${escapeHtml(netPlTone)}">${escapeHtml(formatMoney(totals.total_realized_pl_usd))}</div>
             </div>
             <div class="stat-card ${escapeHtml(avgRTone)}">
-              <div class="stat-label">Avg Valid R</div>
+              <div class="stat-label">Avg Realized R</div>
               <div class="stat-value ${escapeHtml(avgRTone)}">${escapeHtml(formatRatio(totals.average_r_multiple))}</div>
             </div>
             <div class="stat-card">
@@ -2497,11 +2530,8 @@
           </div>
 
           <div class="empty-state" style="margin-top: 16px;">
-            Journal Insights is closed-trade realized P/L only. It does not include current open-position unrealized gains/losses from TradeStation, so it can disagree with a green SIM account screen while open trades are profitable.
+            Journal closed realized P/L is calculated from local saved journal exits. It is not the same as TradeStation account net worth, and a large disagreement means the journal needs reconciliation rather than the SIM account being wrong.
           </div>
-          ${invalidRMultipleCount > 0
-            ? `<div class="empty-state" style="margin-top: 12px;">${escapeHtml(invalidRMultipleCount)} closed trade(s) have an invalid R basis from a tiny planned-risk denominator, so they are excluded from Avg Valid R and shown as invalid risk basis.</div>`
-            : ""}
 
           <div class="section-grid" style="margin-top: 16px;">
             ${renderInsightBucketList("Realized by Account", journalInsights.by_account_mode, (bucket) => `${formatMoney(bucket.realized_pl_usd)} closed | open cost ${formatMoney(bucket.open_position_cost_usd)} | win ${formatPercent(bucket.win_rate, 1)}`)}
