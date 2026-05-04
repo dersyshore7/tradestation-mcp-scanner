@@ -751,15 +751,7 @@
           </div>
         </div>
 
-        <label for="paperTraderSecret">Paper trader secret</label>
-        <input
-          id="paperTraderSecret"
-          type="password"
-          placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET"
-          autocomplete="off"
-        />
-        <div class="field-note">Use the same secret you set in Vercel for the paper-trader routes. This module stays separate from the manual scanner flow above.</div>
-        <div id="paperDashboardArea" class="muted">Refresh the dashboard to load paper-trade performance, open trade counts, realized P/L, unrealized P/L, win rate, best days, and timing buckets.</div>
+        <div id="paperDashboardArea" class="muted">Loading paper dashboard...</div>
       </div>
 
       <div class="card">
@@ -775,6 +767,15 @@
             <button id="runPaperTraderLiveButton">Run Live Cycle</button>
           </div>
         </div>
+
+        <label for="paperTraderSecret">Paper trader secret</label>
+        <input
+          id="paperTraderSecret"
+          type="password"
+          placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET"
+          autocomplete="off"
+        />
+        <div class="field-note">Required only for protected controls such as status checks and manual paper-trader cycles. The dashboard above loads automatically without this password.</div>
 
         <details>
           <summary>Optional prompt override</summary>
@@ -1185,7 +1186,6 @@
         if (
           nextPage === "paper-trader"
           && !paperDashboardHasLoaded
-          && paperTraderSecretInput?.value?.trim()
         ) {
           loadPaperDashboard();
         }
@@ -1755,6 +1755,7 @@
 
         const totals = insights.totals || {};
         const simAccount = insights.sim_account || null;
+        const dataWarnings = Array.isArray(insights.dataWarnings) ? insights.dataWarnings : [];
         const bestDay = bestBucketByRealizedPl(insights.by_day_of_week);
         const bestTime = bestBucketByRealizedPl(insights.by_entry_hour);
         const bestSetup = bestBucketByRealizedPl(insights.by_setup_type);
@@ -1767,6 +1768,9 @@
         paperDashboardArea.innerHTML = `
           ${simAccount?.error
             ? `<div class="empty-state">${escapeHtml(simAccount.error)}</div>`
+            : ""}
+          ${dataWarnings.length > 0
+            ? `<div class="empty-state">${renderList(dataWarnings)}</div>`
             : ""}
 
           <div class="stats-grid" style="margin-top: 12px;">
@@ -1829,7 +1833,7 @@
           </div>
 
           <div class="empty-state" style="margin-top: 16px;">
-            Dashboard metrics are paper-only. Realized results come from closed journal exits; unrealized P/L and net worth come from the live TradeStation SIM account snapshot when authorized.
+            Dashboard metrics are paper-only. Realized results come from compact closed journal exits; unrealized P/L and net worth come from a read-only TradeStation SIM account snapshot loaded server-side.
           </div>
 
           <div class="section-grid" style="margin-top: 16px;">
@@ -2135,15 +2139,11 @@
 
         try {
           const params = new URLSearchParams({
-            accountMode: "paper",
-            includeSimAccount: "true",
-            limit: "500",
+            limit: "300",
           });
-          const response = await fetch(`/api/journal/insights?${params.toString()}`, {
-            headers: buildPaperTraderHeaders(),
-          });
+          const response = await fetch(`/api/paper-dashboard?${params.toString()}`);
           const data = await readJsonResponse(response, "Failed to load paper dashboard.");
-          renderPaperDashboard(data?.insights || null);
+          renderPaperDashboard(data?.dashboard || null);
         } catch (error) {
           paperDashboardArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Failed to load paper dashboard."))}</div>`;
         } finally {
