@@ -49,7 +49,9 @@ import {
   findPositionSnapshot,
   normalizeTradeStationOrderPrice,
   summarizeExecutions,
+  type AutomationTradeStationClient,
   type TradeStationOrderRequest,
+  type TradeStationOrderResult,
 } from "./tradestation.js";
 import {
   listRecentPaperTraderRuns,
@@ -58,6 +60,7 @@ import {
 } from "./paperTraderHistory.js";
 
 const MAX_ENTRY_POLICY_SCAN_ATTEMPTS = 3;
+const MAX_TRADESTATION_CONTRACTS_PER_ORDER = 2000;
 
 type PaperTraderRunOptions = {
   prompt?: string;
@@ -947,7 +950,10 @@ function computePositionCap(params: {
 } {
   const maxPositionCostUsd = params.accountValueUsd * params.maxPositionPct;
   const maxContractsByCap = Math.floor(maxPositionCostUsd / (params.limitPrice * 100));
-  const cappedContracts = Math.max(0, Math.min(params.requestedContracts, maxContractsByCap));
+  const cappedContracts = Math.max(
+    0,
+    Math.min(params.requestedContracts, maxContractsByCap, MAX_TRADESTATION_CONTRACTS_PER_ORDER),
+  );
   const cappedPositionCostUsd = Number((cappedContracts * params.limitPrice * 100).toFixed(2));
 
   return {
@@ -958,6 +964,90 @@ function computePositionCap(params: {
       params.accountValueUsd > 0
         ? Number((cappedPositionCostUsd / params.accountValueUsd).toFixed(4))
         : null,
+  };
+}
+
+function splitOrderQuantity(quantity: number): number[] {
+  const chunks: number[] = [];
+  let remaining = Math.max(0, Math.floor(quantity));
+  while (remaining > 0) {
+    const chunk = Math.min(remaining, MAX_TRADESTATION_CONTRACTS_PER_ORDER);
+    chunks.push(chunk);
+    remaining -= chunk;
+  }
+  return chunks;
+}
+
+async function readHeldOptionQuantity(params: {
+  client: AutomationTradeStationClient;
+  accountId: string;
+  optionSymbol: string;
+}): Promise<number> {
+  const positions = await params.client.getPositions(params.accountId);
+  const position = findPositionSnapshot(positions, params.optionSymbol);
+  return Math.max(0, Math.floor(position?.quantity ?? 0));
+}
+
+async function placeSellToCloseOrders(params: {
+  client: AutomationTradeStationClient;
+  getExecutions: AutomationTradeStationClient["getExecutions"];
+  accountId: string;
+  optionSymbol: string;
+  quantity: number;
+}): Promise<{
+  orderIds: string[];
+  averageFillPrice: number | null;
+  rejectedOrder: TradeStationOrderResult | null;
+}> {
+  const orderIds: string[] = [];
+  let weightedFillTotal = 0;
+  let pricedQuantity = 0;
+
+  for (const chunkQuantity of splitOrderQuantity(params.quantity)) {
+    const orderResult = await params.client.placeOrder({
+      accountId: params.accountId,
+      symbol: params.optionSymbol,
+      quantity: chunkQuantity,
+      orderType: "Market",
+      tradeAction: "SELLTOCLOSE",
+      duration: "DAY",
+    });
+
+    if (orderResult.orderId) {
+      orderIds.push(orderResult.orderId);
+    }
+
+    if (isRejectedOrderResult(orderResult)) {
+      return {
+        orderIds,
+        averageFillPrice: null,
+        rejectedOrder: orderResult,
+      };
+    }
+
+    const fillPrice = orderResult.averageFillPrice ?? (
+      orderResult.orderId
+        ? await getAverageFillPriceIfAvailable({
+            getExecutions: params.getExecutions,
+            accountId: params.accountId,
+            orderId: orderResult.orderId,
+          })
+        : null
+    );
+
+    if (fillPrice !== null && fillPrice > 0) {
+      weightedFillTotal += fillPrice * chunkQuantity;
+      pricedQuantity += chunkQuantity;
+    }
+  }
+
+  return {
+    orderIds,
+    averageFillPrice:
+      pricedQuantity > 0
+        ? Number((weightedFillTotal / pricedQuantity).toFixed(4))
+        : null,
+    rejectedOrder: null,
   };
 }
 
@@ -1741,26 +1831,25 @@ async function manageOpenPaperTrades(
       continue;
     }
 
-    const exitOrder: TradeStationOrderRequest = {
-      accountId: automation.accountId,
-      symbol: automation.optionSymbol,
-      quantity: automation.quantity,
-      orderType: "Market",
-      tradeAction: "SELLTOCLOSE",
-      duration: "DAY",
-    };
-    const orderResult = await client.placeOrder(exitOrder);
-    if (isRejectedOrderResult(orderResult)) {
+    let heldQuantity: number;
+    try {
+      heldQuantity = await readHeldOptionQuantity({
+        client,
+        accountId: automation.accountId,
+        optionSymbol: automation.optionSymbol,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       decisionLog = appendDecisionLog(decisionLog, {
         timestamp: nowIso,
         tradeId: trade.id,
         symbol: trade.symbol,
         kind: "exit",
-        action: "exit_rejected",
+        action: "exit_position_check_failed",
         reason: decision.reason,
-        note: `${decision.note} ${formatRejectedOrderReason(orderResult)}`,
+        note: `${decision.note} Exit skipped because the SIM position check failed: ${message}`,
         optionSymbol: automation.optionSymbol,
-        orderId: orderResult.orderId,
+        orderId: automation.orderId ?? null,
         quantity: automation.quantity,
         currentUnderlyingPrice: underlyingQuote.last,
         currentOptionMid: optionQuote.mid,
@@ -1774,21 +1863,97 @@ async function manageOpenPaperTrades(
         symbol: trade.symbol,
         reason: decision.reason,
         action: "skipped",
-        orderId: orderResult.orderId,
+        orderId: automation.orderId ?? null,
         optionExitPrice: null,
-        note: `${decision.note} ${formatRejectedOrderReason(orderResult)}`,
+        note: `${decision.note} Exit skipped because the SIM position check failed: ${message}`,
       });
       continue;
     }
 
-    let optionExitPrice = orderResult.averageFillPrice;
-    if (optionExitPrice === null && orderResult.orderId) {
-      optionExitPrice = await getAverageFillPriceIfAvailable({
-        getExecutions: client.getExecutions,
-        accountId: automation.accountId,
-        orderId: orderResult.orderId,
+    if (heldQuantity < 1) {
+      decisionLog = appendDecisionLog(decisionLog, {
+        timestamp: nowIso,
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        kind: "exit",
+        action: "exit_skipped_no_position",
+        reason: decision.reason,
+        note: `${decision.note} Exit skipped because TradeStation reports 0 long contracts for ${automation.optionSymbol}.`,
+        optionSymbol: automation.optionSymbol,
+        orderId: automation.orderId ?? null,
+        quantity: 0,
+        currentUnderlyingPrice: underlyingQuote.last,
+        currentOptionMid: optionQuote.mid,
       });
+      await updateJournalTradeSignalSnapshot(
+        trade.id,
+        buildUpdatedSignalSnapshot(trade, {
+          ...currentSnapshotUpdates,
+          quantity: 0,
+          filledQuantity: 0,
+          remainingQuantity: 0,
+          lastPositionQuantity: 0,
+          lastOrderCheckAt: nowIso,
+          decisionLog,
+        }),
+      );
+      exitsTriggered.push({
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        reason: decision.reason,
+        action: "skipped",
+        orderId: automation.orderId ?? null,
+        optionExitPrice: null,
+        note: `${decision.note} Exit skipped because TradeStation reports 0 long contracts for ${automation.optionSymbol}.`,
+      });
+      continue;
     }
+
+    const exitQuantity = heldQuantity;
+    if (numbersDiffer(trade.contracts, exitQuantity)) {
+      await updateJournalTrade(trade.id, { contracts: exitQuantity });
+    }
+
+    const orderPlacement = await placeSellToCloseOrders({
+      client,
+      getExecutions: client.getExecutions,
+      accountId: automation.accountId,
+      optionSymbol: automation.optionSymbol,
+      quantity: exitQuantity,
+    });
+    const orderIds = orderPlacement.orderIds.join(", ");
+    if (orderPlacement.rejectedOrder) {
+      decisionLog = appendDecisionLog(decisionLog, {
+        timestamp: nowIso,
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        kind: "exit",
+        action: "exit_rejected",
+        reason: decision.reason,
+        note: `${decision.note} ${formatRejectedOrderReason(orderPlacement.rejectedOrder)}`,
+        optionSymbol: automation.optionSymbol,
+        orderId: orderIds || orderPlacement.rejectedOrder.orderId,
+        quantity: exitQuantity,
+        currentUnderlyingPrice: underlyingQuote.last,
+        currentOptionMid: optionQuote.mid,
+      });
+      await updateJournalTradeSignalSnapshot(
+        trade.id,
+        buildUpdatedSignalSnapshot(trade, { ...currentSnapshotUpdates, decisionLog }),
+      );
+      exitsTriggered.push({
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        reason: decision.reason,
+        action: "skipped",
+        orderId: orderIds || orderPlacement.rejectedOrder.orderId,
+        optionExitPrice: null,
+        note: `${decision.note} ${formatRejectedOrderReason(orderPlacement.rejectedOrder)}`,
+      });
+      continue;
+    }
+
+    let optionExitPrice = orderPlacement.averageFillPrice;
     if (optionExitPrice === null) {
       optionExitPrice =
         optionQuote.mid
@@ -1805,8 +1970,8 @@ async function manageOpenPaperTrades(
         reason: decision.reason,
         note: `${decision.note} Exit order was sent, but no usable fill price was available for journaling.`,
         optionSymbol: automation.optionSymbol,
-        orderId: orderResult.orderId,
-        quantity: automation.quantity,
+        orderId: orderIds || null,
+        quantity: exitQuantity,
         currentUnderlyingPrice: underlyingQuote.last,
         currentOptionMid: optionQuote.mid,
       });
@@ -1819,7 +1984,7 @@ async function manageOpenPaperTrades(
         symbol: trade.symbol,
         reason: decision.reason,
         action: "skipped",
-        orderId: orderResult.orderId,
+        orderId: orderIds || null,
         optionExitPrice: null,
         note: `${decision.note} Exit order was sent, but no usable fill price was available for journaling.`,
       });
@@ -1835,8 +2000,8 @@ async function manageOpenPaperTrades(
       reason: decision.reason,
       note: decision.note,
       optionSymbol: automation.optionSymbol,
-      orderId: orderResult.orderId,
-      quantity: automation.quantity,
+      orderId: orderIds || null,
+      quantity: exitQuantity,
       positionCostUsd: readNumber(trade.position_cost_usd),
       currentUnderlyingPrice: underlyingQuote.last,
       currentOptionMid: optionQuote.mid,
@@ -1850,7 +2015,7 @@ async function manageOpenPaperTrades(
       option_exit_price: optionExitPrice,
       exit_reason: decision.reason,
       exit_timestamp: nowIso,
-      quantity_closed: automation.quantity,
+      quantity_closed: exitQuantity,
       fees_usd: 0,
       slippage_usd: 0,
       exit_notes: `Paper trader auto-exit. ${decision.note}`,
@@ -1863,7 +2028,7 @@ async function manageOpenPaperTrades(
       symbol: trade.symbol,
       reason: decision.reason,
       action: "closed",
-      orderId: orderResult.orderId,
+      orderId: orderIds || null,
       optionExitPrice,
       note: decision.note,
     });
@@ -2172,8 +2337,16 @@ async function maybeEnterNewPaperTrade(params: {
       planned_risk_usd: Number((tradeCard.plannedJournalFields.planned_risk_usd * positionScale).toFixed(2)),
       planned_profit_usd: Number((tradeCard.plannedJournalFields.planned_profit_usd * positionScale).toFixed(2)),
     };
+    const capReasons = [
+      cappedContracts < automation.contracts && cappedContracts === MAX_TRADESTATION_CONTRACTS_PER_ORDER
+        ? `TradeStation's ${MAX_TRADESTATION_CONTRACTS_PER_ORDER}-contract per-order cap`
+        : null,
+      cappedContracts < automation.contracts && cappedContracts < MAX_TRADESTATION_CONTRACTS_PER_ORDER
+        ? `${(config.maxPositionPct * 100).toFixed(0)}% account-value cap`
+        : null,
+    ].filter(Boolean);
     const capNote = cappedContracts < automation.contracts
-      ? ` Size reduced from ${automation.contracts} to ${cappedContracts} contracts by the ${(config.maxPositionPct * 100).toFixed(0)}% account-value cap.`
+      ? ` Size reduced from ${automation.contracts} to ${cappedContracts} contracts by ${capReasons.join(" and ")}.`
       : "";
     const entryOrder: TradeStationOrderRequest = {
       accountId: config.accountId as string,

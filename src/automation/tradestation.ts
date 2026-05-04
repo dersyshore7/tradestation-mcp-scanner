@@ -55,6 +55,8 @@ export type TradeStationPositionSnapshot = {
   raw: unknown;
 };
 
+export type AutomationTradeStationClient = Awaited<ReturnType<typeof createAutomationTradeStationClient>>;
+
 type JsonObject = Record<string, unknown>;
 
 function asObject(value: unknown): JsonObject | null {
