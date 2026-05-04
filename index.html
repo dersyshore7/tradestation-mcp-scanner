@@ -297,6 +297,54 @@
       .decision-record > summary {
         line-height: 1.4;
       }
+      .ai-decision-workspace > .muted {
+        margin-bottom: 10px;
+      }
+      .workspace-layer {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: #fff;
+        padding: 12px;
+        margin-top: 10px;
+      }
+      .workspace-layer > summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .workspace-count {
+        color: var(--muted-text);
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .timeline-item,
+      .trade-phase-card {
+        border: 1px solid var(--border);
+        border-radius: 13px;
+        background: rgba(251, 252, 249, 0.96);
+        padding: 10px 12px;
+        margin-top: 10px;
+      }
+      .phase-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 12px;
+        margin-top: 10px;
+      }
+      .phase-card-title {
+        margin: 0 0 8px;
+        font-size: 15px;
+      }
+      .decision-micro-list {
+        display: grid;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .decision-micro-list .decision-record {
+        margin-top: 0;
+        background: #fff;
+      }
       .status-chip {
         display: inline-block;
         padding: 4px 9px;
@@ -1107,96 +1155,147 @@
         `;
       }
 
-      function renderDecisionModule(title, items, emptyMessage) {
+      function renderWorkspaceLayer(title, count, content, emptyMessage, extra = "") {
+        const hasContent = typeof content === "string" && content.trim().length > 0;
+        return `
+          <details class="workspace-layer">
+            <summary>
+              <span>${escapeHtml(title)}</span>
+              <span class="workspace-count">${escapeHtml(renderMaybe(count, "0"))}</span>
+            </summary>
+            ${extra}
+            ${hasContent ? content : `<div class="muted">${escapeHtml(emptyMessage)}</div>`}
+          </details>
+        `;
+      }
+
+      function renderDecisionRecord(item) {
+        return `
+          <details class="journal-trade decision-record">
+            <summary>${escapeHtml(renderMaybe(item.timestamp))} | ${escapeHtml(renderMaybe(item.symbol))} | ${escapeHtml(renderMaybe(item.action))}${item.confidence ? ` (${escapeHtml(item.confidence)})` : ""}</summary>
+            ${renderDecisionDetails(item)}
+          </details>
+        `;
+      }
+
+      function renderDecisionRecords(items, emptyMessage) {
         const sortedItems = sortByTimestampDesc(Array.isArray(items) ? items : []);
+        if (sortedItems.length === 0) {
+          return `<div class="muted">${escapeHtml(emptyMessage)}</div>`;
+        }
+        return `<div class="decision-micro-list">${sortedItems.map(renderDecisionRecord).join("")}</div>`;
+      }
+
+      function renderTradePhaseCard(title, rows, decisions, emptyDecisionMessage) {
+        const rowHtml = rows.filter(Boolean).map((row) => `<div class="row">${row}</div>`).join("");
+        const hasDecisions = Array.isArray(decisions) && decisions.length > 0;
         return `
-          <div class="comparison-card decision-module">
-            <h4>${escapeHtml(title)}</h4>
-            ${sortedItems.length === 0 ? `<div class="muted">${escapeHtml(emptyMessage)}</div>` : ""}
-            ${sortedItems.map((item) => `
-              <details class="journal-trade decision-record">
-                <summary>${escapeHtml(renderMaybe(item.timestamp))} | ${escapeHtml(renderMaybe(item.symbol))} | ${escapeHtml(renderMaybe(item.action))}${item.confidence ? ` (${escapeHtml(item.confidence)})` : ""}</summary>
-                ${renderDecisionDetails(item)}
-              </details>
-            `).join("")}
-          </div>
+          <details class="trade-phase-card">
+            <summary>${escapeHtml(title)}</summary>
+            ${rowHtml || (hasDecisions ? "" : `<div class="muted">No phase summary saved yet.</div>`)}
+            ${renderDecisionRecords(decisions, emptyDecisionMessage)}
+          </details>
         `;
       }
 
-      function renderPaperTraderDecisionLog(log) {
-        const items = Array.isArray(log) ? log : [];
-        const entryItems = items.filter((item) => item?.kind === "entry");
-        const managementItems = items.filter((item) => item?.kind === "management" || item?.kind === "exit");
-        const orderItems = items.filter((item) => item?.kind === "order_check");
+      function renderRunTimeline(history, migrationMessage) {
+        const runs = sortByTimestampDesc(Array.isArray(history) ? history : [], "created_at");
+        if (migrationMessage) {
+          return `<div class="empty-state">${escapeHtml(migrationMessage)}</div>`;
+        }
+        return runs.map((run) => {
+          const raw = run.raw_result_json || {};
+          const checked = raw.reconciliation?.inspected;
+          const managed = raw.management?.inspected;
+          const decisionLog = Array.isArray(raw.decisionLog) ? raw.decisionLog : [];
+          const entry = raw.entry || {};
+          const reconciliationRows = [
+            ...(Array.isArray(raw.reconciliation?.updates) ? raw.reconciliation.updates : []).map((item) =>
+              `${item.symbol}: ${item.fillStatus} | filled ${renderMaybe(item.filledQuantity)} / ${renderMaybe(item.requestedQuantity)} | avg ${renderMaybe(item.averageFillPrice)}${item.note ? ` - ${item.note}` : ""}`,
+            ),
+            ...(Array.isArray(raw.reconciliation?.skipped) ? raw.reconciliation.skipped : []).map((item) => `${item.symbol}: ${item.reason}`),
+          ];
+          const managementRows = [
+            ...(Array.isArray(raw.management?.updates) ? raw.management.updates : []).map((item) =>
+              `${item.symbol}: ${item.action} | stop ${renderMaybe(item.stopUnderlying)} | target ${renderMaybe(item.targetUnderlying)}${item.note ? ` - ${item.note}` : ""}`,
+            ),
+            ...(Array.isArray(raw.management?.skipped) ? raw.management.skipped : []).map((item) => `${item.symbol}: ${item.reason}`),
+          ];
+          const exitRows = (Array.isArray(raw.management?.exitsTriggered) ? raw.management.exitsTriggered : []).map((item) =>
+            `${item.symbol}: ${item.reason} (${item.action})${item.note ? ` - ${item.note}` : ""}`,
+          );
 
-        return `
-          <div class="section-grid" style="margin-top: 16px;">
-            ${renderDecisionModule("Entry Decisions", entryItems, "No entry decisions have been saved yet.")}
-            ${renderDecisionModule("Management Decisions", managementItems, "No management decisions have been saved yet.")}
-            ${orderItems.length > 0 ? renderDecisionModule("Order Checks", orderItems, "No order checks have been saved yet.") : ""}
-          </div>
-        `;
+          return `
+            <details class="timeline-item">
+              <summary>${escapeHtml(renderMaybe(run.created_at))} | ${escapeHtml(run.dry_run ? "Dry" : "Live SIM")} | ${escapeHtml(renderMaybe(run.outcome))}</summary>
+              <div class="row"><strong>Symbol:</strong> ${escapeHtml(renderMaybe(run.symbol))} | <strong>Orders checked:</strong> ${escapeHtml(renderMaybe(checked, "0"))} | <strong>Managed:</strong> ${escapeHtml(renderMaybe(managed, "0"))}</div>
+              <div class="row"><strong>Reason:</strong> ${escapeHtml(renderMaybe(run.reason))}</div>
+              <div class="phase-grid">
+                ${renderTradePhaseCard(
+                  "Entry",
+                  [
+                    `<strong>Outcome:</strong> ${escapeHtml(renderMaybe(entry.outcome))}`,
+                    `<strong>Reason:</strong> ${escapeHtml(renderMaybe(entry.reason))}`,
+                  ],
+                  decisionLog.filter((item) => item?.kind === "entry"),
+                  "No entry decision records saved for this run.",
+                )}
+                ${renderTradePhaseCard(
+                  "Order Checks",
+                  reconciliationRows.map((row) => escapeHtml(row)),
+                  decisionLog.filter((item) => item?.kind === "order_check"),
+                  "No order-check records saved for this run.",
+                )}
+                ${renderTradePhaseCard(
+                  "Management",
+                  managementRows.map((row) => escapeHtml(row)),
+                  decisionLog.filter((item) => item?.kind === "management"),
+                  "No management records saved for this run.",
+                )}
+                ${renderTradePhaseCard(
+                  "Exit",
+                  exitRows.map((row) => escapeHtml(row)),
+                  decisionLog.filter((item) => item?.kind === "exit"),
+                  "No exit records saved for this run.",
+                )}
+              </div>
+            </details>
+          `;
+        }).join("");
       }
 
-      function renderPaperTraderRunHistory(history, migrationRequired, migrationMessage) {
-        const runs = Array.isArray(history) ? history : [];
-        return `
-          <div class="comparison-card" style="margin-top: 16px;">
-            <h4>Paper Trader Run History</h4>
-            ${migrationMessage ? `<div class="empty-state">${escapeHtml(migrationMessage)}</div>` : ""}
-            ${runs.length === 0 && !migrationMessage ? "<div class=\"muted\">No saved paper-trader runs yet.</div>" : ""}
-            ${runs.map((run) => {
-              const raw = run.raw_result_json || {};
-              const checked = raw.reconciliation?.inspected;
-              const managed = raw.management?.inspected;
-              return `
-                <div class="journal-trade">
-                  <div class="row"><strong>${escapeHtml(renderMaybe(run.created_at))}</strong> <span class="pill">${escapeHtml(run.dry_run ? "Dry" : "Live SIM")}</span> ${escapeHtml(renderMaybe(run.outcome))}</div>
-                  <div class="row"><strong>Symbol:</strong> ${escapeHtml(renderMaybe(run.symbol))} | <strong>Orders checked:</strong> ${escapeHtml(renderMaybe(checked, "0"))} | <strong>Managed:</strong> ${escapeHtml(renderMaybe(managed, "0"))}</div>
-                  <div class="row"><strong>Reason:</strong> ${escapeHtml(renderMaybe(run.reason))}</div>
-                </div>
-              `;
-            }).join("")}
-          </div>
-        `;
-      }
-
-      function renderEntryCandidateHistory(history, migrationRequired, migrationMessage) {
+      function renderEntryCandidateAudit(history, migrationMessage) {
         const candidates = sortByTimestampDesc(Array.isArray(history) ? history : [], "created_at");
-        return `
-          <div class="comparison-card" style="margin-top: 16px;">
-            <h4>Entry Candidate Audit</h4>
-            ${migrationMessage ? `<div class="empty-state">${escapeHtml(migrationMessage)}</div>` : ""}
-            ${candidates.length === 0 && !migrationMessage ? "<div class=\"muted\">No entry candidates have been saved yet.</div>" : ""}
-            ${candidates.slice(0, 30).map((item) => {
-              const metrics = [
-                item.direction ? `direction ${item.direction}` : null,
-                item.setup_type ? `setup ${item.setup_type}` : null,
-                item.confidence_bucket ? `confidence ${item.confidence_bucket}` : null,
-                item.dte_at_entry !== null && item.dte_at_entry !== undefined ? `DTE ${item.dte_at_entry}` : null,
-                item.planned_reward_risk ? `planned ${Number(item.planned_reward_risk).toFixed(2)}R` : null,
-                item.chart_review_score ? `chart ${Number(item.chart_review_score).toFixed(1)}` : null,
-                item.volume_ratio ? `volume ${Number(item.volume_ratio).toFixed(2)}x` : null,
-                item.option_spread ? `spread ${Number(item.option_spread).toFixed(2)}` : null,
-                item.scan_tier ? `tier ${item.scan_tier}` : null,
-                item.entry_time_bucket ? `time ${item.entry_time_bucket}` : null,
-              ].filter(Boolean).join(" | ");
-              const policy = item.entry_policy_summary
-                ? item.entry_policy_summary
-                : item.entry_policy_decision
-                  ? `${item.entry_policy_decision} | samples ${renderMaybe(item.entry_policy_sample_size, "0")}`
-                  : "";
-              return `
-                <details class="journal-trade decision-record">
-                  <summary>${escapeHtml(renderMaybe(item.created_at))} | ${escapeHtml(renderMaybe(item.symbol))} | ${escapeHtml(renderMaybe(item.decision))}</summary>
-                  ${metrics ? `<div class="row">${escapeHtml(metrics)}</div>` : ""}
-                  ${policy ? `<div class="row"><strong>Entry policy:</strong> ${escapeHtml(policy)}</div>` : ""}
-                  <div class="row"><strong>Reason:</strong> ${escapeHtml(renderMaybe(item.decision_reason))}</div>
-                </details>
-              `;
-            }).join("")}
-          </div>
-        `;
+        if (migrationMessage) {
+          return `<div class="empty-state">${escapeHtml(migrationMessage)}</div>`;
+        }
+        return candidates.slice(0, 30).map((item) => {
+          const metrics = [
+            item.direction ? `direction ${item.direction}` : null,
+            item.setup_type ? `setup ${item.setup_type}` : null,
+            item.confidence_bucket ? `confidence ${item.confidence_bucket}` : null,
+            item.dte_at_entry !== null && item.dte_at_entry !== undefined ? `DTE ${item.dte_at_entry}` : null,
+            item.planned_reward_risk ? `planned ${Number(item.planned_reward_risk).toFixed(2)}R` : null,
+            item.chart_review_score ? `chart ${Number(item.chart_review_score).toFixed(1)}` : null,
+            item.volume_ratio ? `volume ${Number(item.volume_ratio).toFixed(2)}x` : null,
+            item.option_spread ? `spread ${Number(item.option_spread).toFixed(2)}` : null,
+            item.scan_tier ? `tier ${item.scan_tier}` : null,
+            item.entry_time_bucket ? `time ${item.entry_time_bucket}` : null,
+          ].filter(Boolean).join(" | ");
+          const policy = item.entry_policy_summary
+            ? item.entry_policy_summary
+            : item.entry_policy_decision
+              ? `${item.entry_policy_decision} | samples ${renderMaybe(item.entry_policy_sample_size, "0")}`
+              : "";
+          return `
+            <details class="timeline-item">
+              <summary>${escapeHtml(renderMaybe(item.created_at))} | ${escapeHtml(renderMaybe(item.symbol))} | ${escapeHtml(renderMaybe(item.decision))}</summary>
+              ${metrics ? `<div class="row">${escapeHtml(metrics)}</div>` : ""}
+              ${policy ? `<div class="row"><strong>Entry policy:</strong> ${escapeHtml(policy)}</div>` : ""}
+              <div class="row"><strong>Reason:</strong> ${escapeHtml(renderMaybe(item.decision_reason))}</div>
+            </details>
+          `;
+        }).join("");
       }
 
       function renderRunSection(title, rows) {
@@ -1208,38 +1307,111 @@
         `;
       }
 
-      function renderPaperTradeHistory(trades) {
+      function renderTradeDecisionTrees(trades) {
         const items = sortByTimestampDesc(
           Array.isArray(trades) ? trades : [],
           "lastManagementAt",
         );
-        if (items.length === 0) {
+        return items.map((trade) => {
+          const decisionLog = Array.isArray(trade.decisionLog) ? trade.decisionLog : [];
+          const entryDecisions = decisionLog.filter((item) => item?.kind === "entry" || item?.kind === "order_check");
+          const managementDecisions = decisionLog.filter((item) => item?.kind === "management");
+          const exitDecisions = decisionLog.filter((item) => item?.kind === "exit");
+          const managementRows = sortByTimestampDesc(trade.managementHistory || []).map((item) =>
+            `${item.timestamp}: ${item.action}${item.confidence ? ` (${item.confidence})` : ""} | stop ${renderMaybe(item.stopUnderlying)} | target ${renderMaybe(item.targetUnderlying)} | ${item.note}`,
+          );
+
           return `
-            <div class="comparison-card" style="margin-top: 16px;">
-              <h4>Paper Trade Management History</h4>
-              <div class="muted">No paper-trader journal trades yet.</div>
-            </div>
+            <details class="timeline-item">
+              <summary>${escapeHtml(trade.symbol)} ${escapeHtml(renderMaybe(trade.status))} | ${escapeHtml(renderMaybe(trade.direction))} | entry ${escapeHtml(renderMaybe(trade.entryDate))}</summary>
+              <div class="phase-grid">
+                ${renderTradePhaseCard(
+                  "Entry",
+                  [
+                    `<strong>Option:</strong> ${escapeHtml(renderMaybe(trade.optionSymbol))} | <strong>Order:</strong> ${escapeHtml(renderMaybe(trade.orderId))}`,
+                    `<strong>Position:</strong> ${escapeHtml(renderMaybe(trade.contracts))} contract(s), ${escapeHtml(formatMoney(trade.positionCostUsd))}`,
+                    `<strong>Entry:</strong> option ${escapeHtml(formatMoney(trade.entryOptionPrice))} | underlying ${escapeHtml(formatMoney(trade.entryUnderlyingPrice))}`,
+                    `<strong>Fill:</strong> ${escapeHtml(renderMaybe(trade.fillStatus))} | filled ${escapeHtml(renderMaybe(trade.filledQuantity))} | remaining ${escapeHtml(renderMaybe(trade.remainingQuantity))}`,
+                  ],
+                  entryDecisions,
+                  "No entry or order-check decisions saved for this trade.",
+                )}
+                ${renderTradePhaseCard(
+                  "Management",
+                  [
+                    `<strong>Active stop/target:</strong> ${escapeHtml(formatMoney(trade.activeStopUnderlying))} / ${escapeHtml(formatMoney(trade.activeTargetUnderlying))}`,
+                    `<strong>Latest:</strong> ${escapeHtml(renderMaybe(trade.lastManagementAction))} at ${escapeHtml(renderMaybe(trade.lastManagementAt))}`,
+                    `<strong>Note:</strong> ${escapeHtml(renderMaybe(trade.lastManagementNote))}`,
+                    ...managementRows.map((row) => escapeHtml(row)),
+                  ],
+                  managementDecisions,
+                  "No management decisions saved for this trade.",
+                )}
+                ${renderTradePhaseCard(
+                  "Exit",
+                  [
+                    `<strong>Exit reason:</strong> ${escapeHtml(renderMaybe(trade.latestExitReason))}`,
+                    `<strong>P/L:</strong> ${escapeHtml(formatMoney(trade.realizedPlUsd))} | <strong>R:</strong> ${escapeHtml(formatRatio(trade.realizedRMultiple))}`,
+                  ],
+                  exitDecisions,
+                  "No exit decisions saved for this trade.",
+                )}
+              </div>
+            </details>
           `;
-        }
+        }).join("");
+      }
+
+      function renderRecentDecisionModules(log) {
+        const items = Array.isArray(log) ? log : [];
+        const entryItems = items.filter((item) => item?.kind === "entry");
+        const managementItems = items.filter((item) => item?.kind === "management");
+        const exitItems = items.filter((item) => item?.kind === "exit");
+        const orderItems = items.filter((item) => item?.kind === "order_check");
+        return `
+          <div class="phase-grid">
+            ${renderTradePhaseCard("Entry", [], entryItems, "No recent entry decisions.")}
+            ${renderTradePhaseCard("Management", [], managementItems, "No recent management decisions.")}
+            ${renderTradePhaseCard("Exit", [], exitItems, "No recent exit decisions.")}
+            ${renderTradePhaseCard("Order Checks", [], orderItems, "No recent order checks.")}
+          </div>
+        `;
+      }
+
+      function renderPaperTraderDecisionWorkspace(input) {
+        const runs = Array.isArray(input?.runHistory) ? input.runHistory : [];
+        const candidates = Array.isArray(input?.entryCandidateHistory) ? input.entryCandidateHistory : [];
+        const trades = Array.isArray(input?.paperTradeHistory) ? input.paperTradeHistory : [];
+        const decisions = Array.isArray(input?.recentDecisionLog) ? input.recentDecisionLog : [];
 
         return `
-          <div class="comparison-card" style="margin-top: 16px;">
-            <h4>Paper Trade Management History</h4>
-            ${items.map((trade) => `
-              <details class="journal-trade">
-                <summary>${escapeHtml(trade.symbol)} ${escapeHtml(renderMaybe(trade.status))} | ${escapeHtml(renderMaybe(trade.direction))} | entry ${escapeHtml(renderMaybe(trade.entryDate))}</summary>
-                <div class="row"><strong>Option:</strong> ${escapeHtml(renderMaybe(trade.optionSymbol))} | <strong>Order:</strong> ${escapeHtml(renderMaybe(trade.orderId))}</div>
-                <div class="row"><strong>Position:</strong> ${escapeHtml(renderMaybe(trade.contracts))} contract(s), ${escapeHtml(formatMoney(trade.positionCostUsd))} | <strong>Entry option:</strong> ${escapeHtml(formatMoney(trade.entryOptionPrice))} | <strong>Entry underlying:</strong> ${escapeHtml(formatMoney(trade.entryUnderlyingPrice))}</div>
-                <div class="row"><strong>Active stop/target:</strong> ${escapeHtml(formatMoney(trade.activeStopUnderlying))} / ${escapeHtml(formatMoney(trade.activeTargetUnderlying))}</div>
-                <div class="row"><strong>Fill:</strong> ${escapeHtml(renderMaybe(trade.fillStatus))} | filled ${escapeHtml(renderMaybe(trade.filledQuantity))} | remaining ${escapeHtml(renderMaybe(trade.remainingQuantity))} | last check ${escapeHtml(renderMaybe(trade.lastOrderCheckAt))}</div>
-                <div class="row"><strong>Latest management:</strong> ${escapeHtml(renderMaybe(trade.lastManagementAction))} at ${escapeHtml(renderMaybe(trade.lastManagementAt))} | ${escapeHtml(renderMaybe(trade.lastManagementNote))}</div>
-                <div class="row"><strong>Exit:</strong> ${escapeHtml(renderMaybe(trade.latestExitReason))} | <strong>P/L:</strong> ${escapeHtml(formatMoney(trade.realizedPlUsd))} | <strong>R:</strong> ${escapeHtml(formatRatio(trade.realizedRMultiple))}</div>
-                <div class="row"><strong>Management history:</strong></div>
-                ${renderList(sortByTimestampDesc(trade.managementHistory || []).map((item) => `${item.timestamp}: ${item.action}${item.confidence ? ` (${item.confidence})` : ""} | stop ${renderMaybe(item.stopUnderlying)} | target ${renderMaybe(item.targetUnderlying)} | ${item.note}`))}
-                <div class="row"><strong>Decision log:</strong></div>
-                ${renderList(sortByTimestampDesc(trade.decisionLog || []).map((item) => `${item.timestamp}: ${item.kind}/${item.action} | ${item.note}${item.plainEnglishExplanation ? ` | ${item.plainEnglishExplanation}` : ""}`))}
-              </details>
-            `).join("")}
+          <div class="comparison-card ai-decision-workspace" style="margin-top: 16px;">
+            <h4>AI Decision Workspace</h4>
+            <div class="muted">Collapsed by default: open a session, trade, phase, or individual decision only when you want the underlying logic.</div>
+            ${renderWorkspaceLayer(
+              "Layer 1: Session Timeline",
+              `${runs.length} run(s)`,
+              renderRunTimeline(runs, input?.runHistoryMigrationMessage),
+              "No saved paper-trader runs yet.",
+            )}
+            ${renderWorkspaceLayer(
+              "Layer 2: Trades By Phase",
+              `${trades.length} trade(s)`,
+              renderTradeDecisionTrees(trades),
+              "No paper-trader journal trades yet.",
+            )}
+            ${renderWorkspaceLayer(
+              "Entry Candidate Audit",
+              `${candidates.length} candidate(s)`,
+              renderEntryCandidateAudit(candidates, input?.entryCandidateHistoryMigrationMessage),
+              "No entry candidates have been saved yet.",
+            )}
+            ${renderWorkspaceLayer(
+              "Recent Decisions By Type",
+              `${decisions.length} decision(s)`,
+              renderRecentDecisionModules(decisions),
+              "No recent AI decisions have been saved yet.",
+            )}
           </div>
         `;
       }
@@ -1413,10 +1585,14 @@
             <pre>${escapeHtml(learning?.entryPolicySummary || "No closed paper-entry outcomes yet; new entries use the scanner/trade-card rules and become training data after close.")}</pre>
           </div>
 
-          ${renderPaperTraderRunHistory(status?.runHistory, status?.runHistoryMigrationRequired, status?.runHistoryMigrationMessage)}
-          ${renderEntryCandidateHistory(status?.entryCandidateHistory, status?.entryCandidateHistoryMigrationRequired, status?.entryCandidateHistoryMigrationMessage)}
-          ${renderPaperTraderDecisionLog(status?.recentDecisionLog)}
-          ${renderPaperTradeHistory(status?.paperTradeHistory)}
+          ${renderPaperTraderDecisionWorkspace({
+            runHistory: status?.runHistory,
+            runHistoryMigrationMessage: status?.runHistoryMigrationMessage,
+            entryCandidateHistory: status?.entryCandidateHistory,
+            entryCandidateHistoryMigrationMessage: status?.entryCandidateHistoryMigrationMessage,
+            recentDecisionLog: status?.recentDecisionLog,
+            paperTradeHistory: status?.paperTradeHistory,
+          })}
         `;
       }
 
@@ -1510,10 +1686,14 @@
             )}
           </div>
 
-          ${renderPaperTraderDecisionLog(result?.decisionLog)}
-          ${renderPaperTraderRunHistory(result?.runHistory, result?.runHistoryMigrationRequired, result?.runHistoryMigrationMessage)}
-          ${renderEntryCandidateHistory(result?.entryCandidateHistory, result?.entryCandidateHistoryMigrationRequired, result?.entryCandidateHistoryMigrationMessage)}
-          ${renderPaperTradeHistory(result?.paperTradeHistory)}
+          ${renderPaperTraderDecisionWorkspace({
+            runHistory: result?.runHistory,
+            runHistoryMigrationMessage: result?.runHistoryMigrationMessage,
+            entryCandidateHistory: result?.entryCandidateHistory,
+            entryCandidateHistoryMigrationMessage: result?.entryCandidateHistoryMigrationMessage,
+            recentDecisionLog: result?.decisionLog,
+            paperTradeHistory: result?.paperTradeHistory,
+          })}
 
           <details class="comparison-card" style="margin-top: 16px;">
             <summary>Entry Reasoning</summary>
