@@ -737,20 +737,17 @@
         <section class="page-header">
           <div class="page-kicker">Automation</div>
           <h1>Paper Trader</h1>
-          <p class="page-subtitle">Monitor SIM automation, check orders, and run dry or live paper-trader cycles.</p>
+          <p class="page-subtitle">Monitor SIM performance, trade outcomes, and paper-trader automation.</p>
         </section>
 
       <div class="card">
         <div class="panel-header">
           <div>
-            <h2>Paper Trader</h2>
-            <p class="section-description">Separate SIM automation lane for status checks, dry runs, and live paper-trader cycles.</p>
+            <h2>Paper Dashboard</h2>
+            <p class="section-description">Paper-only trade analytics with the SIM account snapshot as the source of truth for unrealized P/L.</p>
           </div>
           <div class="actions">
-            <button id="loadPaperTraderStatusButton" class="secondary">Load Status</button>
-            <button id="checkPaperTraderOrdersButton" class="secondary">Check Orders</button>
-            <button id="runPaperTraderDryButton" class="secondary">Run Dry Cycle</button>
-            <button id="runPaperTraderLiveButton">Run Live Cycle</button>
+            <button id="refreshPaperDashboardButton" class="secondary">Refresh Dashboard</button>
           </div>
         </div>
 
@@ -762,6 +759,22 @@
           autocomplete="off"
         />
         <div class="field-note">Use the same secret you set in Vercel for the paper-trader routes. This module stays separate from the manual scanner flow above.</div>
+        <div id="paperDashboardArea" class="muted">Refresh the dashboard to load paper-trade performance, open trade counts, realized P/L, unrealized P/L, win rate, best days, and timing buckets.</div>
+      </div>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Paper Trader Controls</h2>
+            <p class="section-description">Separate SIM automation lane for status checks, dry runs, and live paper-trader cycles.</p>
+          </div>
+          <div class="actions">
+            <button id="loadPaperTraderStatusButton" class="secondary">Load Status</button>
+            <button id="checkPaperTraderOrdersButton" class="secondary">Check Orders</button>
+            <button id="runPaperTraderDryButton" class="secondary">Run Dry Cycle</button>
+            <button id="runPaperTraderLiveButton">Run Live Cycle</button>
+          </div>
+        </div>
 
         <details>
           <summary>Optional prompt override</summary>
@@ -1050,6 +1063,7 @@
       let selectedTradeToClose = null;
       let selectedTradeToEdit = null;
       let selectedRecommendationForJournal = null;
+      let paperDashboardHasLoaded = false;
 
       const menuToggle = document.getElementById("menuToggle");
       const menuClose = document.getElementById("menuClose");
@@ -1109,6 +1123,8 @@
       const closeEditTradeModalButton = document.getElementById("closeEditTradeModal");
       const paperTraderSecretInput = document.getElementById("paperTraderSecret");
       const paperTraderPromptInput = document.getElementById("paperTraderPrompt");
+      const paperDashboardArea = document.getElementById("paperDashboardArea");
+      const refreshPaperDashboardButton = document.getElementById("refreshPaperDashboardButton");
       const paperTraderArea = document.getElementById("paperTraderArea");
       const loadPaperTraderStatusButton = document.getElementById("loadPaperTraderStatusButton");
       const checkPaperTraderOrdersButton = document.getElementById("checkPaperTraderOrdersButton");
@@ -1166,6 +1182,13 @@
           window.history.replaceState(null, "", `#${nextPage}`);
         }
         closeNavigation();
+        if (
+          nextPage === "paper-trader"
+          && !paperDashboardHasLoaded
+          && paperTraderSecretInput?.value?.trim()
+        ) {
+          loadPaperDashboard();
+        }
       }
 
       function readPageFromHash() {
@@ -1675,6 +1698,151 @@
         return headers;
       }
 
+      function bestBucketByRealizedPl(buckets) {
+        return (Array.isArray(buckets) ? buckets : [])
+          .filter((bucket) => bucket.closed_trade_count > 0)
+          .sort((left, right) => (asNumber(right.realized_pl_usd) ?? 0) - (asNumber(left.realized_pl_usd) ?? 0))[0] || null;
+      }
+
+      function formatLearningState(closedTrades) {
+        const count = asNumber(closedTrades) ?? 0;
+        if (count >= 75) {
+          return "Rich";
+        }
+        if (count >= 25) {
+          return "Building";
+        }
+        if (count > 0) {
+          return "Sparse";
+        }
+        return "No outcomes";
+      }
+
+      function renderPaperDashboardBucket(title, buckets, formatter, limit = 6) {
+        const rows = (Array.isArray(buckets) ? buckets : [])
+          .filter((bucket) => bucket.trade_count > 0)
+          .sort((left, right) => (asNumber(right.realized_pl_usd) ?? 0) - (asNumber(left.realized_pl_usd) ?? 0))
+          .slice(0, limit);
+        if (rows.length === 0) {
+          return `
+            <div class="comparison-card">
+              <h4>${escapeHtml(title)}</h4>
+              <div class="empty-state">No paper-trade data yet.</div>
+            </div>
+          `;
+        }
+
+        return `
+          <div class="comparison-card">
+            <h4>${escapeHtml(title)}</h4>
+            <ul class="bucket-list">
+              ${rows.map((bucket) => `<li>${escapeHtml(bucket.label)} - ${escapeHtml(formatter(bucket))}</li>`).join("")}
+            </ul>
+          </div>
+        `;
+      }
+
+      function renderPaperDashboard(insights) {
+        if (!paperDashboardArea) {
+          return;
+        }
+
+        if (!insights) {
+          paperDashboardArea.innerHTML = '<div class="empty-state">No paper dashboard data yet.</div>';
+          return;
+        }
+        paperDashboardHasLoaded = true;
+
+        const totals = insights.totals || {};
+        const simAccount = insights.sim_account || null;
+        const bestDay = bestBucketByRealizedPl(insights.by_day_of_week);
+        const bestTime = bestBucketByRealizedPl(insights.by_entry_hour);
+        const bestSetup = bestBucketByRealizedPl(insights.by_setup_type);
+        const realizedTone = numberToneClass(totals.total_realized_pl_usd);
+        const unrealizedTone = numberToneClass(simAccount?.unrealizedPlUsd);
+        const winRateTone = winRateToneClass(totals.win_rate);
+        const avgRTone = numberToneClass(totals.average_r_multiple);
+        const learningState = formatLearningState(totals.closed_trades);
+
+        paperDashboardArea.innerHTML = `
+          ${simAccount?.error
+            ? `<div class="empty-state">${escapeHtml(simAccount.error)}</div>`
+            : ""}
+
+          <div class="stats-grid" style="margin-top: 12px;">
+            <div class="stat-card">
+              <div class="stat-label">SIM Net Worth</div>
+              <div class="stat-value">${escapeHtml(formatMoney(simAccount?.accountValueUsd))}</div>
+            </div>
+            <div class="stat-card ${escapeHtml(unrealizedTone)}">
+              <div class="stat-label">SIM Unrealized P/L</div>
+              <div class="stat-value ${escapeHtml(unrealizedTone)}">${escapeHtml(formatMoney(simAccount?.unrealizedPlUsd))}</div>
+            </div>
+            <div class="stat-card ${escapeHtml(realizedTone)}">
+              <div class="stat-label">Paper Realized P/L</div>
+              <div class="stat-value ${escapeHtml(realizedTone)}">${escapeHtml(formatMoney(totals.total_realized_pl_usd))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Open Paper Trades</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(totals.open_trades, "0"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Closed Paper Trades</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(totals.closed_trades, "0"))}</div>
+            </div>
+            <div class="stat-card ${escapeHtml(winRateTone)}">
+              <div class="stat-label">Win Rate</div>
+              <div class="stat-value ${escapeHtml(winRateTone)}">${escapeHtml(formatPercent(totals.win_rate, 1))}</div>
+            </div>
+            <div class="stat-card ${escapeHtml(avgRTone)}">
+              <div class="stat-label">Avg Realized R</div>
+              <div class="stat-value ${escapeHtml(avgRTone)}">${escapeHtml(formatRatio(totals.average_r_multiple))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Avg Return</div>
+              <div class="stat-value">${escapeHtml(formatPercent(totals.average_return_pct, 1))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Open Journal Cost</div>
+              <div class="stat-value">${escapeHtml(formatMoney(totals.open_position_cost_usd))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Winners / Losers</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(totals.winners, "0"))} / ${escapeHtml(renderMaybe(totals.losers, "0"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Best Day</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(bestDay?.label))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Best Time</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(bestTime?.label))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Best Setup</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(bestSetup?.label))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Learning Set</div>
+              <div class="stat-value">${escapeHtml(learningState)}</div>
+            </div>
+          </div>
+
+          <div class="empty-state" style="margin-top: 16px;">
+            Dashboard metrics are paper-only. Realized results come from closed journal exits; unrealized P/L and net worth come from the live TradeStation SIM account snapshot when authorized.
+          </div>
+
+          <div class="section-grid" style="margin-top: 16px;">
+            ${renderPaperDashboardBucket("Best Days To Trade", insights.by_day_of_week, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)} | ${bucket.closed_trade_count} closed`)}
+            ${renderPaperDashboardBucket("Best Entry Times", insights.by_entry_hour, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)} | ${bucket.closed_trade_count} closed`)}
+            ${renderPaperDashboardBucket("Best Setups", insights.by_setup_type, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)}`)}
+            ${renderPaperDashboardBucket("Best Symbols", insights.by_symbol, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`)}
+            ${renderPaperDashboardBucket("Direction Performance", insights.by_direction, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)}`)}
+            ${renderPaperDashboardBucket("Exit Outcomes", insights.by_exit_reason, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`)}
+          </div>
+        `;
+      }
+
       async function readJsonResponse(response, fallbackMessage) {
         const contentType = response.headers.get("content-type") || "";
         if (!contentType.toLowerCase().includes("application/json")) {
@@ -1953,6 +2121,36 @@
             <pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre>
           </details>
         `;
+      }
+
+      async function loadPaperDashboard() {
+        if (!paperDashboardArea) {
+          return;
+        }
+
+        paperDashboardArea.innerHTML = '<div class="muted">Loading paper dashboard...</div>';
+        if (refreshPaperDashboardButton) {
+          refreshPaperDashboardButton.disabled = true;
+        }
+
+        try {
+          const params = new URLSearchParams({
+            accountMode: "paper",
+            includeSimAccount: "true",
+            limit: "500",
+          });
+          const response = await fetch(`/api/journal/insights?${params.toString()}`, {
+            headers: buildPaperTraderHeaders(),
+          });
+          const data = await readJsonResponse(response, "Failed to load paper dashboard.");
+          renderPaperDashboard(data?.insights || null);
+        } catch (error) {
+          paperDashboardArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Failed to load paper dashboard."))}</div>`;
+        } finally {
+          if (refreshPaperDashboardButton) {
+            refreshPaperDashboardButton.disabled = false;
+          }
+        }
       }
 
       async function loadPaperTraderStatus() {
@@ -3187,6 +3385,7 @@
         }
       });
       loadPaperTraderStatusButton?.addEventListener("click", loadPaperTraderStatus);
+      refreshPaperDashboardButton?.addEventListener("click", loadPaperDashboard);
       checkPaperTraderOrdersButton?.addEventListener("click", checkPaperTraderOrders);
       runPaperTraderDryButton?.addEventListener("click", () => {
         runPaperTraderCycle(true);

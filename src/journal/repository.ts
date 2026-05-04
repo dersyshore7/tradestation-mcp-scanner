@@ -7,6 +7,7 @@ import {
   supabaseUpsertAndSelectOne,
 } from "../supabase/serverClient.js";
 import type {
+  AccountMode,
   JournalInsights,
   JournalTradeRecord,
   JournalTradeCloseInput,
@@ -48,10 +49,12 @@ const JOURNAL_TRADE_RECORD_SELECT_WITHOUT_SIGNAL = [
 
 type JournalTradeListOptions = {
   includeSignalSnapshot?: boolean;
+  accountMode?: AccountMode;
 };
 
 type JournalInsightsOptions = {
   includeReasoning?: boolean;
+  accountMode?: AccountMode;
 };
 
 function buildEntryWeek(entryDate: string): string {
@@ -256,6 +259,7 @@ async function listJournalTradeRecords(
   const records = await supabaseSelect<JournalTradeRecord>({
     table: "journal_trades",
     select: includeSignalSnapshot ? "*" : JOURNAL_TRADE_RECORD_SELECT_WITHOUT_SIGNAL,
+    ...(options.accountMode ? { filters: [`account_mode=eq.${options.accountMode}`] } : {}),
     order: ["entry_date.desc", "created_at.desc"],
     limit,
   });
@@ -585,6 +589,9 @@ export async function deleteJournalTrade(id: string): Promise<void> {
 
 export async function getJournalInsights(limit = 500, options: JournalInsightsOptions = {}): Promise<JournalInsights> {
   const includeReasoning = options.includeReasoning === true;
-  const details = await listJournalTradeDetails(limit, { includeSignalSnapshot: includeReasoning });
+  const details = await listJournalTradeDetails(limit, {
+    includeSignalSnapshot: includeReasoning,
+    ...(options.accountMode ? { accountMode: options.accountMode } : {}),
+  });
   return buildJournalInsights(details, { reasoningIncluded: includeReasoning });
 }

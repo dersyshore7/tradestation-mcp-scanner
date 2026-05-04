@@ -259,9 +259,12 @@ export type JournalInsights = {
     best_setup_type: string | null;
   };
   by_day_of_week: JournalInsightBucket[];
+  by_entry_hour: JournalInsightBucket[];
   by_account_mode: JournalInsightBucket[];
+  by_direction: JournalInsightBucket[];
   by_setup_type: JournalInsightBucket[];
   by_symbol: JournalInsightBucket[];
+  by_exit_reason: JournalInsightBucket[];
   recent_winners: JournalReasoningComparisonItem[];
   recent_losers: JournalReasoningComparisonItem[];
 };

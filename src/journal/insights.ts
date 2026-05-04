@@ -215,6 +215,24 @@ function toClosedTrades(trades: JournalTradeDetail[]): JournalTradeDetail[] {
   return trades.filter((trade) => trade.review?.realized_pl_usd !== null);
 }
 
+function buildEntryHourKey(entryTime: string | null): string {
+  const hour = typeof entryTime === "string" ? entryTime.match(/^(\d{2})/)?.[1] : null;
+  return hour ? `${hour}:00` : "unknown";
+}
+
+function buildEntryHourLabel(key: string): string {
+  if (key === "unknown") {
+    return "Unknown";
+  }
+  const hour = Number(key.slice(0, 2));
+  if (!Number.isFinite(hour)) {
+    return key;
+  }
+  const suffix = hour >= 12 ? "PM" : "AM";
+  const normalizedHour = hour % 12 || 12;
+  return `${normalizedHour} ${suffix}`;
+}
+
 function buildBucket(key: string, label: string, trades: JournalTradeDetail[]): JournalInsightBucket {
   const closedTrades = toClosedTrades(trades);
   const openTrades = trades.filter((trade) => trade.status === "open");
@@ -273,6 +291,29 @@ export function buildJournalInsights(
     buildBucket(day.toLowerCase(), day, trades.filter((trade) => trade.entry_day === day)),
   ).filter((bucket) => bucket.trade_count > 0);
 
+  const entryHourBuckets = Array.from(
+    trades.reduce((map, trade) => {
+      const key = buildEntryHourKey(trade.entry_time);
+      const existing = map.get(key) ?? [];
+      existing.push(trade);
+      map.set(key, existing);
+      return map;
+    }, new Map<string, JournalTradeDetail[]>()),
+  )
+    .map(([key, hourTrades]) => buildBucket(key, buildEntryHourLabel(key), hourTrades))
+    .sort((left, right) => left.key.localeCompare(right.key));
+
+  const directionBuckets = Array.from(
+    trades.reduce((map, trade) => {
+      const existing = map.get(trade.direction) ?? [];
+      existing.push(trade);
+      map.set(trade.direction, existing);
+      return map;
+    }, new Map<string, JournalTradeDetail[]>()),
+  )
+    .map(([direction, directionTrades]) => buildBucket(direction, direction, directionTrades))
+    .sort((left, right) => left.label.localeCompare(right.label));
+
   const setupBuckets = Array.from(
     trades.reduce((map, trade) => {
       const existing = map.get(trade.setup_type) ?? [];
@@ -306,6 +347,18 @@ export function buildJournalInsights(
     .map(([symbol, symbolTrades]) => buildBucket(symbol, symbol, symbolTrades))
     .sort((left, right) => right.realized_pl_usd - left.realized_pl_usd)
     .slice(0, 10);
+
+  const exitReasonBuckets = Array.from(
+    closedTrades.reduce((map, trade) => {
+      const exitReason = trade.latest_exit?.exit_reason ?? "unknown";
+      const existing = map.get(exitReason) ?? [];
+      existing.push(trade);
+      map.set(exitReason, existing);
+      return map;
+    }, new Map<string, JournalTradeDetail[]>()),
+  )
+    .map(([exitReason, exitReasonTrades]) => buildBucket(exitReason, exitReason, exitReasonTrades))
+    .sort((left, right) => right.realized_pl_usd - left.realized_pl_usd);
 
   const totalPl = closedTrades.reduce((sum, trade) => sum + (toNumber(trade.review?.realized_pl_usd ?? null) ?? 0), 0);
   const openPositionCost = trades
@@ -348,9 +401,12 @@ export function buildJournalInsights(
       best_setup_type: bestSetup?.label ?? null,
     },
     by_day_of_week: weekdayBuckets,
+    by_entry_hour: entryHourBuckets,
     by_account_mode: accountModeBuckets,
+    by_direction: directionBuckets,
     by_setup_type: setupBuckets,
     by_symbol: symbolBuckets,
+    by_exit_reason: exitReasonBuckets,
     recent_winners: winners.sort(sortByLatestExitDesc).slice(0, 5).map(buildReasoningComparisonItem),
     recent_losers: losers.sort(sortByLatestExitDesc).slice(0, 5).map(buildReasoningComparisonItem),
   };

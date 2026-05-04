@@ -1,6 +1,7 @@
 import { getJournalInsights } from "../../src/journal/repository.js";
 import { readPaperTraderApiSecrets } from "../../src/automation/config.js";
 import { getPaperTraderSizingSnapshot } from "../../src/automation/paperTrader.js";
+import { ACCOUNT_MODES, type AccountMode } from "../../src/journal/types.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./shared.js";
 
 type RequestWithHeaders = VercelRequestLike & {
@@ -24,6 +25,11 @@ function parseLimitQuery(value: string | string[] | undefined, fallback: number)
   return Math.min(500, Math.max(10, Math.floor(parsed)));
 }
 
+function parseAccountModeQuery(value: string | string[] | undefined): AccountMode | undefined {
+  const normalized = firstQueryValue(value)?.toLowerCase();
+  return ACCOUNT_MODES.includes(normalized as AccountMode) ? normalized as AccountMode : undefined;
+}
+
 function isPaperTraderAuthorized(req: RequestWithHeaders): boolean {
   const secrets = readPaperTraderApiSecrets();
   if (secrets.length === 0) {
@@ -43,7 +49,8 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
     const includeReasoning = parseBooleanQuery(req.query?.includeReasoning);
     const includeSimAccount = parseBooleanQuery(req.query?.includeSimAccount);
     const limit = parseLimitQuery(req.query?.limit, includeReasoning ? 75 : 500);
-    const insights = await getJournalInsights(limit, { includeReasoning });
+    const accountMode = parseAccountModeQuery(req.query?.accountMode);
+    const insights = await getJournalInsights(limit, { includeReasoning, accountMode });
     const simAccount = includeSimAccount
       ? isPaperTraderAuthorized(req as RequestWithHeaders)
         ? await getPaperTraderSizingSnapshot()
