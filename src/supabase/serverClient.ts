@@ -34,7 +34,8 @@ type SupabaseRestResponse = {
   text: string;
 };
 
-const SUPABASE_RETRY_DELAYS_MS = [250, 1000, 2500] as const;
+const SUPABASE_RETRY_DELAYS_MS = [250] as const;
+const SUPABASE_REQUEST_TIMEOUT_MS = 5000;
 
 function readEnv(name: string): string {
   const value = process.env[name];
@@ -107,19 +108,48 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function fetchSupabaseRest(url: string, init: RequestInit): Promise<SupabaseRestResponse> {
+  let lastError: unknown = null;
   for (let attempt = 0; ; attempt += 1) {
-    const response = await fetch(url, init);
-    const text = await response.text();
-    if (
-      response.ok
-      || !isRetryableSupabaseResponse(response.status, text)
-      || attempt >= SUPABASE_RETRY_DELAYS_MS.length
-    ) {
-      return { response, text };
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, SUPABASE_REQUEST_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(url, {
+        ...init,
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      if (
+        response.ok
+        || !isRetryableSupabaseResponse(response.status, text)
+        || attempt >= SUPABASE_RETRY_DELAYS_MS.length
+      ) {
+        return { response, text };
+      }
+      lastError = new Error(`Supabase retryable response (${response.status}): ${text}`);
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      const retryable = error instanceof Error && (
+        error.name === "AbortError"
+        || message.toLowerCase().includes("aborted")
+        || message.toLowerCase().includes("fetch failed")
+      );
+      if (!retryable || attempt >= SUPABASE_RETRY_DELAYS_MS.length) {
+        throw error instanceof Error && error.name === "AbortError"
+          ? new Error(`Supabase request timed out after ${SUPABASE_REQUEST_TIMEOUT_MS}ms.`)
+          : error;
+      }
+    } finally {
+      clearTimeout(timeout);
     }
 
     await sleep(SUPABASE_RETRY_DELAYS_MS[attempt] ?? 0);
   }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 export async function supabaseInsertAndSelectOne<T>(query: SupabaseInsertQuery): Promise<T> {

@@ -16,6 +16,16 @@ function parseLimit(value: string | string[] | undefined): number {
 
 function formatWarning(label: string, error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  if (
+    message.includes("522")
+    || message.includes("504")
+    || normalized.includes("request timed out")
+    || normalized.includes("connection timed out")
+    || normalized.includes("upstream request timeout")
+  ) {
+    return `${label}: Supabase timed out before returning data.`;
+  }
   return `${label}: ${message}`;
 }
 

@@ -683,6 +683,7 @@ function formatNonCriticalHistoryError(label: string, error: unknown): string {
     message.includes("PGRST002")
     || message.includes("57014")
     || message.toLowerCase().includes("statement timeout")
+    || message.toLowerCase().includes("request timed out")
     || message.includes("schema cache")
     || message.includes("Supabase select failed (503)")
   ) {
@@ -2597,7 +2598,7 @@ export async function runPaperTraderCycle(
       ? "Dry run was requested explicitly."
       : "AUTO_TRADER_ALLOW_ORDER_PLACEMENT is not enabled, so this run used preview-only mode."
     : null;
-  let allTrades = await listJournalTradeDetails(500);
+  let allTrades = await listJournalTradeDetails(500, { accountMode: "paper" });
   const shouldReconcileOrders = options.reconcileOrders === true || !dryRun;
   const reconciliation = await reconcileOpenPaperOrders(
     config,
@@ -2605,7 +2606,7 @@ export async function runPaperTraderCycle(
     shouldReconcileOrders,
   );
   if (reconciliation.updated > 0) {
-    allTrades = await listJournalTradeDetails(500);
+    allTrades = await listJournalTradeDetails(500, { accountMode: "paper" });
   }
 
   const openPaperTrades = allTrades.filter(
@@ -2708,7 +2709,7 @@ export async function runPaperTraderCycle(
       });
 
   const decisionLogTrades = !dryRun || reconciliation.updated > 0
-    ? await listJournalTradeDetails(500)
+    ? await listJournalTradeDetails(500, { accountMode: "paper" })
     : allTrades;
 
   return await finalizePaperTraderRunResult({

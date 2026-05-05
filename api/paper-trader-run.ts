@@ -25,6 +25,10 @@ function readBooleanQuery(req: RequestWithHeaders, name: string): boolean {
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
   const request = req as RequestWithHeaders;
   if (!isAuthorized(request)) {
+    console.warn("paper-trader-run unauthorized", {
+      method: req.method,
+      hasAuthorizationHeader: Boolean(request.headers?.authorization),
+    });
     sendError(res, 401, "Unauthorized.");
     return;
   }
@@ -35,18 +39,39 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
   }
 
   try {
-    const result = await runPaperTraderCycle({
+    const startedAt = Date.now();
+    const options = {
       dryRun: readBooleanQuery(request, "dryRun"),
       reconcileOnly: readBooleanQuery(request, "reconcileOnly"),
       reconcileOrders: readBooleanQuery(request, "reconcileOrders"),
       skipNewEntry:
         readBooleanQuery(request, "skipNewEntry")
         || readBooleanQuery(request, "manageOnly"),
-      source: "api",
+      source: "api" as const,
+    };
+    console.info("paper-trader-run started", {
+      method: req.method,
+      dryRun: options.dryRun,
+      reconcileOnly: options.reconcileOnly,
+      reconcileOrders: options.reconcileOrders,
+      skipNewEntry: options.skipNewEntry,
+    });
+    const result = await runPaperTraderCycle({
+      ...options,
+    });
+    console.info("paper-trader-run completed", {
+      durationMs: Date.now() - startedAt,
+      dryRun: result.dryRun,
+      openPaperTrades: result.guards.openPaperTrades,
+      managementInspected: result.management.inspected,
+      exitsTriggered: result.management.exitsTriggered.length,
+      entryOutcome: result.entry.outcome,
+      entrySymbol: result.entry.symbol,
     });
     sendJson(res, 200, result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Paper trader run failed.";
+    console.error("paper-trader-run failed", { message });
     sendError(res, 500, message);
   }
 }
