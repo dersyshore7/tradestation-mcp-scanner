@@ -1993,7 +1993,15 @@
               <div class="stat-value">${escapeHtml(formatBoolean(status?.accountIdConfigured))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Open Paper Trades</div>
+              <div class="stat-label">Open SIM Positions</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(sizing.openPositionCount, "n/a"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">SIM Open Contracts</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(sizing.openContractCount, "n/a"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Open Journal Trades</div>
               <div class="stat-value">${escapeHtml(renderMaybe(status?.openPaperTrades, "0"))}</div>
             </div>
             <div class="stat-card">
