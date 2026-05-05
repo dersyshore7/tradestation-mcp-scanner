@@ -1718,7 +1718,7 @@
         return "No outcomes";
       }
 
-      function renderPaperDashboardBucket(title, buckets, formatter, limit = 6) {
+      function renderPaperDashboardBucket(title, buckets, formatter, limit = 6, historyUnavailable = false) {
         const rows = (Array.isArray(buckets) ? buckets : [])
           .filter((bucket) => bucket.trade_count > 0)
           .sort((left, right) => (asNumber(right.realized_pl_usd) ?? 0) - (asNumber(left.realized_pl_usd) ?? 0))
@@ -1727,7 +1727,7 @@
           return `
             <div class="comparison-card">
               <h4>${escapeHtml(title)}</h4>
-              <div class="empty-state">No paper-trade data yet.</div>
+              <div class="empty-state">${historyUnavailable ? "Journal history unavailable." : "No paper-trade data yet."}</div>
             </div>
           `;
         }
@@ -1786,17 +1786,17 @@
         const totals = insights.totals || {};
         const simAccount = insights.sim_account || null;
         const dataWarnings = Array.isArray(insights.dataWarnings) ? insights.dataWarnings : [];
-        const bestDay = bestBucketByRealizedPl(insights.by_day_of_week);
-        const bestTime = bestBucketByRealizedPl(insights.by_entry_hour);
-        const bestSetup = bestBucketByRealizedPl(insights.by_setup_type);
-        const realizedTone = numberToneClass(totals.total_realized_pl_usd);
-        const unrealizedTone = numberToneClass(simAccount?.unrealizedPlUsd);
-        const winRateTone = winRateToneClass(totals.win_rate);
-        const avgRTone = numberToneClass(totals.average_r_multiple);
         const journalDataUnavailable = dataWarnings.some((warning) =>
           String(warning).toLowerCase().includes("unavailable")
           || String(warning).toLowerCase().includes("timed out")
         );
+        const bestDay = journalDataUnavailable ? null : bestBucketByRealizedPl(insights.by_day_of_week);
+        const bestTime = journalDataUnavailable ? null : bestBucketByRealizedPl(insights.by_entry_hour);
+        const bestSetup = journalDataUnavailable ? null : bestBucketByRealizedPl(insights.by_setup_type);
+        const realizedTone = journalDataUnavailable ? "" : numberToneClass(totals.total_realized_pl_usd);
+        const unrealizedTone = numberToneClass(simAccount?.unrealizedPlUsd);
+        const winRateTone = journalDataUnavailable ? "" : winRateToneClass(totals.win_rate);
+        const avgRTone = journalDataUnavailable ? "" : numberToneClass(totals.average_r_multiple);
         const learningState = journalDataUnavailable && (asNumber(totals.closed_trades) ?? 0) === 0
           ? "Unavailable"
           : formatLearningState(totals.closed_trades);
@@ -1825,7 +1825,7 @@
             </div>
             <div class="stat-card ${escapeHtml(realizedTone)}">
               <div class="stat-label">Paper Realized P/L</div>
-              <div class="stat-value ${escapeHtml(realizedTone)}">${escapeHtml(formatMoney(totals.total_realized_pl_usd))}</div>
+              <div class="stat-value ${escapeHtml(realizedTone)}">${escapeHtml(journalDataUnavailable ? "unavailable" : formatMoney(totals.total_realized_pl_usd))}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Open SIM Positions</div>
@@ -1837,15 +1837,15 @@
             </div>
             <div class="stat-card ${escapeHtml(winRateTone)}">
               <div class="stat-label">Win Rate</div>
-              <div class="stat-value ${escapeHtml(winRateTone)}">${escapeHtml(formatPercent(totals.win_rate, 1))}</div>
+              <div class="stat-value ${escapeHtml(winRateTone)}">${escapeHtml(journalDataUnavailable ? "unavailable" : formatPercent(totals.win_rate, 1))}</div>
             </div>
             <div class="stat-card ${escapeHtml(avgRTone)}">
               <div class="stat-label">Avg Realized R</div>
-              <div class="stat-value ${escapeHtml(avgRTone)}">${escapeHtml(formatRatio(totals.average_r_multiple))}</div>
+              <div class="stat-value ${escapeHtml(avgRTone)}">${escapeHtml(journalDataUnavailable ? "unavailable" : formatRatio(totals.average_r_multiple))}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Avg Return</div>
-              <div class="stat-value">${escapeHtml(formatPercent(totals.average_return_pct, 1))}</div>
+              <div class="stat-value">${escapeHtml(journalDataUnavailable ? "unavailable" : formatPercent(totals.average_return_pct, 1))}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">SIM Position Cost</div>
@@ -1857,7 +1857,7 @@
             </div>
             <div class="stat-card">
               <div class="stat-label">Closed Paper Trades</div>
-              <div class="stat-value">${escapeHtml(renderMaybe(totals.closed_trades, "0"))}</div>
+              <div class="stat-value">${escapeHtml(journalDataUnavailable ? "unavailable" : renderMaybe(totals.closed_trades, "0"))}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Open Journal Trades</div>
@@ -1865,7 +1865,7 @@
             </div>
             <div class="stat-card">
               <div class="stat-label">Winners / Losers</div>
-              <div class="stat-value">${escapeHtml(renderMaybe(totals.winners, "0"))} / ${escapeHtml(renderMaybe(totals.losers, "0"))}</div>
+              <div class="stat-value">${escapeHtml(journalDataUnavailable ? "unavailable" : `${renderMaybe(totals.winners, "0")} / ${renderMaybe(totals.losers, "0")}`)}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Best Day</div>
@@ -1891,12 +1891,12 @@
 
           <div class="section-grid" style="margin-top: 16px;">
             ${renderOpenSimPositions(simAccount?.positions)}
-            ${renderPaperDashboardBucket("Best Days To Trade", insights.by_day_of_week, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)} | ${bucket.closed_trade_count} closed`)}
-            ${renderPaperDashboardBucket("Best Entry Times", insights.by_entry_hour, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)} | ${bucket.closed_trade_count} closed`)}
-            ${renderPaperDashboardBucket("Best Setups", insights.by_setup_type, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)}`)}
-            ${renderPaperDashboardBucket("Best Symbols", insights.by_symbol, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`)}
-            ${renderPaperDashboardBucket("Direction Performance", insights.by_direction, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)}`)}
-            ${renderPaperDashboardBucket("Exit Outcomes", insights.by_exit_reason, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`)}
+            ${renderPaperDashboardBucket("Best Days To Trade", insights.by_day_of_week, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)} | ${bucket.closed_trade_count} closed`, 6, journalDataUnavailable)}
+            ${renderPaperDashboardBucket("Best Entry Times", insights.by_entry_hour, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)} | ${bucket.closed_trade_count} closed`, 6, journalDataUnavailable)}
+            ${renderPaperDashboardBucket("Best Setups", insights.by_setup_type, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)}`, 6, journalDataUnavailable)}
+            ${renderPaperDashboardBucket("Best Symbols", insights.by_symbol, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`, 6, journalDataUnavailable)}
+            ${renderPaperDashboardBucket("Direction Performance", insights.by_direction, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)}`, 6, journalDataUnavailable)}
+            ${renderPaperDashboardBucket("Exit Outcomes", insights.by_exit_reason, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`, 6, journalDataUnavailable)}
           </div>
         `;
       }
