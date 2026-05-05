@@ -1742,6 +1742,36 @@
         `;
       }
 
+      function renderOpenSimPositions(positions) {
+        const rows = (Array.isArray(positions) ? positions : []).filter((position) =>
+          (asNumber(position.quantity) ?? 0) !== 0
+        );
+        if (rows.length === 0) {
+          return `
+            <div class="comparison-card">
+              <h4>Open SIM Positions</h4>
+              <div class="empty-state">No open SIM positions reported by TradeStation.</div>
+            </div>
+          `;
+        }
+
+        return `
+          <div class="comparison-card">
+            <h4>Open SIM Positions</h4>
+            <ul class="bucket-list">
+              ${rows.map((position) => {
+                const quantity = asNumber(position.quantity);
+                const averagePrice = asNumber(position.averagePrice);
+                const estimatedCost = asNumber(position.estimatedCostUsd);
+                const marketValue = asNumber(position.marketValueUsd);
+                const unrealizedPl = asNumber(position.unrealizedPlUsd);
+                return `<li>${escapeHtml(position.symbol)} - ${escapeHtml(renderMaybe(quantity, "n/a"))} contract(s) | avg ${escapeHtml(averagePrice === null ? "n/a" : formatMoney(averagePrice))} | cost ${escapeHtml(formatMoney(estimatedCost))} | value ${escapeHtml(formatMoney(marketValue))} | P/L ${escapeHtml(formatMoney(unrealizedPl))}</li>`;
+              }).join("")}
+            </ul>
+          </div>
+        `;
+      }
+
       function renderPaperDashboard(insights) {
         if (!paperDashboardArea) {
           return;
@@ -1763,7 +1793,18 @@
         const unrealizedTone = numberToneClass(simAccount?.unrealizedPlUsd);
         const winRateTone = winRateToneClass(totals.win_rate);
         const avgRTone = numberToneClass(totals.average_r_multiple);
-        const learningState = formatLearningState(totals.closed_trades);
+        const journalDataUnavailable = dataWarnings.some((warning) =>
+          String(warning).toLowerCase().includes("unavailable")
+          || String(warning).toLowerCase().includes("timed out")
+        );
+        const learningState = journalDataUnavailable && (asNumber(totals.closed_trades) ?? 0) === 0
+          ? "Unavailable"
+          : formatLearningState(totals.closed_trades);
+        const openSimPositions = asNumber(simAccount?.openPositionCount);
+        const openSimContracts = asNumber(simAccount?.openContractCount);
+        const openSimCost = asNumber(simAccount?.openPositionCostUsd);
+        const openSimMarketValue = asNumber(simAccount?.openPositionMarketValueUsd);
+        const openJournalTrades = asNumber(totals.open_trades);
 
         paperDashboardArea.innerHTML = `
           ${simAccount?.error
@@ -1787,12 +1828,12 @@
               <div class="stat-value ${escapeHtml(realizedTone)}">${escapeHtml(formatMoney(totals.total_realized_pl_usd))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Open Paper Trades</div>
-              <div class="stat-value">${escapeHtml(renderMaybe(totals.open_trades, "0"))}</div>
+              <div class="stat-label">Open SIM Positions</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(openSimPositions, "n/a"))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Closed Paper Trades</div>
-              <div class="stat-value">${escapeHtml(renderMaybe(totals.closed_trades, "0"))}</div>
+              <div class="stat-label">SIM Open Contracts</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(openSimContracts, "n/a"))}</div>
             </div>
             <div class="stat-card ${escapeHtml(winRateTone)}">
               <div class="stat-label">Win Rate</div>
@@ -1807,8 +1848,20 @@
               <div class="stat-value">${escapeHtml(formatPercent(totals.average_return_pct, 1))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Open Journal Cost</div>
-              <div class="stat-value">${escapeHtml(formatMoney(totals.open_position_cost_usd))}</div>
+              <div class="stat-label">SIM Position Cost</div>
+              <div class="stat-value">${escapeHtml(formatMoney(openSimCost))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">SIM Position Value</div>
+              <div class="stat-value">${escapeHtml(formatMoney(openSimMarketValue))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Closed Paper Trades</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(totals.closed_trades, "0"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Open Journal Trades</div>
+              <div class="stat-value">${escapeHtml(journalDataUnavailable && openJournalTrades === 0 ? "unavailable" : renderMaybe(openJournalTrades, "0"))}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Winners / Losers</div>
@@ -1833,10 +1886,11 @@
           </div>
 
           <div class="empty-state" style="margin-top: 16px;">
-            Dashboard metrics are paper-only. Realized results come from compact closed journal exits; unrealized P/L and net worth come from a read-only TradeStation SIM account snapshot loaded server-side.
+            Open SIM positions, unrealized P/L, and net worth come from read-only TradeStation account data. Realized results and learning analytics come from Supabase journal history, so they can be temporarily unavailable if Supabase times out.
           </div>
 
           <div class="section-grid" style="margin-top: 16px;">
+            ${renderOpenSimPositions(simAccount?.positions)}
             ${renderPaperDashboardBucket("Best Days To Trade", insights.by_day_of_week, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)} | ${bucket.closed_trade_count} closed`)}
             ${renderPaperDashboardBucket("Best Entry Times", insights.by_entry_hour, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)} | ${bucket.closed_trade_count} closed`)}
             ${renderPaperDashboardBucket("Best Setups", insights.by_setup_type, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)}`)}

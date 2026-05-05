@@ -52,6 +52,8 @@ export type TradeStationPositionSnapshot = {
   symbol: string;
   quantity: number | null;
   averagePrice: number | null;
+  marketValue: number | null;
+  unrealizedPl: number | null;
   raw: unknown;
 };
 
@@ -325,11 +327,74 @@ export function findPositionSnapshot(
         "AverageCost",
         "CostBasisPrice",
       ]),
+      marketValue: readNumber(position, [
+        "MarketValue",
+        "CurrentValue",
+        "PositionValue",
+      ]),
+      unrealizedPl: readNumber(position, [
+        "UnrealizedProfitLoss",
+        "UnrealizedProfitLossUSD",
+        "UnrealizedPL",
+        "UnrealizedPnL",
+        "UnrealizedPnl",
+      ]),
       raw: position,
     };
   }
 
   return null;
+}
+
+export function extractPositionSnapshots(payload: unknown): TradeStationPositionSnapshot[] {
+  return pickObjectArray(payload, ["Positions", "Position", "Items", "Data"])
+    .map<TradeStationPositionSnapshot | null>((position) => {
+      const symbol = readString(position, [
+        "Symbol",
+        "symbol",
+        "OptionSymbol",
+        "PositionSymbol",
+      ]);
+      if (!symbol) {
+        return null;
+      }
+
+      return {
+        symbol,
+        quantity: readNumber(position, [
+          "Quantity",
+          "LongQuantity",
+          "PositionQuantity",
+          "OpenQuantity",
+          "Qty",
+        ]),
+        averagePrice: readNumber(position, [
+          "AveragePrice",
+          "AveragePriceOpen",
+          "AverageOpenPrice",
+          "AvgPrice",
+          "AverageCost",
+          "CostBasisPrice",
+        ]),
+        marketValue: readNumber(position, [
+          "MarketValue",
+          "CurrentValue",
+          "PositionValue",
+        ]),
+        unrealizedPl: readNumber(position, [
+          "UnrealizedProfitLoss",
+          "UnrealizedProfitLossUSD",
+          "UnrealizedPL",
+          "UnrealizedPnL",
+          "UnrealizedPnl",
+        ]),
+        raw: position,
+      } satisfies TradeStationPositionSnapshot;
+    })
+    .filter((position): position is TradeStationPositionSnapshot =>
+      position !== null
+      && Math.abs(position.quantity ?? 0) > 0
+    );
 }
 
 function toQuoteSnapshot(symbol: string, payload: unknown): TradeStationQuoteSnapshot {

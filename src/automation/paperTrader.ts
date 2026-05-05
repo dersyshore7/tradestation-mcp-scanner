@@ -46,6 +46,7 @@ import {
 import {
   createAutomationTradeStationClient,
   extractAverageFillPrice,
+  extractPositionSnapshots,
   findPositionSnapshot,
   normalizeTradeStationOrderPrice,
   summarizeExecutions,
@@ -219,6 +220,18 @@ export type PaperTraderStatus = {
     equitiesBuyingPowerUsd: number | null;
     optionsBuyingPowerUsd: number | null;
     maxPositionCostUsd: number | null;
+    openPositionCount: number | null;
+    openContractCount: number | null;
+    openPositionCostUsd: number | null;
+    openPositionMarketValueUsd: number | null;
+    positions: {
+      symbol: string;
+      quantity: number | null;
+      averagePrice: number | null;
+      marketValueUsd: number | null;
+      unrealizedPlUsd: number | null;
+      estimatedCostUsd: number | null;
+    }[];
     error: string | null;
   };
   configurationIssues: string[];
@@ -758,6 +771,78 @@ async function loadPaperEntryCandidateHistory(): Promise<{
   }
 }
 
+function isOptionPositionSymbol(symbol: string): boolean {
+  return /\b\d{6}[CP]\d+(?:\.\d+)?\b/i.test(symbol);
+}
+
+function estimatePositionCostUsd(position: {
+  symbol: string;
+  quantity: number | null;
+  averagePrice: number | null;
+  marketValue: number | null;
+  unrealizedPl: number | null;
+}): number | null {
+  const quantity = Math.abs(position.quantity ?? 0);
+  if (quantity <= 0) {
+    return null;
+  }
+
+  if (position.averagePrice !== null && position.averagePrice > 0) {
+    const multiplier = isOptionPositionSymbol(position.symbol) ? 100 : 1;
+    return Number((position.averagePrice * quantity * multiplier).toFixed(2));
+  }
+
+  if (position.marketValue !== null && position.unrealizedPl !== null) {
+    return Number((position.marketValue - position.unrealizedPl).toFixed(2));
+  }
+
+  return null;
+}
+
+function buildPositionSizingSnapshot(
+  positionsPayload: unknown,
+): Pick<
+  PaperTraderStatus["sizing"],
+  | "openPositionCount"
+  | "openContractCount"
+  | "openPositionCostUsd"
+  | "openPositionMarketValueUsd"
+  | "positions"
+> {
+  const positions = extractPositionSnapshots(positionsPayload)
+    .map((position) => {
+      const estimatedCostUsd = estimatePositionCostUsd(position);
+      return {
+        symbol: position.symbol,
+        quantity: position.quantity,
+        averagePrice: position.averagePrice,
+        marketValueUsd: position.marketValue,
+        unrealizedPlUsd: position.unrealizedPl,
+        estimatedCostUsd,
+      };
+    })
+    .sort((left, right) => left.symbol.localeCompare(right.symbol));
+  const hasMarketValue = positions.some((position) => position.marketValueUsd !== null);
+  const hasEstimatedCost = positions.some((position) => position.estimatedCostUsd !== null);
+  const openPositionMarketValueUsd = positions.reduce((sum, position) =>
+    sum + (position.marketValueUsd ?? 0), 0);
+  const openPositionCostUsd = positions.reduce((sum, position) =>
+    sum + (position.estimatedCostUsd ?? 0), 0);
+
+  return {
+    openPositionCount: positions.length,
+    openContractCount: positions.reduce((sum, position) =>
+      sum + Math.abs(position.quantity ?? 0), 0),
+    openPositionCostUsd: hasEstimatedCost
+      ? Number(openPositionCostUsd.toFixed(2))
+      : null,
+    openPositionMarketValueUsd: hasMarketValue
+      ? Number(openPositionMarketValueUsd.toFixed(2))
+      : null,
+    positions,
+  };
+}
+
 async function loadPaperTraderSizingSnapshot(
   config: PaperTraderConfig,
 ): Promise<PaperTraderStatus["sizing"]> {
@@ -768,6 +853,11 @@ async function loadPaperTraderSizingSnapshot(
       equitiesBuyingPowerUsd: null,
       optionsBuyingPowerUsd: null,
       maxPositionCostUsd: null,
+      openPositionCount: null,
+      openContractCount: null,
+      openPositionCostUsd: null,
+      openPositionMarketValueUsd: null,
+      positions: [],
       error: "Missing paper-trader account id.",
     };
   }
@@ -781,6 +871,7 @@ async function loadPaperTraderSizingSnapshot(
     } catch {
       positionsPayload = null;
     }
+    const positionSizing = buildPositionSizingSnapshot(positionsPayload);
     const accountValueUsd = extractAccountValue(balancesPayload);
     const unrealizedPlUsd = extractUnrealizedPl(balancesPayload)
       ?? extractPositionsUnrealizedPl(positionsPayload);
@@ -793,6 +884,7 @@ async function loadPaperTraderSizingSnapshot(
         accountValueUsd !== null
           ? Number((accountValueUsd * config.maxPositionPct).toFixed(2))
           : null,
+      ...positionSizing,
       error: accountValueUsd === null
         ? "Could not read SIM account value from TradeStation balances."
         : null,
@@ -804,6 +896,11 @@ async function loadPaperTraderSizingSnapshot(
       equitiesBuyingPowerUsd: null,
       optionsBuyingPowerUsd: null,
       maxPositionCostUsd: null,
+      openPositionCount: null,
+      openContractCount: null,
+      openPositionCostUsd: null,
+      openPositionMarketValueUsd: null,
+      positions: [],
       error: error instanceof Error ? error.message : String(error),
     };
   }

@@ -52,6 +52,11 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
         equitiesBuyingPowerUsd: null,
         optionsBuyingPowerUsd: null,
         maxPositionCostUsd: null,
+        openPositionCount: null,
+        openContractCount: null,
+        openPositionCostUsd: null,
+        openPositionMarketValueUsd: null,
+        positions: [],
         error: formatWarning("SIM account snapshot unavailable", simAccountResult.reason),
       };
 
