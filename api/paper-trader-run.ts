@@ -47,6 +47,7 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
       skipNewEntry:
         readBooleanQuery(request, "skipNewEntry")
         || readBooleanQuery(request, "manageOnly"),
+      includeHistory: false,
       source: "api" as const,
     };
     console.info("paper-trader-run started", {

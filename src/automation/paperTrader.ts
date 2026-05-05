@@ -70,6 +70,7 @@ type PaperTraderRunOptions = {
   reconcileOnly?: boolean;
   reconcileOrders?: boolean;
   skipNewEntry?: boolean;
+  includeHistory?: boolean;
 };
 
 type ChicagoClockParts = {
@@ -729,7 +730,7 @@ async function loadPaperTraderRunHistory(): Promise<{
   runHistoryMigrationMessage: string | null;
 }> {
   try {
-    const runHistoryResult = await listRecentPaperTraderRuns(500);
+    const runHistoryResult = await listRecentPaperTraderRuns(50);
     return {
       runHistory: runHistoryResult.runs,
       runHistoryMigrationRequired: runHistoryResult.migrationRequired,
@@ -753,7 +754,7 @@ async function loadPaperEntryCandidateHistory(): Promise<{
   entryCandidateHistoryMigrationMessage: string | null;
 }> {
   try {
-    const result = await listRecentPaperEntryCandidates(200);
+    const result = await listRecentPaperEntryCandidates(50);
     return {
       entryCandidateHistory: result.candidates,
       entryCandidateHistoryMigrationRequired: result.migrationRequired,
@@ -1411,6 +1412,7 @@ function formatRejectedOrderReason(order: {
 async function finalizePaperTraderRunResult(
   result: PaperTraderRunResultCore,
   tradesForHistory: JournalTradeDetail[],
+  includeHistory: boolean,
 ): Promise<PaperTraderRunResult> {
   const resultWithTradeHistory = {
     ...result,
@@ -1438,8 +1440,20 @@ async function finalizePaperTraderRunResult(
     writeWarning = formatNonCriticalHistoryError("Paper trader run history write", error);
   }
 
-  const runHistory = await loadPaperTraderRunHistory();
-  const entryCandidateHistory = await loadPaperEntryCandidateHistory();
+  const runHistory = includeHistory
+    ? await loadPaperTraderRunHistory()
+    : {
+        runHistory: [],
+        runHistoryMigrationRequired: false,
+        runHistoryMigrationMessage: null,
+      };
+  const entryCandidateHistory = includeHistory
+    ? await loadPaperEntryCandidateHistory()
+    : {
+        entryCandidateHistory: [],
+        entryCandidateHistoryMigrationRequired: false,
+        entryCandidateHistoryMigrationMessage: null,
+      };
   return {
     ...resultWithTradeHistory,
     ...runHistory,
@@ -2713,6 +2727,8 @@ export async function runPaperTraderCycle(
   const todayChicago = chicagoNow.date;
   const todayRealizedPlUsd = computeTodayRealizedPlUsd(allTrades, todayChicago);
 
+  const includeHistory = options.includeHistory !== false;
+
   if (options.reconcileOnly) {
     return await finalizePaperTraderRunResult({
       mode: "paper",
@@ -2745,7 +2761,7 @@ export async function runPaperTraderCycle(
         symbol: null,
         reason: "Monitor-only run reconciled open paper orders and skipped AI exits plus new entries.",
       },
-    }, allTrades);
+    }, allTrades, includeHistory);
   }
 
   if (!dryRun && !isRegularUsEquitySession(new Date())) {
@@ -2780,7 +2796,7 @@ export async function runPaperTraderCycle(
         symbol: null,
         reason: `Skipped live paper-trader cycle outside regular US equity market hours (America/Chicago). Current Chicago time: ${chicagoNow.time}.`,
       },
-    }, allTrades);
+    }, allTrades, includeHistory);
   }
 
   const management = await manageOpenPaperTrades(config, dryRun, allTrades);
@@ -2830,5 +2846,5 @@ export async function runPaperTraderCycle(
     reconciliation,
     management,
     entry,
-  }, decisionLogTrades);
+  }, decisionLogTrades, includeHistory);
 }

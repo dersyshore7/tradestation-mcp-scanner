@@ -117,8 +117,8 @@ export async function recordPaperEntryCandidate(
         entry_policy_matched_key: input.entryPolicy?.matchedKey ?? null,
         entry_policy_summary: input.entryPolicy?.summary ?? null,
         feature_json: featureSnapshot ?? {},
-        scan_json: input.scan ?? null,
-        trade_card_json: input.tradeCard ?? null,
+        scan_json: null,
+        trade_card_json: null,
       },
     });
   } catch (error) {
@@ -130,18 +130,52 @@ export async function recordPaperEntryCandidate(
 }
 
 export async function listRecentPaperEntryCandidates(
-  limit = 200,
+  limit = 50,
 ): Promise<PaperEntryCandidateHistoryResult> {
   try {
     const candidates = await supabaseSelect<PaperEntryCandidateRecord>({
       table: "paper_entry_candidates",
-      select: "*",
+      select: [
+        "id",
+        "created_at",
+        "scan_run_id",
+        "source",
+        "dry_run",
+        "symbol",
+        "decision",
+        "decision_reason",
+        "paper_trade_id",
+        "order_id",
+        "direction",
+        "setup_type",
+        "confidence_bucket",
+        "dte_at_entry",
+        "planned_reward_risk",
+        "chart_review_score",
+        "volume_ratio",
+        "option_spread",
+        "market_regime",
+        "scan_tier",
+        "entry_day",
+        "entry_time_bucket",
+        "entry_policy_decision",
+        "entry_policy_sample_size",
+        "entry_policy_average_reward_r",
+        "entry_policy_win_rate",
+        "entry_policy_matched_key",
+        "entry_policy_summary",
+      ].join(","),
       order: ["created_at.desc"],
       limit,
     });
 
     return {
-      candidates,
+      candidates: candidates.map((candidate) => ({
+        ...candidate,
+        feature_json: {},
+        scan_json: null,
+        trade_card_json: null,
+      })),
       migrationRequired: false,
       migrationMessage: null,
     };
