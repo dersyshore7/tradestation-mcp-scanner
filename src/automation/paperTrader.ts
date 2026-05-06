@@ -1,4 +1,5 @@
 import { buildWorkflowPresentationSummary } from "../app/resultPresentation.js";
+import { MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO } from "../app/chartAnchoredTradability.js";
 import {
   extractFinalizedTradeGeometryFromTelemetry,
   runScan,
@@ -62,7 +63,9 @@ import {
 
 const MAX_ENTRY_POLICY_SCAN_ATTEMPTS = 3;
 const MAX_TRADESTATION_CONTRACTS_PER_ORDER = 2000;
-const RECENT_INVALID_ENTRY_COOLDOWN_MS = 30 * 60 * 1000;
+// Paper entries are daily/weekly continuation trades, not penny-distance scalps.
+const MIN_AUTOMATED_ENTRY_TARGET_ROOM_PCT = 0.0075;
+const MIN_AUTOMATED_ENTRY_RISK_ROOM_PCT = 0.0025;
 
 type PaperTraderRunOptions = {
   prompt?: string;
@@ -392,6 +395,10 @@ function readNumber(value: string | number | null | undefined): number | null {
   return null;
 }
 
+function formatPct(value: number): string {
+  return `${(value * 100).toFixed(2)}%`;
+}
+
 function validateEntryGeometry(tradeCard: TradeConstructionResult): string | null {
   const fields = tradeCard.plannedJournalFields;
   const entry = readNumber(fields.underlying_entry_price);
@@ -400,6 +407,9 @@ function validateEntryGeometry(tradeCard: TradeConstructionResult): string | nul
 
   if (entry === null || stop === null || target === null) {
     return "Trade card is missing entry, stop, or target geometry.";
+  }
+  if (entry <= 0) {
+    return `Trade card has invalid entry geometry: entry ${entry.toFixed(2)} must be positive.`;
   }
 
   if (fields.direction === "CALL") {
@@ -416,6 +426,24 @@ function validateEntryGeometry(tradeCard: TradeConstructionResult): string | nul
     if (target >= entry) {
       return `Bearish PUT geometry is invalid: target ${target.toFixed(2)} must be below entry ${entry.toFixed(2)}.`;
     }
+  }
+
+  const isCall = fields.direction === "CALL";
+  const directionLabel = isCall ? "Bullish CALL" : "Bearish PUT";
+  const riskDistance = isCall ? entry - stop : stop - entry;
+  const rewardDistance = isCall ? target - entry : entry - target;
+  const riskPct = riskDistance / entry;
+  const rewardPct = rewardDistance / entry;
+  const rewardRiskRatio = rewardDistance / riskDistance;
+
+  if (rewardPct < MIN_AUTOMATED_ENTRY_TARGET_ROOM_PCT) {
+    return `${directionLabel} geometry is too tight for automation: target room is ${formatPct(rewardPct)} from entry (${entry.toFixed(2)} -> ${target.toFixed(2)}), below the ${formatPct(MIN_AUTOMATED_ENTRY_TARGET_ROOM_PCT)} minimum.`;
+  }
+  if (riskPct < MIN_AUTOMATED_ENTRY_RISK_ROOM_PCT) {
+    return `${directionLabel} geometry is too tight for automation: stop distance is ${formatPct(riskPct)} from entry (${entry.toFixed(2)} -> ${stop.toFixed(2)}), below the ${formatPct(MIN_AUTOMATED_ENTRY_RISK_ROOM_PCT)} minimum.`;
+  }
+  if (rewardRiskRatio < MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO) {
+    return `${directionLabel} geometry is invalid at the live entry: reward/risk ${rewardRiskRatio.toFixed(2)}R is below the ${MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO.toFixed(2)}R minimum confirmable threshold.`;
   }
 
   return null;
@@ -786,36 +814,6 @@ async function loadPaperEntryCandidateHistory(): Promise<{
         error,
       ),
     };
-  }
-}
-
-function isRecentInvalidGeometryCandidate(candidate: PaperEntryCandidateRecord, now = new Date()): boolean {
-  if (!candidate.symbol || candidate.decision !== "trade_card_blocked") {
-    return false;
-  }
-
-  const createdAt = new Date(candidate.created_at);
-  if (Number.isNaN(createdAt.getTime())) {
-    return false;
-  }
-
-  if (now.getTime() - createdAt.getTime() > RECENT_INVALID_ENTRY_COOLDOWN_MS) {
-    return false;
-  }
-
-  return (candidate.decision_reason ?? "").toLowerCase().includes("geometry is invalid");
-}
-
-async function loadRecentlyInvalidEntrySymbols(): Promise<string[]> {
-  try {
-    const result = await listRecentPaperEntryCandidates(25);
-    const symbols = result.candidates
-      .filter((candidate) => isRecentInvalidGeometryCandidate(candidate))
-      .map((candidate) => candidate.symbol)
-      .filter((symbol): symbol is string => typeof symbol === "string" && symbol.length > 0);
-    return Array.from(new Set(symbols));
-  } catch {
-    return [];
   }
 }
 
@@ -2227,11 +2225,8 @@ async function maybeEnterNewPaperTrade(params: {
   const scanRunId = buildScanRunId();
   const entryRewardModel = trainEntryRewardModel(allTrades);
   const openSymbols = openPaperTrades.map((trade) => trade.symbol);
-  const recentlyInvalidSymbols = await loadRecentlyInvalidEntrySymbols();
-  const policySkippedSymbols: string[] = [...recentlyInvalidSymbols];
-  const policySkipReasons: string[] = recentlyInvalidSymbols.map((symbol) =>
-    `${symbol}: recently blocked by invalid trade geometry; waiting for price/levels to change before retrying`,
-  );
+  const policySkippedSymbols: string[] = [];
+  const policySkipReasons: string[] = [];
   const evaluatedCandidates: PaperTraderEntryCandidateEvaluation[] = [];
   let selectedScan: Awaited<ReturnType<typeof runScan>> | null = null;
   let selectedTradeCard: TradeConstructionResult | null = null;
