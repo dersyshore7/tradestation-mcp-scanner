@@ -17,6 +17,7 @@ import type {
   JournalTradeListItem,
   JournalTradeReviewRecord,
   JournalTradeUpdateInput,
+  TradeStatus,
 } from "./types.js";
 
 const JOURNAL_TRADE_RECORD_SELECT_WITHOUT_SIGNAL = [
@@ -50,6 +51,7 @@ const JOURNAL_TRADE_RECORD_SELECT_WITHOUT_SIGNAL = [
 type JournalTradeListOptions = {
   includeSignalSnapshot?: boolean;
   accountMode?: AccountMode;
+  status?: TradeStatus;
 };
 
 type JournalInsightsOptions = {
@@ -259,7 +261,10 @@ async function listJournalTradeRecords(
   const records = await supabaseSelect<JournalTradeRecord>({
     table: "journal_trades",
     select: includeSignalSnapshot ? "*" : JOURNAL_TRADE_RECORD_SELECT_WITHOUT_SIGNAL,
-    ...(options.accountMode ? { filters: [`account_mode=eq.${options.accountMode}`] } : {}),
+    filters: [
+      ...(options.accountMode ? [`account_mode=eq.${options.accountMode}`] : []),
+      ...(options.status ? [`status=eq.${options.status}`] : []),
+    ],
     order: ["entry_date.desc", "created_at.desc"],
     limit,
   });

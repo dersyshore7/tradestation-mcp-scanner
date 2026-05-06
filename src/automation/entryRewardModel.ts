@@ -145,6 +145,37 @@ function readPresentationSummary(signalSnapshot: Record<string, unknown> | null)
   return asRecord(signalSnapshot?.presentationSummary);
 }
 
+function readStoredEntryFeatures(signalSnapshot: Record<string, unknown> | null): EntryRewardFeatureInput | null {
+  const direct = asRecord(signalSnapshot?.entryFeatures);
+  const automation = asRecord(signalSnapshot?.automation);
+  const paperTrader = asRecord(automation?.paperTrader);
+  const stored = direct ?? asRecord(paperTrader?.entryFeatures);
+  if (!stored) {
+    return null;
+  }
+
+  const direction = stored.direction;
+  const setupType = stored.setupType;
+  if ((direction !== "CALL" && direction !== "PUT") || typeof setupType !== "string") {
+    return null;
+  }
+
+  return {
+    direction,
+    setupType,
+    confidenceBucket: typeof stored.confidenceBucket === "string" ? stored.confidenceBucket : null,
+    dteAtEntry: asFiniteNumber(stored.dteAtEntry),
+    plannedRewardRisk: asFiniteNumber(stored.plannedRewardRisk),
+    chartReviewScore: asFiniteNumber(stored.chartReviewScore),
+    volumeRatio: asFiniteNumber(stored.volumeRatio),
+    optionSpread: asFiniteNumber(stored.optionSpread),
+    marketRegime: typeof stored.marketRegime === "string" ? stored.marketRegime : null,
+    scanTier: typeof stored.scanTier === "string" ? stored.scanTier : null,
+    entryDay: typeof stored.entryDay === "string" ? stored.entryDay : null,
+    entryTime: typeof stored.entryTime === "string" ? stored.entryTime : null,
+  };
+}
+
 function formatChicagoParts(date = new Date()): {
   weekday: string;
   time: string;
@@ -230,6 +261,11 @@ function extractTradeRewardRisk(trade: JournalTradeDetail): number | null {
 
 function extractTradeEntryFeatures(trade: JournalTradeDetail): EntryRewardFeatureInput {
   const snapshot = asRecord(trade.signal_snapshot_json);
+  const storedFeatures = readStoredEntryFeatures(snapshot);
+  if (storedFeatures) {
+    return storedFeatures;
+  }
+
   const telemetry = readTelemetry(snapshot);
   const telemetryFeatures = extractTelemetryFeatures(telemetry, trade.symbol);
   const telemetryRecord = asRecord(telemetry);

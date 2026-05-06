@@ -3,7 +3,12 @@ import { summarizeEntryRewardModel, trainEntryRewardModel } from "./entryRewardM
 import { recommendPolicyAction, trainPolicyModel } from "./policyModel.js";
 
 async function main(): Promise<void> {
-  const trades = await listJournalTradeDetails(500);
+  const includeSnapshots = process.argv.includes("--with-snapshots");
+  const trades = await listJournalTradeDetails(300, {
+    accountMode: "paper",
+    status: "closed",
+    includeSignalSnapshot: includeSnapshots,
+  });
   const model = trainPolicyModel(trades);
   const entryModel = trainEntryRewardModel(trades);
 

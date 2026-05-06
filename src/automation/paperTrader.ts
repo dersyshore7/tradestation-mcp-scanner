@@ -724,6 +724,22 @@ async function loadJournalTradesForPaperTraderStatus(): Promise<{
   }
 }
 
+async function loadPaperTraderCycleTrades(): Promise<JournalTradeDetail[]> {
+  const [openTrades, closedTrades] = await Promise.all([
+    listJournalTradeDetails(50, {
+      accountMode: "paper",
+      status: "open",
+      includeSignalSnapshot: true,
+    }),
+    listJournalTradeDetails(300, {
+      accountMode: "paper",
+      status: "closed",
+      includeSignalSnapshot: false,
+    }),
+  ]);
+  return [...openTrades, ...closedTrades];
+}
+
 async function loadPaperTraderRunHistory(): Promise<{
   runHistory: PaperTraderRunRecord[];
   runHistoryMigrationRequired: boolean;
@@ -1210,7 +1226,15 @@ function computeOptionReturnPct(
 function readTradeRationale(trade: JournalTradeDetail): string | null {
   const snapshot = asRecord(trade.signal_snapshot_json);
   const tradeCard = asRecord(snapshot?.tradeCard);
-  return typeof tradeCard?.rationale === "string" ? tradeCard.rationale : null;
+  const presentationSummary = asRecord(snapshot?.presentationSummary);
+  const presentationTradeCard = asRecord(presentationSummary?.tradeCard);
+  const automation = asRecord(snapshot?.automation);
+  const paperTrader = asRecord(automation?.paperTrader);
+  const entryReasoning = asRecord(paperTrader?.entryReasoning);
+  return typeof tradeCard?.rationale === "string" ? tradeCard.rationale
+    : typeof presentationTradeCard?.rationale === "string" ? presentationTradeCard.rationale
+    : typeof entryReasoning?.tradeRationale === "string" ? entryReasoning.tradeRationale
+    : null;
 }
 
 function summarizeCurrentManagementHistory(
@@ -2599,10 +2623,27 @@ async function maybeEnterNewPaperTrade(params: {
         scan_run_id: scanRunId,
       },
       signal_snapshot_json: {
-        scan,
-        telemetry: scan.telemetry ?? null,
+        paperTraderCompact: true,
+        selectedScan: {
+          ticker: scan.ticker,
+          direction: scan.direction,
+          confidence: scan.confidence,
+          conclusion: scan.conclusion,
+          reason: scan.reason,
+        },
         presentationSummary,
-        tradeCard,
+        entryFeatures,
+        tradeCardSummary: {
+          ticker: tradeCard.ticker,
+          direction: tradeCard.direction,
+          buy: tradeCard.buy,
+          rationale: tradeCard.rationale,
+          rrMath: tradeCard.rrMath,
+          expectedTiming: tradeCard.expectedTiming,
+          invalidationExit: tradeCard.invalidationExit,
+          takeProfitExit: tradeCard.takeProfitExit,
+          timeExit: tradeCard.timeExit,
+        },
         automation: {
           lane: "paper_trader_v1",
           paperTrader: {
@@ -2628,6 +2669,7 @@ async function maybeEnterNewPaperTrade(params: {
             managementHistory: [],
             decisionLog: entryDecisionLog,
             entryReasoning,
+            entryFeatures,
             entryPolicyRecommendation,
             entryPolicyModelSummary,
             accountValueAtEntry: accountValueUsd,
@@ -2709,7 +2751,7 @@ export async function runPaperTraderCycle(
       ? "Dry run was requested explicitly."
       : "AUTO_TRADER_ALLOW_ORDER_PLACEMENT is not enabled, so this run used preview-only mode."
     : null;
-  let allTrades = await listJournalTradeDetails(500, { accountMode: "paper" });
+  let allTrades = await loadPaperTraderCycleTrades();
   const shouldReconcileOrders = options.reconcileOrders === true || !dryRun;
   const reconciliation = await reconcileOpenPaperOrders(
     config,
@@ -2717,7 +2759,7 @@ export async function runPaperTraderCycle(
     shouldReconcileOrders,
   );
   if (reconciliation.updated > 0) {
-    allTrades = await listJournalTradeDetails(500, { accountMode: "paper" });
+    allTrades = await loadPaperTraderCycleTrades();
   }
 
   const openPaperTrades = allTrades.filter(
@@ -2822,7 +2864,7 @@ export async function runPaperTraderCycle(
       });
 
   const decisionLogTrades = !dryRun || reconciliation.updated > 0
-    ? await listJournalTradeDetails(500, { accountMode: "paper" })
+    ? await loadPaperTraderCycleTrades()
     : allTrades;
 
   return await finalizePaperTraderRunResult({
