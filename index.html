@@ -757,6 +757,20 @@
       <div class="card">
         <div class="panel-header">
           <div>
+            <h2>Automation Activity</h2>
+            <p class="section-description">Latest cron and manual paper-trader cycles from compact run history.</p>
+          </div>
+          <div class="actions">
+            <button id="refreshPaperAutomationActivityButton" class="secondary">Refresh Activity</button>
+          </div>
+        </div>
+
+        <div id="paperAutomationActivityArea" class="muted">Loading automation activity...</div>
+      </div>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
             <h2>Paper Trader Controls</h2>
             <p class="section-description">Separate SIM automation lane for status checks, dry runs, and live paper-trader cycles.</p>
           </div>
@@ -1065,6 +1079,7 @@
       let selectedTradeToEdit = null;
       let selectedRecommendationForJournal = null;
       let paperDashboardHasLoaded = false;
+      let paperAutomationActivityHasLoaded = false;
 
       const menuToggle = document.getElementById("menuToggle");
       const menuClose = document.getElementById("menuClose");
@@ -1126,6 +1141,8 @@
       const paperTraderPromptInput = document.getElementById("paperTraderPrompt");
       const paperDashboardArea = document.getElementById("paperDashboardArea");
       const refreshPaperDashboardButton = document.getElementById("refreshPaperDashboardButton");
+      const paperAutomationActivityArea = document.getElementById("paperAutomationActivityArea");
+      const refreshPaperAutomationActivityButton = document.getElementById("refreshPaperAutomationActivityButton");
       const paperTraderArea = document.getElementById("paperTraderArea");
       const loadPaperTraderStatusButton = document.getElementById("loadPaperTraderStatusButton");
       const checkPaperTraderOrdersButton = document.getElementById("checkPaperTraderOrdersButton");
@@ -1183,11 +1200,13 @@
           window.history.replaceState(null, "", `#${nextPage}`);
         }
         closeNavigation();
-        if (
-          nextPage === "paper-trader"
-          && !paperDashboardHasLoaded
-        ) {
-          loadPaperDashboard();
+        if (nextPage === "paper-trader") {
+          if (!paperDashboardHasLoaded) {
+            loadPaperDashboard();
+          }
+          if (!paperAutomationActivityHasLoaded) {
+            loadPaperAutomationActivity();
+          }
         }
       }
 
@@ -1532,6 +1551,70 @@
             </details>
           `;
         }).join("");
+      }
+
+      function formatRunOutcome(value) {
+        return renderMaybe(value).replaceAll("_", " ");
+      }
+
+      function compactText(value, maxLength = 220) {
+        const text = renderMaybe(value, "").trim();
+        if (text.length <= maxLength) {
+          return text;
+        }
+        return `${text.slice(0, maxLength - 3)}...`;
+      }
+
+      function renderPaperAutomationActivity(activity) {
+        if (!paperAutomationActivityArea) {
+          return;
+        }
+
+        const runs = sortByTimestampDesc(Array.isArray(activity?.runs) ? activity.runs : [], "created_at");
+        const dataWarnings = Array.isArray(activity?.dataWarnings) ? activity.dataWarnings : [];
+        paperAutomationActivityHasLoaded = true;
+
+        if (runs.length === 0 && dataWarnings.length === 0) {
+          paperAutomationActivityArea.innerHTML = '<div class="empty-state">No saved automation runs yet. Once the Vercel cron or a manual cycle runs, it will appear here.</div>';
+          return;
+        }
+
+        paperAutomationActivityArea.innerHTML = `
+          ${dataWarnings.length > 0 ? `<div class="empty-state">${renderList(dataWarnings)}</div>` : ""}
+          ${runs.length === 0
+            ? ""
+            : `<div class="timeline-list">
+                ${runs.map((run) => {
+                  const raw = run.raw_result_json || {};
+                  const reconciliation = raw.reconciliation || {};
+                  const management = raw.management || {};
+                  const entry = raw.entry || {};
+                  const updates = Array.isArray(management.updates) ? management.updates : [];
+                  const exits = Array.isArray(management.exitsTriggered) ? management.exitsTriggered : [];
+                  const orderUpdates = Array.isArray(reconciliation.updates) ? reconciliation.updates : [];
+                  const summaryParts = [
+                    `orders checked ${renderMaybe(reconciliation.inspected, "0")}`,
+                    `managed ${renderMaybe(management.inspected, "0")}`,
+                    exits.length > 0 ? `exits ${exits.length}` : null,
+                    entry.attempted === true ? "entry scan attempted" : null,
+                  ].filter(Boolean);
+                  const details = [
+                    ...orderUpdates.slice(0, 3).map((item) => `${item.symbol}: ${item.fillStatus || "order check"} | filled ${renderMaybe(item.filledQuantity)} / ${renderMaybe(item.requestedQuantity)}`),
+                    ...updates.slice(0, 3).map((item) => `${item.symbol}: ${item.action}${item.note ? ` - ${item.note}` : ""}`),
+                    ...exits.slice(0, 3).map((item) => `${item.symbol}: exit ${item.reason || item.action || "triggered"}`),
+                  ];
+                  const reason = compactText(run.reason || entry.reason || raw.dryRunReason || "No run reason saved.");
+                  return `
+                    <details class="timeline-item">
+                      <summary>${escapeHtml(renderMaybe(run.created_at))} | ${escapeHtml(run.dry_run ? "Dry" : "Live SIM")} | ${escapeHtml(formatRunOutcome(run.outcome))}${run.symbol ? ` | ${escapeHtml(run.symbol)}` : ""}</summary>
+                      <div class="row"><strong>Cycle:</strong> ${escapeHtml(summaryParts.join(" | ") || "compact run saved")}</div>
+                      <div class="row"><strong>Reason:</strong> ${escapeHtml(reason)}</div>
+                      ${details.length > 0 ? `<div class="row"><strong>Activity:</strong>${renderList(details)}</div>` : ""}
+                    </details>
+                  `;
+                }).join("")}
+              </div>`}
+        `;
       }
 
       function renderEntryCandidateAudit(history, migrationMessage) {
@@ -2215,6 +2298,32 @@
         }
       }
 
+      async function loadPaperAutomationActivity() {
+        if (!paperAutomationActivityArea) {
+          return;
+        }
+
+        paperAutomationActivityArea.innerHTML = '<div class="muted">Loading automation activity...</div>';
+        if (refreshPaperAutomationActivityButton) {
+          refreshPaperAutomationActivityButton.disabled = true;
+        }
+
+        try {
+          const params = new URLSearchParams({
+            limit: "25",
+          });
+          const response = await fetch(`/api/paper-activity?${params.toString()}`);
+          const data = await readJsonResponse(response, "Failed to load automation activity.");
+          renderPaperAutomationActivity(data?.activity || null);
+        } catch (error) {
+          paperAutomationActivityArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Failed to load automation activity."))}</div>`;
+        } finally {
+          if (refreshPaperAutomationActivityButton) {
+            refreshPaperAutomationActivityButton.disabled = false;
+          }
+        }
+      }
+
       async function loadPaperTraderStatus() {
         if (!paperTraderArea) {
           return;
@@ -2252,6 +2361,7 @@
           });
           const data = await readJsonResponse(response, "Paper trader cycle failed.");
           renderPaperTraderRunResult(data);
+          await loadPaperAutomationActivity();
           await refreshJournalData();
         } catch (error) {
           paperTraderArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Paper trader cycle failed."))}</div>`;
@@ -2272,6 +2382,7 @@
           });
           const data = await readJsonResponse(response, "Paper trader order check failed.");
           renderPaperTraderRunResult(data);
+          await loadPaperAutomationActivity();
           await refreshJournalData();
         } catch (error) {
           paperTraderArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Paper trader order check failed."))}</div>`;
@@ -3448,6 +3559,7 @@
       });
       loadPaperTraderStatusButton?.addEventListener("click", loadPaperTraderStatus);
       refreshPaperDashboardButton?.addEventListener("click", loadPaperDashboard);
+      refreshPaperAutomationActivityButton?.addEventListener("click", loadPaperAutomationActivity);
       checkPaperTraderOrdersButton?.addEventListener("click", checkPaperTraderOrders);
       runPaperTraderDryButton?.addEventListener("click", () => {
         runPaperTraderCycle(true);

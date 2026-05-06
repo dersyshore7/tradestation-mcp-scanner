@@ -121,17 +121,22 @@ export async function recordPaperTraderRun(
 
 export async function listRecentPaperTraderRuns(
   limit = 50,
+  options: { includeRawResult?: boolean } = {},
 ): Promise<PaperTraderRunHistoryResult> {
   try {
     const runs = await supabaseSelect<PaperTraderRunRecord>({
       table: "paper_trader_runs",
-      select: "id,created_at,mode,dry_run,outcome,symbol,reason",
+      select: options.includeRawResult
+        ? "id,created_at,mode,dry_run,outcome,symbol,reason,raw_result_json"
+        : "id,created_at,mode,dry_run,outcome,symbol,reason",
       order: ["created_at.desc"],
       limit,
     });
 
     return {
-      runs: runs.map((run) => ({ ...run, raw_result_json: null })),
+      runs: options.includeRawResult
+        ? runs
+        : runs.map((run) => ({ ...run, raw_result_json: null })),
       migrationRequired: false,
       migrationMessage: null,
     };
