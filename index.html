@@ -1557,6 +1557,55 @@
         return renderMaybe(value).replaceAll("_", " ");
       }
 
+      function formatAutomationEntryOutcome(outcome, symbol) {
+        switch (outcome) {
+          case "entered_paper_trade":
+            return `New entry placed${symbol ? `: ${symbol}` : ""}`;
+          case "trade_card_blocked":
+            return `New entry blocked${symbol ? `: ${symbol}` : ""}`;
+          case "no_trade_today":
+            return "No new entry found";
+          case "outside_market_hours":
+            return "Outside market hours";
+          case "skipped_after_guard":
+            return "New entry skipped by guard";
+          case "zero_contract_trade":
+            return "New entry blocked by sizing";
+          case "preview_only":
+            return "Preview only";
+          case "monitor_only":
+            return "Monitor only";
+          default:
+            return formatRunOutcome(outcome);
+        }
+      }
+
+      function describeAutomationEntry(entry, fallbackReason) {
+        const outcome = entry?.outcome || null;
+        const symbol = entry?.symbol || null;
+        const reason = compactText(entry?.reason || fallbackReason || "No entry reason saved.");
+        switch (outcome) {
+          case "entered_paper_trade":
+            return `Placed a new paper entry${symbol ? ` for ${symbol}` : ""}. ${reason}`;
+          case "trade_card_blocked":
+            return `Scanner found ${symbol || "a candidate"}, but the final trade-card validation blocked the entry. No new order was sent. ${reason}`;
+          case "no_trade_today":
+            return `Scan ran, but no setup survived the filters strongly enough to enter. ${reason}`;
+          case "outside_market_hours":
+            return `No new entry was attempted because the cycle ran outside regular market hours. ${reason}`;
+          case "skipped_after_guard":
+            return `No new entry was attempted because an account/trade guard blocked fresh entries. ${reason}`;
+          case "zero_contract_trade":
+            return `No new entry was sent because sizing resolved to zero contracts. ${reason}`;
+          case "preview_only":
+            return `The cycle previewed a possible entry but did not send an order. ${reason}`;
+          case "monitor_only":
+            return `The cycle only monitored existing paper trades. ${reason}`;
+          default:
+            return reason;
+        }
+      }
+
       function compactText(value, maxLength = 220) {
         const text = renderMaybe(value, "").trim();
         if (text.length <= maxLength) {
@@ -1592,24 +1641,34 @@
                   const updates = Array.isArray(management.updates) ? management.updates : [];
                   const exits = Array.isArray(management.exitsTriggered) ? management.exitsTriggered : [];
                   const orderUpdates = Array.isArray(reconciliation.updates) ? reconciliation.updates : [];
-                  const summaryParts = [
-                    `orders checked ${renderMaybe(reconciliation.inspected, "0")}`,
-                    `managed ${renderMaybe(management.inspected, "0")}`,
-                    exits.length > 0 ? `exits ${exits.length}` : null,
-                    entry.attempted === true ? "entry scan attempted" : null,
-                  ].filter(Boolean);
-                  const details = [
-                    ...orderUpdates.slice(0, 3).map((item) => `${item.symbol}: ${item.fillStatus || "order check"} | filled ${renderMaybe(item.filledQuantity)} / ${renderMaybe(item.requestedQuantity)}`),
-                    ...updates.slice(0, 3).map((item) => `${item.symbol}: ${item.action}${item.note ? ` - ${item.note}` : ""}`),
-                    ...exits.slice(0, 3).map((item) => `${item.symbol}: exit ${item.reason || item.action || "triggered"}`),
-                  ];
-                  const reason = compactText(run.reason || entry.reason || raw.dryRunReason || "No run reason saved.");
+                  const entryOutcome = entry.outcome || run.outcome;
+                  const entryLabel = formatAutomationEntryOutcome(entryOutcome, entry.symbol || run.symbol);
+                  const existingTradeSummary = [
+                    `${renderMaybe(reconciliation.inspected, "0")} order check(s)`,
+                    `${renderMaybe(management.inspected, "0")} trade review(s)`,
+                    `${exits.length} exit trigger(s)`,
+                  ].join(" | ");
+                  const orderDetails = orderUpdates.slice(0, 5).map((item) =>
+                    `${item.symbol}: ${item.fillStatus || "order check"} | filled ${renderMaybe(item.filledQuantity)} / ${renderMaybe(item.requestedQuantity)}`,
+                  );
+                  const managementDetails = updates.slice(0, 5).map((item) =>
+                    `${item.symbol}: ${item.action}${item.note ? ` - ${item.note}` : ""}`,
+                  );
+                  const exitDetails = exits.slice(0, 5).map((item) =>
+                    `${item.symbol}: ${item.reason || item.action || "exit triggered"}`,
+                  );
+                  const entrySummary = describeAutomationEntry(entry, run.reason || raw.dryRunReason);
                   return `
                     <details class="timeline-item">
-                      <summary>${escapeHtml(renderMaybe(run.created_at))} | ${escapeHtml(run.dry_run ? "Dry" : "Live SIM")} | ${escapeHtml(formatRunOutcome(run.outcome))}${run.symbol ? ` | ${escapeHtml(run.symbol)}` : ""}</summary>
-                      <div class="row"><strong>Cycle:</strong> ${escapeHtml(summaryParts.join(" | ") || "compact run saved")}</div>
-                      <div class="row"><strong>Reason:</strong> ${escapeHtml(reason)}</div>
-                      ${details.length > 0 ? `<div class="row"><strong>Activity:</strong>${renderList(details)}</div>` : ""}
+                      <summary>${escapeHtml(renderMaybe(run.created_at))} | ${escapeHtml(run.dry_run ? "Dry" : "Live SIM")} | ${escapeHtml(entryLabel)}</summary>
+                      <div class="row"><strong>Existing trade management:</strong> ${escapeHtml(existingTradeSummary)}</div>
+                      <div class="row"><strong>New entry scan:</strong> ${escapeHtml(entrySummary)}</div>
+                      <div class="row"><strong>History note:</strong> These are actions from that cycle. A symbol shown here may no longer be open in TradeStation after an exit order fills.</div>
+                      <div class="phase-grid" style="margin-top: 12px;">
+                        ${renderTradePhaseCard("Order Checks", orderDetails.map((row) => escapeHtml(row)), [], "No existing orders were checked in this cycle.")}
+                        ${renderTradePhaseCard("Management", managementDetails.map((row) => escapeHtml(row)), [], "No existing paper trades were managed in this cycle.")}
+                        ${renderTradePhaseCard("Exit Triggers", exitDetails.map((row) => escapeHtml(row)), [], "No exits were triggered in this cycle.")}
+                      </div>
                     </details>
                   `;
                 }).join("")}
