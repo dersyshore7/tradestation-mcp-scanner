@@ -62,6 +62,7 @@ import {
 
 const MAX_ENTRY_POLICY_SCAN_ATTEMPTS = 3;
 const MAX_TRADESTATION_CONTRACTS_PER_ORDER = 2000;
+const RECENT_INVALID_ENTRY_COOLDOWN_MS = 30 * 60 * 1000;
 
 type PaperTraderRunOptions = {
   prompt?: string;
@@ -785,6 +786,36 @@ async function loadPaperEntryCandidateHistory(): Promise<{
         error,
       ),
     };
+  }
+}
+
+function isRecentInvalidGeometryCandidate(candidate: PaperEntryCandidateRecord, now = new Date()): boolean {
+  if (!candidate.symbol || candidate.decision !== "trade_card_blocked") {
+    return false;
+  }
+
+  const createdAt = new Date(candidate.created_at);
+  if (Number.isNaN(createdAt.getTime())) {
+    return false;
+  }
+
+  if (now.getTime() - createdAt.getTime() > RECENT_INVALID_ENTRY_COOLDOWN_MS) {
+    return false;
+  }
+
+  return (candidate.decision_reason ?? "").toLowerCase().includes("geometry is invalid");
+}
+
+async function loadRecentlyInvalidEntrySymbols(): Promise<string[]> {
+  try {
+    const result = await listRecentPaperEntryCandidates(25);
+    const symbols = result.candidates
+      .filter((candidate) => isRecentInvalidGeometryCandidate(candidate))
+      .map((candidate) => candidate.symbol)
+      .filter((symbol): symbol is string => typeof symbol === "string" && symbol.length > 0);
+    return Array.from(new Set(symbols));
+  } catch {
+    return [];
   }
 }
 
@@ -2196,8 +2227,11 @@ async function maybeEnterNewPaperTrade(params: {
   const scanRunId = buildScanRunId();
   const entryRewardModel = trainEntryRewardModel(allTrades);
   const openSymbols = openPaperTrades.map((trade) => trade.symbol);
-  const policySkippedSymbols: string[] = [];
-  const policySkipReasons: string[] = [];
+  const recentlyInvalidSymbols = await loadRecentlyInvalidEntrySymbols();
+  const policySkippedSymbols: string[] = [...recentlyInvalidSymbols];
+  const policySkipReasons: string[] = recentlyInvalidSymbols.map((symbol) =>
+    `${symbol}: recently blocked by invalid trade geometry; waiting for price/levels to change before retrying`,
+  );
   const evaluatedCandidates: PaperTraderEntryCandidateEvaluation[] = [];
   let selectedScan: Awaited<ReturnType<typeof runScan>> | null = null;
   let selectedTradeCard: TradeConstructionResult | null = null;
@@ -2219,7 +2253,7 @@ async function maybeEnterNewPaperTrade(params: {
       || !scan.confidence
     ) {
       const skippedNote = policySkipReasons.length > 0
-        ? ` Entry reward policy skipped earlier candidate(s): ${policySkipReasons.join(" ")}`
+        ? ` Earlier candidate(s) were rejected before this no-trade result: ${policySkipReasons.join(" ")}`
         : "";
       return {
         attempted: true,
@@ -2248,6 +2282,30 @@ async function maybeEnterNewPaperTrade(params: {
         tradeCard,
         entryTimestamp: new Date(),
       });
+      const geometryError = validateEntryGeometry(tradeCard);
+      if (geometryError) {
+        policySkippedSymbols.push(scan.ticker);
+        policySkipReasons.push(`${scan.ticker}: ${geometryError}`);
+        evaluatedCandidates.push({
+          symbol: scan.ticker,
+          decision: "trade_card_blocked",
+          reason: geometryError,
+          entryPolicy: null,
+          features: entryFeatures,
+        });
+        await recordEntryCandidateAudit({
+          scanRunId,
+          dryRun,
+          symbol: scan.ticker,
+          decision: "trade_card_blocked",
+          decisionReason: geometryError,
+          features: entryFeatures,
+          entryPolicy: null,
+          scan,
+          tradeCard,
+        });
+        continue;
+      }
       const entryPolicy = recommendEntryPolicy(
         entryRewardModel,
         entryFeatures,
@@ -2293,6 +2351,15 @@ async function maybeEnterNewPaperTrade(params: {
       break;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Trade construction failed.";
+      policySkippedSymbols.push(scan.ticker);
+      policySkipReasons.push(`${scan.ticker}: ${message}`);
+      evaluatedCandidates.push({
+        symbol: scan.ticker,
+        decision: "trade_card_blocked",
+        reason: message,
+        entryPolicy: null,
+        features: null,
+      });
       await recordEntryCandidateAudit({
         scanRunId,
         dryRun,
@@ -2301,23 +2368,16 @@ async function maybeEnterNewPaperTrade(params: {
         decisionReason: message,
         scan,
       });
-      return {
-        attempted: true,
-        outcome: "trade_card_blocked",
-        symbol: scan.ticker,
-        reason: message,
-        reasoning: buildEntryReasoning(scan, null),
-        evaluatedCandidates,
-      };
+      continue;
     }
   }
 
   if (!selectedScan || !selectedTradeCard || !selectedEntryReasoning || !selectedEntryPolicy || !selectedEntryFeatures) {
     return {
       attempted: true,
-      outcome: "trade_card_blocked",
+      outcome: "no_trade_today",
       symbol: policySkippedSymbols.at(-1) ?? null,
-      reason: `Entry reward policy blocked ${policySkippedSymbols.length} candidate(s) after ${MAX_ENTRY_POLICY_SCAN_ATTEMPTS} scan attempt(s): ${policySkipReasons.join(" ")}`,
+      reason: `No eligible entry survived after rejecting ${policySkippedSymbols.length} candidate(s) across ${MAX_ENTRY_POLICY_SCAN_ATTEMPTS} scan attempt(s): ${policySkipReasons.join(" ")}`,
       evaluatedCandidates,
     };
   }

@@ -1478,11 +1478,14 @@
       function renderTradePhaseCard(title, rows, decisions, emptyDecisionMessage) {
         const rowHtml = rows.filter(Boolean).map((row) => `<div class="row">${row}</div>`).join("");
         const hasDecisions = Array.isArray(decisions) && decisions.length > 0;
+        const decisionHtml = hasDecisions || rowHtml.length === 0
+          ? renderDecisionRecords(decisions, emptyDecisionMessage)
+          : "";
         return `
           <details class="trade-phase-card">
             <summary>${escapeHtml(title)}</summary>
             ${rowHtml || (hasDecisions ? "" : `<div class="muted">No phase summary saved yet.</div>`)}
-            ${renderDecisionRecords(decisions, emptyDecisionMessage)}
+            ${decisionHtml}
           </details>
         `;
       }
