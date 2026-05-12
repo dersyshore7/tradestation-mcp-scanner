@@ -77,6 +77,89 @@ function numericOrNull(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function compactFinalRanking(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value
+      .map((item) => asRecord(item))
+      .filter((item): item is Record<string, unknown> => item !== null)
+      .slice(0, 8)
+      .map((item) => ({
+        symbol: item.symbol,
+        direction: item.direction,
+        score: item.score,
+        selected: item.selected,
+        confirmedFinalSelection: item.confirmedFinalSelection,
+        scoreInputs: item.scoreInputs,
+      }))
+    : [];
+}
+
+function compactScanSnapshot(scan: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  if (!scan) {
+    return null;
+  }
+
+  const telemetry = asRecord(scan.telemetry);
+  return {
+    ticker: scan.ticker ?? null,
+    direction: scan.direction ?? null,
+    confidence: scan.confidence ?? null,
+    conclusion: scan.conclusion ?? null,
+    reason: scan.reason ?? null,
+    telemetry: telemetry
+      ? {
+          finalSelectedSymbol: telemetry.finalSelectedSymbol ?? null,
+          topRankedSymbol: telemetry.topRankedSymbol ?? null,
+          winningTier: telemetry.winningTier ?? null,
+          finalSelectionSourceTier: telemetry.finalSelectionSourceTier ?? null,
+          finalOutcomeSource: telemetry.finalOutcomeSource ?? null,
+          scannedTiers: telemetry.scannedTiers ?? null,
+          finalRankingDebug: compactFinalRanking(telemetry.finalRankingDebug),
+        }
+      : null,
+  };
+}
+
+function compactTradeCardSnapshot(tradeCard: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  if (!tradeCard) {
+    return null;
+  }
+
+  const automation = asRecord(tradeCard.automationMetadata);
+  return {
+    ticker: tradeCard.ticker ?? null,
+    direction: tradeCard.direction ?? null,
+    confidence: tradeCard.confidence ?? null,
+    buy: tradeCard.buy ?? null,
+    rrMath: tradeCard.rrMath ?? null,
+    rationale: tradeCard.rationale ?? null,
+    expectedTiming: tradeCard.expectedTiming ?? null,
+    invalidationExit: tradeCard.invalidationExit ?? null,
+    takeProfitExit: tradeCard.takeProfitExit ?? null,
+    timeExit: tradeCard.timeExit ?? null,
+    plannedJournalFields: tradeCard.plannedJournalFields ?? null,
+    automationMetadata: automation
+      ? {
+          optionSymbol: automation.optionSymbol ?? null,
+          contracts: automation.contracts ?? null,
+          optionLimitPrice: automation.optionLimitPrice ?? null,
+          expirationDate: automation.expirationDate ?? null,
+          dteAtEntry: automation.dteAtEntry ?? null,
+          underlyingEntryPrice: automation.underlyingEntryPrice ?? null,
+          intendedStopUnderlying: automation.intendedStopUnderlying ?? null,
+          intendedTargetUnderlying: automation.intendedTargetUnderlying ?? null,
+          timeExitDate: automation.timeExitDate ?? null,
+        }
+      : null,
+  };
+}
+
 export async function recordPaperEntryCandidate(
   input: PaperEntryCandidateCreateInput,
 ): Promise<PaperEntryCandidateRecord | null> {
@@ -117,8 +200,8 @@ export async function recordPaperEntryCandidate(
         entry_policy_matched_key: input.entryPolicy?.matchedKey ?? null,
         entry_policy_summary: input.entryPolicy?.summary ?? null,
         feature_json: featureSnapshot ?? {},
-        scan_json: null,
-        trade_card_json: null,
+        scan_json: compactScanSnapshot(input.scan),
+        trade_card_json: compactTradeCardSnapshot(input.tradeCard),
       },
     });
   } catch (error) {

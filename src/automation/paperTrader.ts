@@ -208,6 +208,29 @@ type ExitDecision = {
   note: string;
 };
 
+type EntryPolicyEffectivenessBucket = {
+  policyDecision: string;
+  evaluatedCandidates: number;
+  enteredCandidates: number;
+  closedTrades: number;
+  policyBlockedCandidates: number;
+  averageRealizedR: number | null;
+  winRate: number | null;
+  averagePolicyPriorR: number | null;
+  averageActualMinusPolicyR: number | null;
+};
+
+type EntryPolicyEffectivenessSummary = {
+  evaluatedCandidates: number;
+  candidatesWithPolicy: number;
+  enteredCandidates: number;
+  closedCandidates: number;
+  policyBlockedCandidates: number;
+  shadowTrackedCandidates: number;
+  buckets: EntryPolicyEffectivenessBucket[];
+  summary: string;
+};
+
 export type PaperTraderStatus = {
   enabled: boolean;
   allowOrderPlacement: boolean;
@@ -250,6 +273,7 @@ export type PaperTraderStatus = {
     readyForPolicyPrior: boolean;
     entryFeatureCoverage: ReturnType<typeof trainEntryRewardModel>["featureCoverage"];
     entryPolicySummary: string | null;
+    entryPolicyEffectiveness: EntryPolicyEffectivenessSummary;
   };
   recentDecisionLog: PaperTraderDecisionLogEntry[];
   paperTradeHistory: PaperTraderTradeHistoryItem[];
@@ -796,13 +820,13 @@ async function loadPaperTraderRunHistory(): Promise<{
   }
 }
 
-async function loadPaperEntryCandidateHistory(): Promise<{
+async function loadPaperEntryCandidateHistory(limit = 50): Promise<{
   entryCandidateHistory: PaperEntryCandidateRecord[];
   entryCandidateHistoryMigrationRequired: boolean;
   entryCandidateHistoryMigrationMessage: string | null;
 }> {
   try {
-    const result = await listRecentPaperEntryCandidates(50);
+    const result = await listRecentPaperEntryCandidates(limit);
     return {
       entryCandidateHistory: result.candidates,
       entryCandidateHistoryMigrationRequired: result.migrationRequired,
@@ -818,6 +842,105 @@ async function loadPaperEntryCandidateHistory(): Promise<{
       ),
     };
   }
+}
+
+function average(values: number[]): number | null {
+  if (values.length === 0) {
+    return null;
+  }
+  return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(3));
+}
+
+function buildEntryPolicyEffectivenessSummary(
+  trades: JournalTradeDetail[],
+  candidates: PaperEntryCandidateRecord[],
+): EntryPolicyEffectivenessSummary {
+  const tradeById = new Map(trades.map((trade) => [trade.id, trade]));
+  const candidatesWithPolicy = candidates.filter((candidate) => candidate.entry_policy_decision);
+  const buckets = new Map<string, {
+    candidates: PaperEntryCandidateRecord[];
+    realizedR: number[];
+    policyPriorR: number[];
+  }>();
+
+  for (const candidate of candidatesWithPolicy) {
+    const policyDecision = candidate.entry_policy_decision ?? "unknown";
+    const bucket = buckets.get(policyDecision) ?? {
+      candidates: [],
+      realizedR: [],
+      policyPriorR: [],
+    };
+    bucket.candidates.push(candidate);
+
+    const priorR = readNumber(candidate.entry_policy_average_reward_r);
+    if (priorR !== null) {
+      bucket.policyPriorR.push(priorR);
+    }
+
+    const linkedTrade = candidate.paper_trade_id
+      ? tradeById.get(candidate.paper_trade_id)
+      : null;
+    const realizedR = readNumber(linkedTrade?.review?.realized_r_multiple ?? null);
+    if (
+      linkedTrade?.account_mode === "paper"
+      && linkedTrade.status === "closed"
+      && realizedR !== null
+    ) {
+      bucket.realizedR.push(realizedR);
+    }
+
+    buckets.set(policyDecision, bucket);
+  }
+
+  const bucketSummaries = Array.from(buckets.entries())
+    .map(([policyDecision, bucket]) => {
+      const enteredCandidates = bucket.candidates.filter((candidate) => candidate.paper_trade_id).length;
+      const policyPriorAverage = average(bucket.policyPriorR);
+      const realizedAverage = average(bucket.realizedR);
+      return {
+        policyDecision,
+        evaluatedCandidates: bucket.candidates.length,
+        enteredCandidates,
+        closedTrades: bucket.realizedR.length,
+        policyBlockedCandidates: bucket.candidates.filter((candidate) => candidate.decision === "policy_blocked").length,
+        averageRealizedR: realizedAverage,
+        winRate: bucket.realizedR.length > 0
+          ? Number((bucket.realizedR.filter((value) => value > 0).length / bucket.realizedR.length).toFixed(3))
+          : null,
+        averagePolicyPriorR: policyPriorAverage,
+        averageActualMinusPolicyR:
+          realizedAverage !== null && policyPriorAverage !== null
+            ? Number((realizedAverage - policyPriorAverage).toFixed(3))
+            : null,
+      };
+    })
+    .sort((left, right) => {
+      if (right.closedTrades !== left.closedTrades) {
+        return right.closedTrades - left.closedTrades;
+      }
+      return right.evaluatedCandidates - left.evaluatedCandidates;
+    });
+
+  const enteredCandidates = candidatesWithPolicy.filter((candidate) => candidate.paper_trade_id).length;
+  const closedCandidates = bucketSummaries.reduce((sum, bucket) => sum + bucket.closedTrades, 0);
+  const policyBlockedCandidates = candidatesWithPolicy.filter((candidate) => candidate.decision === "policy_blocked").length;
+  const shadowTrackedCandidates = candidates.filter((candidate) => !candidate.paper_trade_id).length;
+  const bestClosedBucket = bucketSummaries
+    .filter((bucket) => bucket.closedTrades > 0 && bucket.averageRealizedR !== null)
+    .sort((left, right) => (right.averageRealizedR ?? -Infinity) - (left.averageRealizedR ?? -Infinity))[0] ?? null;
+
+  return {
+    evaluatedCandidates: candidates.length,
+    candidatesWithPolicy: candidatesWithPolicy.length,
+    enteredCandidates,
+    closedCandidates,
+    policyBlockedCandidates,
+    shadowTrackedCandidates,
+    buckets: bucketSummaries,
+    summary: bestClosedBucket
+      ? `Policy audit: ${candidatesWithPolicy.length} policy-scored candidate(s), ${closedCandidates} closed linked outcome(s), ${policyBlockedCandidates} policy block(s). Best observed policy bucket so far: ${bestClosedBucket.policyDecision} at ${bestClosedBucket.averageRealizedR?.toFixed(2)}R avg over ${bestClosedBucket.closedTrades}.`
+      : `Policy audit: ${candidatesWithPolicy.length} policy-scored candidate(s), ${policyBlockedCandidates} policy block(s), ${shadowTrackedCandidates} shadow/audit candidate(s). Closed linked outcomes are still sparse.`,
+  };
 }
 
 function isOptionPositionSymbol(symbol: string): boolean {
@@ -1528,8 +1651,12 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
   const policyModel = trainPolicyModel(trades);
   const entryRewardModel = trainEntryRewardModel(trades);
   const runHistory = await loadPaperTraderRunHistory();
-  const entryCandidateHistory = await loadPaperEntryCandidateHistory();
+  const entryCandidateHistory = await loadPaperEntryCandidateHistory(200);
   const sizing = await loadPaperTraderSizingSnapshot(config);
+  const entryPolicyEffectiveness = buildEntryPolicyEffectivenessSummary(
+    trades,
+    entryCandidateHistory.entryCandidateHistory,
+  );
 
   return {
     enabled: config.enabled,
@@ -1556,6 +1683,7 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
       readyForPolicyPrior: entryRewardModel.experienceCount >= 3,
       entryFeatureCoverage: entryRewardModel.featureCoverage,
       entryPolicySummary: summarizeEntryRewardModel(entryRewardModel),
+      entryPolicyEffectiveness,
     },
     recentDecisionLog: collectRecentDecisionLog(trades),
     paperTradeHistory: buildPaperTradeHistory(trades),
