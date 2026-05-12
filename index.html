@@ -1644,18 +1644,25 @@
                   const updates = Array.isArray(management.updates) ? management.updates : [];
                   const exits = Array.isArray(management.exitsTriggered) ? management.exitsTriggered : [];
                   const orderUpdates = Array.isArray(reconciliation.updates) ? reconciliation.updates : [];
+                  const orderSkipped = Array.isArray(reconciliation.skipped) ? reconciliation.skipped : [];
+                  const managementSkipped = Array.isArray(management.skipped) ? management.skipped : [];
                   const entryOutcome = entry.outcome || run.outcome;
                   const entryLabel = formatAutomationEntryOutcome(entryOutcome, entry.symbol || run.symbol);
                   const existingTradeSummary = [
-                    `${renderMaybe(reconciliation.inspected, "0")} order check(s)`,
-                    `${renderMaybe(management.inspected, "0")} trade review(s)`,
+                    `${orderUpdates.length} order check(s)`,
+                    `${updates.length} live trade review(s)`,
                     `${exits.length} exit trigger(s)`,
+                    `${orderSkipped.length + managementSkipped.length} skipped/stale row(s)`,
                   ].join(" | ");
                   const orderDetails = orderUpdates.slice(0, 5).map((item) =>
                     `${item.symbol}: ${item.fillStatus || "order check"} | filled ${renderMaybe(item.filledQuantity)} / ${renderMaybe(item.requestedQuantity)}`,
+                  ).concat(
+                    orderSkipped.slice(0, 5).map((item) => `${item.symbol}: ${item.reason}`),
                   );
                   const managementDetails = updates.slice(0, 5).map((item) =>
                     `${item.symbol}: ${item.action}${item.note ? ` - ${item.note}` : ""}`,
+                  ).concat(
+                    managementSkipped.slice(0, 5).map((item) => `${item.symbol}: ${item.reason}`),
                   );
                   const exitDetails = exits.slice(0, 5).map((item) =>
                     `${item.symbol}: ${item.reason || item.action || "exit triggered"}`,
@@ -1950,6 +1957,27 @@
         const openSimCost = asNumber(simAccount?.openPositionCostUsd);
         const openSimMarketValue = asNumber(simAccount?.openPositionMarketValueUsd);
         const openJournalTrades = asNumber(totals.open_trades);
+        const simPositionUnderlyings = new Set(
+          (Array.isArray(simAccount?.positions) ? simAccount.positions : [])
+            .map((position) => String(position?.symbol || "").trim().split(/\s+/)[0]?.toUpperCase())
+            .filter(Boolean),
+        );
+        const journalOpenUnderlyings = new Set(
+          (Array.isArray(insights.by_symbol) ? insights.by_symbol : [])
+            .filter((bucket) => (asNumber(bucket.open_trade_count) ?? 0) > 0)
+            .map((bucket) => String(bucket.label || bucket.key || "").toUpperCase())
+            .filter(Boolean),
+        );
+        const liveNotJournaled = [...simPositionUnderlyings].filter((symbol) => !journalOpenUnderlyings.has(symbol));
+        const journalNotLive = [...journalOpenUnderlyings].filter((symbol) => !simPositionUnderlyings.has(symbol));
+        const syncWarnings = [
+          liveNotJournaled.length > 0
+            ? `Live SIM position(s) without an open journal row: ${liveNotJournaled.join(", ")}.`
+            : null,
+          journalNotLive.length > 0
+            ? `Open journal row(s) not currently present in SIM positions: ${journalNotLive.join(", ")}.`
+            : null,
+        ].filter(Boolean);
 
         paperDashboardArea.innerHTML = `
           ${simAccount?.error
@@ -2033,6 +2061,9 @@
           <div class="empty-state" style="margin-top: 16px;">
             Open SIM positions, unrealized P/L, and net worth come from read-only TradeStation account data. Realized results and learning analytics come from Supabase journal history, so they can be temporarily unavailable if Supabase times out.
           </div>
+          ${syncWarnings.length > 0
+            ? `<div class="empty-state" style="margin-top: 12px;"><strong>Position sync warning:</strong>${renderList(syncWarnings)}</div>`
+            : ""}
 
           <div class="section-grid" style="margin-top: 16px;">
             ${renderOpenSimPositions(simAccount?.positions)}

@@ -6,7 +6,7 @@ import {
   type RiskRewardTier,
 } from "./chartAnchoredTradability.js";
 import {
-  buildDirectOptionSymbols,
+  buildOptionSymbol,
   fetchFirstUsableDirectOptionQuote,
   pickTargetExpiration,
   readExpirations,
@@ -557,20 +557,35 @@ async function buildTradeInputs(
       throw new Error(diagnostics.failureReason);
     }
 
-    const selectedStrike = strikeContracts.sort((a, b) => Math.abs(a.strike - underlyingPrice) - Math.abs(b.strike - underlyingPrice))[0];
+    const nearbyStrikes = [...strikeContracts]
+      .sort((a, b) => Math.abs(a.strike - underlyingPrice) - Math.abs(b.strike - underlyingPrice))
+      .slice(0, 3);
+    const selectedStrike = nearbyStrikes[0];
     if (!selectedStrike) {
       throw new Error(`No ATM-adjacent strike found for ${symbol} on ${targetExpiration.date}.`);
     }
 
     diagnostics.chosenStrike = selectedStrike.strike;
 
-    const symbolsToTry = buildDirectOptionSymbols(symbol, targetExpiration.date, selectedStrike);
-    diagnostics.attemptedOptionSymbols = symbolsToTry;
-
-    const preferredTypePattern = direction === "bullish" ? /\s\d{6}C/i : /\s\d{6}P/i;
-    const preferredSymbols = symbolsToTry.filter((candidateSymbol) => preferredTypePattern.test(candidateSymbol));
-    const fallbackSymbols = symbolsToTry.filter((candidateSymbol) => !preferredSymbols.includes(candidateSymbol));
-    const orderedSymbolsToTry = [...preferredSymbols, ...fallbackSymbols];
+    const optionType = direction === "bullish" ? "C" : "P";
+    const orderedOptionContracts = nearbyStrikes
+      .flatMap((strike) => {
+        const officialSymbol = optionType === "C" ? strike.callSymbol : strike.putSymbol;
+        return [
+          officialSymbol,
+          buildOptionSymbol(symbol, targetExpiration.date, optionType, strike.strike),
+        ]
+          .filter((candidateSymbol, index, symbols): candidateSymbol is string =>
+            typeof candidateSymbol === "string" &&
+            candidateSymbol.trim().length > 0 &&
+            symbols.indexOf(candidateSymbol) === index,
+          )
+          .map((optionSymbol) => ({ optionSymbol, strike }));
+      })
+      .filter((contract, index, contracts) =>
+        contracts.findIndex((item) => item.optionSymbol === contract.optionSymbol) === index,
+      );
+    const orderedSymbolsToTry = orderedOptionContracts.map((contract) => contract.optionSymbol);
     diagnostics.attemptedOptionSymbols = orderedSymbolsToTry;
 
     const { quote: optionQuote, attempts } = await fetchFirstUsableDirectOptionQuote(get, orderedSymbolsToTry);
@@ -583,6 +598,11 @@ async function buildTradeInputs(
     }
 
     diagnostics.chosenOptionSymbol = optionQuote.optionSymbol;
+    const selectedOptionContract =
+      orderedOptionContracts.find((contract) => contract.optionSymbol === optionQuote.optionSymbol) ??
+      orderedOptionContracts[0];
+    const tradeStrike = selectedOptionContract?.strike ?? selectedStrike;
+    diagnostics.chosenStrike = tradeStrike.strike;
     const optionSymbol = optionQuote.optionSymbol;
     const optionMid = optionQuote.mid;
 
@@ -654,7 +674,7 @@ async function buildTradeInputs(
     const tradeInputs: TradeInputs = {
       underlyingPrice,
       finalizedTradeGeometry,
-      strike: selectedStrike.strike,
+      strike: tradeStrike.strike,
       expirationDate: targetExpiration.date,
       dte: targetExpiration.dte,
       optionSymbol,

@@ -1,9 +1,6 @@
 import { buildWorkflowPresentationSummary } from "../app/resultPresentation.js";
 import { MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO } from "../app/chartAnchoredTradability.js";
-import {
-  extractFinalizedTradeGeometryFromTelemetry,
-  runScan,
-} from "../app/runScan.js";
+import { runScan, type ScanLearningPreference } from "../app/runScan.js";
 import {
   constructTradeCard,
   type TradeConstructionResult,
@@ -36,6 +33,8 @@ import {
   recommendEntryPolicy,
   summarizeEntryRewardModel,
   trainEntryRewardModel,
+  type EntryRewardBucketSummary,
+  type EntryRewardModel,
   type EntryPolicyRecommendation,
   type EntryRewardFeatureInput,
 } from "./entryRewardModel.js";
@@ -66,6 +65,7 @@ const MAX_TRADESTATION_CONTRACTS_PER_ORDER = 2000;
 // Paper entries are daily/weekly continuation trades, not penny-distance scalps.
 const MIN_AUTOMATED_ENTRY_TARGET_ROOM_PCT = 0.0075;
 const MIN_AUTOMATED_ENTRY_RISK_ROOM_PCT = 0.0025;
+const MIN_PAPER_LEARNING_SELECTION_SAMPLE = 3;
 
 type PaperTraderRunOptions = {
   prompt?: string;
@@ -471,6 +471,151 @@ function validateEntryGeometry(tradeCard: TradeConstructionResult): string | nul
   }
 
   return null;
+}
+
+function parseEntryRewardContextKey(key: string): Record<string, string> {
+  const parsed: Record<string, string> = {};
+  for (const part of key.split("|")) {
+    const separatorIndex = part.indexOf("=");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+
+    const name = part.slice(0, separatorIndex);
+    const value = part.slice(separatorIndex + 1);
+    if (value.length > 0) {
+      parsed[name] = value;
+    }
+  }
+  return parsed;
+}
+
+function scannerDirectionFromRewardDirection(
+  direction: string | undefined,
+): ScanLearningPreference["direction"] | null {
+  if (direction === "CALL") {
+    return "bullish";
+  }
+  if (direction === "PUT") {
+    return "bearish";
+  }
+  return null;
+}
+
+function summarizeEntryRewardBuckets(
+  model: EntryRewardModel,
+): EntryRewardBucketSummary[] {
+  return Object.entries(model.buckets)
+    .filter(([, aggregate]) => aggregate.count > 0)
+    .map(([key, aggregate]) => ({
+      key,
+      count: aggregate.count,
+      averageRewardR: Number(
+        (aggregate.totalRewardR / aggregate.count).toFixed(3),
+      ),
+      winRate: Number((aggregate.positiveCount / aggregate.count).toFixed(3)),
+      symbols: aggregate.symbols.slice(-6),
+    }));
+}
+
+function buildPaperLearningPreference(
+  context: EntryRewardBucketSummary,
+  decision: ScanLearningPreference["decision"],
+): ScanLearningPreference | null {
+  const parts = parseEntryRewardContextKey(context.key);
+  const direction = scannerDirectionFromRewardDirection(parts.direction);
+  const setupType = parts.setup;
+  const dteBucket = parts.dte;
+  const rewardRiskBucket = parts.rr;
+  const chartScoreBucket = parts.chart;
+  if (!direction || !setupType || !dteBucket || !rewardRiskBucket || !chartScoreBucket) {
+    return null;
+  }
+  if (
+    dteBucket === "unknown"
+    || rewardRiskBucket === "unknown"
+    || chartScoreBucket === "unknown"
+  ) {
+    return null;
+  }
+
+  const preference: ScanLearningPreference = {
+    direction,
+    setupType,
+    dteBucket,
+    rewardRiskBucket,
+    chartScoreBucket,
+    decision,
+    reason: `${decision === "avoid" ? "Weak" : "Rewarded"} paper setup context ${context.key}: avg ${context.averageRewardR.toFixed(2)}R over ${context.count} trade(s).`,
+    sampleSize: context.count,
+    averageRewardR: context.averageRewardR,
+  };
+
+  if (parts.volume && parts.volume !== "unknown") {
+    preference.volumeBucket = parts.volume;
+  }
+  if (parts.spread && parts.spread !== "unknown") {
+    preference.optionSpreadBucket = parts.spread;
+  }
+  if (parts.tier && parts.tier !== "unknown") {
+    preference.scanTierBucket = parts.tier;
+  }
+  if (parts.regime && parts.regime !== "unknown") {
+    preference.marketRegimeBucket = parts.regime;
+  }
+
+  return preference;
+}
+
+function buildPaperLearningPreferences(
+  model: EntryRewardModel,
+): ScanLearningPreference[] {
+  const contexts = summarizeEntryRewardBuckets(model);
+  const avoided = contexts
+    .filter((context) =>
+      context.count >= MIN_PAPER_LEARNING_SELECTION_SAMPLE
+      && context.averageRewardR <= -0.75
+      && context.winRate <= 0.34
+    )
+    .sort((left, right) => left.averageRewardR - right.averageRewardR);
+  const preferred = contexts
+    .filter((context) =>
+      context.count >= MIN_PAPER_LEARNING_SELECTION_SAMPLE
+      && context.averageRewardR >= 0.75
+      && context.winRate >= 0.5
+    )
+    .sort((left, right) => right.averageRewardR - left.averageRewardR);
+  const preferences = [...avoided, ...preferred]
+    .map((context) =>
+      buildPaperLearningPreference(
+        context,
+        context.averageRewardR < 0 ? "avoid" : "prefer",
+      )
+    )
+    .filter((preference): preference is ScanLearningPreference =>
+      preference !== null
+    );
+  const seen = new Set<string>();
+
+  return preferences.filter((preference) => {
+    const key = [
+      preference.direction,
+      preference.setupType,
+      preference.dteBucket,
+      preference.rewardRiskBucket,
+      preference.chartScoreBucket,
+      preference.volumeBucket ?? "",
+      preference.optionSpreadBucket ?? "",
+      preference.scanTierBucket ?? "",
+      preference.marketRegimeBucket ?? "",
+      preference.decision,
+    ].join("|");
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function formatChicagoParts(date = new Date()): ChicagoClockParts {
@@ -1207,19 +1352,37 @@ function extractOptionsBuyingPower(payload: unknown): number | null {
   ]);
 }
 
+function extractEntryBuyingPower(payload: unknown): number | null {
+  const candidates = [
+    findFirstNumberByKeys(payload, ["DayTradeExcess", "DayTradeBuyingPower"]),
+    findFirstNumberByKeys(payload, ["OvernightBuyingPower"]),
+    extractOptionsBuyingPower(payload),
+    findFirstNumberByKeys(payload, ["BuyingPower"]),
+  ].filter((value): value is number => value !== null && value >= 0);
+
+  return candidates.length > 0 ? Math.min(...candidates) : null;
+}
+
 function computePositionCap(params: {
   requestedContracts: number;
   limitPrice: number;
   accountValueUsd: number;
+  entryBuyingPowerUsd: number | null;
   maxPositionPct: number;
 }): {
   cappedContracts: number;
   cappedPositionCostUsd: number;
   maxPositionCostUsd: number;
+  effectiveMaxPositionCostUsd: number;
+  entryBuyingPowerUsd: number | null;
   positionPct: number | null;
 } {
   const maxPositionCostUsd = params.accountValueUsd * params.maxPositionPct;
-  const maxContractsByCap = Math.floor(maxPositionCostUsd / (params.limitPrice * 100));
+  const effectiveMaxPositionCostUsd =
+    params.entryBuyingPowerUsd !== null
+      ? Math.min(maxPositionCostUsd, params.entryBuyingPowerUsd)
+      : maxPositionCostUsd;
+  const maxContractsByCap = Math.floor(effectiveMaxPositionCostUsd / (params.limitPrice * 100));
   const cappedContracts = Math.max(
     0,
     Math.min(params.requestedContracts, maxContractsByCap, MAX_TRADESTATION_CONTRACTS_PER_ORDER),
@@ -1230,6 +1393,11 @@ function computePositionCap(params: {
     cappedContracts,
     cappedPositionCostUsd,
     maxPositionCostUsd: Number(maxPositionCostUsd.toFixed(2)),
+    effectiveMaxPositionCostUsd: Number(effectiveMaxPositionCostUsd.toFixed(2)),
+    entryBuyingPowerUsd:
+      params.entryBuyingPowerUsd !== null
+        ? Number(params.entryBuyingPowerUsd.toFixed(2))
+        : null,
     positionPct:
       params.accountValueUsd > 0
         ? Number((cappedPositionCostUsd / params.accountValueUsd).toFixed(4))
@@ -1903,6 +2071,8 @@ async function manageOpenPaperTrades(
   const updates: PaperTraderRunResult["management"]["updates"] = [];
   const exitsTriggered: PaperTraderRunResult["management"]["exitsTriggered"] = [];
   const skipped: PaperTraderRunResult["management"]["skipped"] = [];
+  const positionPayloads = new Map<string, unknown>();
+  let inspected = 0;
 
   for (const trade of openPaperTrades) {
     const automation = readAutomationSnapshot(trade);
@@ -1915,6 +2085,33 @@ async function manageOpenPaperTrades(
       continue;
     }
 
+    let accountPositions: unknown;
+    try {
+      accountPositions = positionPayloads.get(automation.accountId);
+      if (!accountPositions) {
+        accountPositions = await client.getPositions(automation.accountId);
+        positionPayloads.set(automation.accountId, accountPositions);
+      }
+    } catch (error) {
+      skipped.push({
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        reason: `Could not verify live TradeStation SIM position before management: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      continue;
+    }
+
+    const livePosition = findPositionSnapshot(accountPositions, automation.optionSymbol);
+    if (!livePosition || Math.abs(livePosition.quantity ?? 0) <= 0) {
+      skipped.push({
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        reason: `No live TradeStation SIM position found for ${automation.optionSymbol}; skipped AI management for this stale journal row.`,
+      });
+      continue;
+    }
+
+    inspected += 1;
     let decisionLog = readDecisionLog(automation);
     let currentSnapshotUpdates: Record<string, unknown> = {};
     const [underlyingQuote, optionQuote] = await Promise.all([
@@ -2331,7 +2528,7 @@ async function manageOpenPaperTrades(
   }
 
   return {
-    inspected: openPaperTrades.length,
+    inspected,
     updates,
     exitsTriggered,
     skipped,
@@ -2355,6 +2552,7 @@ async function maybeEnterNewPaperTrade(params: {
 
   const scanRunId = buildScanRunId();
   const entryRewardModel = trainEntryRewardModel(allTrades);
+  const paperLearningPreferences = buildPaperLearningPreferences(entryRewardModel);
   const openSymbols = openPaperTrades.map((trade) => trade.symbol);
   const policySkippedSymbols: string[] = [];
   const policySkipReasons: string[] = [];
@@ -2370,6 +2568,7 @@ async function maybeEnterNewPaperTrade(params: {
       prompt,
       excludedTickers: [...openSymbols, ...policySkippedSymbols],
       tradestationBaseUrlOverride: config.automationBaseUrl,
+      paperLearningPreferences,
     });
 
     if (
@@ -2392,15 +2591,10 @@ async function maybeEnterNewPaperTrade(params: {
     }
 
     try {
-      const finalizedTradeGeometry = extractFinalizedTradeGeometryFromTelemetry(
-        scan.telemetry,
-        scan.ticker,
-      );
       const tradeCard = await constructTradeCard({
         prompt: `build trade ${scan.ticker}`,
         confirmedDirection: scan.direction,
         confirmedConfidence: scan.confidence,
-        ...(finalizedTradeGeometry ? { finalizedTradeGeometry } : {}),
         tradestationBaseUrlOverride: config.automationBaseUrl,
       });
       const entryFeatures = buildEntryRewardFeatureInput({
@@ -2571,8 +2765,11 @@ async function maybeEnterNewPaperTrade(params: {
       tradeAction: automation.entryTradeAction,
     });
     let accountValueUsd: number | null = null;
+    let entryBuyingPowerUsd: number | null = null;
     try {
-      accountValueUsd = extractAccountValue(await client.getBalances(config.accountId as string));
+      const balancesPayload = await client.getBalances(config.accountId as string);
+      accountValueUsd = extractAccountValue(balancesPayload);
+      entryBuyingPowerUsd = extractEntryBuyingPower(balancesPayload);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const reason = `Could not enforce the ${(config.maxPositionPct * 100).toFixed(0)}% account-value cap from TradeStation balances, so the paper trader skipped the entry. ${message}`;
@@ -2625,10 +2822,17 @@ async function maybeEnterNewPaperTrade(params: {
       requestedContracts: automation.contracts,
       limitPrice: entryLimitPrice,
       accountValueUsd,
+      entryBuyingPowerUsd,
       maxPositionPct: config.maxPositionPct,
     });
     if (positionCap.cappedContracts < 1) {
-      const reason = `The ${(config.maxPositionPct * 100).toFixed(0)}% account-value cap allows ${positionCap.maxPositionCostUsd.toFixed(2)} of buying power, which is below one ${automation.optionSymbol} contract at ${entryLimitPrice.toFixed(2)}.`;
+      const capParts = [
+        `${(config.maxPositionPct * 100).toFixed(0)}% account-value cap allows $${positionCap.maxPositionCostUsd.toFixed(2)}`,
+        positionCap.entryBuyingPowerUsd !== null
+          ? `available SIM buying power allows $${positionCap.entryBuyingPowerUsd.toFixed(2)}`
+          : null,
+      ].filter(Boolean);
+      const reason = `${capParts.join(" and ")}, which is below one ${automation.optionSymbol} contract at ${entryLimitPrice.toFixed(2)}.`;
       await recordEntryCandidateAudit({
         scanRunId,
         dryRun,
@@ -2665,7 +2869,12 @@ async function maybeEnterNewPaperTrade(params: {
         ? `TradeStation's ${MAX_TRADESTATION_CONTRACTS_PER_ORDER}-contract per-order cap`
         : null,
       cappedContracts < automation.contracts && cappedContracts < MAX_TRADESTATION_CONTRACTS_PER_ORDER
+        && positionCap.effectiveMaxPositionCostUsd >= positionCap.maxPositionCostUsd
         ? `${(config.maxPositionPct * 100).toFixed(0)}% account-value cap`
+        : null,
+      cappedContracts < automation.contracts && positionCap.entryBuyingPowerUsd !== null
+        && positionCap.entryBuyingPowerUsd <= positionCap.maxPositionCostUsd
+        ? "available SIM buying power"
         : null,
     ].filter(Boolean);
     const capNote = cappedContracts < automation.contracts

@@ -28,6 +28,23 @@ export type ScanInput = {
   prompt: string;
   excludedTickers?: string[];
   tradestationBaseUrlOverride?: string;
+  paperLearningPreferences?: ScanLearningPreference[];
+};
+
+export type ScanLearningPreference = {
+  direction: ScanDirection;
+  setupType: string;
+  dteBucket: string;
+  rewardRiskBucket: string;
+  chartScoreBucket: string;
+  volumeBucket?: string;
+  optionSpreadBucket?: string;
+  scanTierBucket?: string;
+  marketRegimeBucket?: string;
+  decision: "prefer" | "avoid";
+  reason: string;
+  sampleSize: number;
+  averageRewardR: number;
 };
 
 export type ScanResult = {
@@ -1125,6 +1142,258 @@ function buildFinalistReviewSource(
     confirmationEligibleFinalists,
     finalists,
     debug,
+    warnings,
+  };
+}
+
+function bucketLearningDte(dte: number | null | undefined): string {
+  if (dte === null || dte === undefined || !Number.isFinite(dte)) {
+    return "unknown";
+  }
+  if (dte <= 7) {
+    return "0_7";
+  }
+  if (dte <= 21) {
+    return "8_21";
+  }
+  if (dte <= 45) {
+    return "22_45";
+  }
+  return "46_plus";
+}
+
+function bucketLearningRewardRisk(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "unknown";
+  }
+  if (value < 1) {
+    return "lt_1r";
+  }
+  if (value < 1.5) {
+    return "1_1_5r";
+  }
+  if (value < 2) {
+    return "1_5_2r";
+  }
+  return "2r_plus";
+}
+
+function bucketLearningChartScore(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "unknown";
+  }
+  if (value < 7) {
+    return "weak";
+  }
+  if (value < 8.5) {
+    return "solid";
+  }
+  return "strong";
+}
+
+function bucketLearningVolume(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "unknown";
+  }
+  if (value < 0.8) {
+    return "thin";
+  }
+  if (value < 1.2) {
+    return "normal";
+  }
+  if (value < 1.8) {
+    return "expanded";
+  }
+  return "very_expanded";
+}
+
+function bucketLearningOptionSpread(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "unknown";
+  }
+  if (value <= 0.08) {
+    return "tight";
+  }
+  if (value <= 0.15) {
+    return "normal";
+  }
+  if (value <= 0.3) {
+    return "wide";
+  }
+  return "very_wide";
+}
+
+function bucketLearningText(value: string | null | undefined): string {
+  const normalized = value?.trim().toLowerCase();
+  return normalized && normalized.length > 0
+    ? normalized.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")
+    : "unknown";
+}
+
+function derivePaperLearningMarketRegime(
+  candidates: (ChartCandidate & { score: number })[],
+): string {
+  if (candidates.length === 0) {
+    return "unknown";
+  }
+
+  const bullishCount = candidates.filter(
+    (candidate) => candidate.chartDirection === "bullish",
+  ).length;
+  const bullishShare = bullishCount / candidates.length;
+  if (bullishShare >= 0.67) {
+    return "scanner_risk_on";
+  }
+  if (bullishShare <= 0.33) {
+    return "scanner_risk_off";
+  }
+  return "scanner_mixed";
+}
+
+function getPaperLearningSetupType(candidate: ChartCandidate): string {
+  return candidate.chartDirection === "bullish"
+    ? "bullish_continuation"
+    : "bearish_continuation";
+}
+
+function matchPaperLearningPreference(
+  candidate: ChartCandidate & { score: number },
+  stage2BySymbol: Map<string, OptionsCandidate>,
+  scanTierBucket: string,
+  marketRegimeBucket: string,
+  preferences: ScanLearningPreference[],
+): ScanLearningPreference | null {
+  if (preferences.length === 0) {
+    return null;
+  }
+
+  const stage2Candidate = stage2BySymbol.get(candidate.symbol);
+  const dteBucket = bucketLearningDte(
+    stage2Candidate?.targetDte ?? candidate.targetDte,
+  );
+  const rewardRiskBucket = bucketLearningRewardRisk(
+    candidate.chartDiagnostics.chartAnchoredAsymmetry.actualRewardRiskRatio,
+  );
+  const chartScoreBucket = bucketLearningChartScore(candidate.chartReviewScore);
+  const volumeBucket = bucketLearningVolume(candidate.volumeRatio);
+  const optionSpreadBucket = bucketLearningOptionSpread(
+    stage2Candidate?.optionSpread ?? candidate.optionSpread,
+  );
+  const setupType = getPaperLearningSetupType(candidate);
+  const matches = preferences.filter((preference) =>
+    preference.direction === candidate.chartDirection
+    && preference.setupType === setupType
+    && preference.dteBucket === dteBucket
+    && preference.rewardRiskBucket === rewardRiskBucket
+    && preference.chartScoreBucket === chartScoreBucket
+    && (!preference.volumeBucket || preference.volumeBucket === volumeBucket)
+    && (!preference.optionSpreadBucket || preference.optionSpreadBucket === optionSpreadBucket)
+    && (!preference.scanTierBucket || preference.scanTierBucket === scanTierBucket)
+    && (!preference.marketRegimeBucket || preference.marketRegimeBucket === marketRegimeBucket)
+  );
+  const avoided = matches
+    .filter((preference) => preference.decision === "avoid")
+    .sort((left, right) => {
+      const rewardDelta = left.averageRewardR - right.averageRewardR;
+      return rewardDelta !== 0 ? rewardDelta : right.sampleSize - left.sampleSize;
+    });
+  if (avoided[0]) {
+    return avoided[0];
+  }
+
+  return matches
+    .filter((preference) => preference.decision === "prefer")
+    .sort((left, right) => {
+      const rewardDelta = right.averageRewardR - left.averageRewardR;
+      return rewardDelta !== 0 ? rewardDelta : right.sampleSize - left.sampleSize;
+    })[0] ?? null;
+}
+
+function applyPaperLearningSelection(params: {
+  finalists: (ChartCandidate & { score: number })[];
+  ranked: (ChartCandidate & { score: number })[];
+  stage2BySymbol: Map<string, OptionsCandidate>;
+  tierKey: ScanUniverseTierKey;
+  preferences: ScanLearningPreference[];
+}): {
+  finalists: (ChartCandidate & { score: number })[];
+  warnings: string[];
+} {
+  const { finalists, ranked, stage2BySymbol, tierKey, preferences } = params;
+  if (finalists.length === 0 || preferences.length === 0) {
+    return { finalists, warnings: [] };
+  }
+
+  const scanTierBucket = bucketLearningText(tierKey);
+  const marketRegimeBucket = bucketLearningText(
+    derivePaperLearningMarketRegime(ranked),
+  );
+  const decorated = finalists.map((candidate, index) => ({
+    candidate,
+    index,
+    preference: matchPaperLearningPreference(
+      candidate,
+      stage2BySymbol,
+      scanTierBucket,
+      marketRegimeBucket,
+      preferences,
+    ),
+  }));
+  const avoided = decorated.filter(
+    (item) => item.preference?.decision === "avoid",
+  );
+  const preferred = decorated.filter(
+    (item) => item.preference?.decision === "prefer",
+  );
+  const kept = decorated
+    .filter((item) => item.preference?.decision !== "avoid")
+    .sort((left, right) => {
+      const leftPreference = left.preference;
+      const rightPreference = right.preference;
+      const leftBoost = leftPreference?.decision === "prefer" ? 1 : 0;
+      const rightBoost = rightPreference?.decision === "prefer" ? 1 : 0;
+      if (leftBoost !== rightBoost) {
+        return rightBoost - leftBoost;
+      }
+
+      const rewardDelta =
+        (rightPreference?.averageRewardR ?? 0)
+        - (leftPreference?.averageRewardR ?? 0);
+      if (rewardDelta !== 0) {
+        return rewardDelta;
+      }
+
+      const sampleDelta =
+        (rightPreference?.sampleSize ?? 0)
+        - (leftPreference?.sampleSize ?? 0);
+      return sampleDelta !== 0 ? sampleDelta : left.index - right.index;
+    });
+
+  const warnings: string[] = [];
+  if (preferred.length > 0) {
+    warnings.push(
+      `Paper learning promoted ${preferred
+        .slice(0, 5)
+        .map((item) => `${item.candidate.symbol} (${item.preference?.averageRewardR.toFixed(2)}R)`)
+        .join(", ")} from rewarded setup history.`,
+    );
+  }
+  if (avoided.length > 0) {
+    warnings.push(
+      `Paper learning avoided ${avoided
+        .slice(0, 5)
+        .map((item) => `${item.candidate.symbol} (${item.preference?.averageRewardR.toFixed(2)}R)`)
+        .join(", ")} from weak setup history.`,
+    );
+  }
+  if (kept.length === 0) {
+    warnings.push(
+      "Paper learning avoided every confirmation-eligible finalist; automated paper trader will stand down for this scan.",
+    );
+  }
+
+  return {
+    finalists: kept.map((item) => item.candidate),
     warnings,
   };
 }
@@ -4822,7 +5091,6 @@ async function resolveStage1MarketData(
     "AverageVolume",
     "AverageDailyVolume",
     "AvgVolume",
-    "Volume",
   ]);
 
   let fallbackBars: Record<string, unknown>[] = [];
@@ -5256,11 +5524,28 @@ async function runUniverseTierTradeStationScan(
   );
   logFinalRankingDebugSection(finalRankingDebug);
 
-  const finalistReviewSource = buildFinalistReviewSource(
+  let finalistReviewSource = buildFinalistReviewSource(
     ranked,
     stage2Passed.map((candidate) => candidate.symbol),
     stage3Passed.map((candidate) => candidate.symbol),
   );
+  const paperLearningSelection = applyPaperLearningSelection({
+    finalists: finalistReviewSource.finalists,
+    ranked,
+    stage2BySymbol,
+    tierKey: tier.key,
+    preferences: input.paperLearningPreferences ?? [],
+  });
+  if (paperLearningSelection.warnings.length > 0) {
+    finalistReviewSource = {
+      ...finalistReviewSource,
+      finalists: paperLearningSelection.finalists,
+      warnings: [
+        ...finalistReviewSource.warnings,
+        ...paperLearningSelection.warnings,
+      ],
+    };
+  }
   const finalists = finalistReviewSource.finalists;
   logGeneralScanDebug(
     `${tier.label} continuation-eligible finalists`,

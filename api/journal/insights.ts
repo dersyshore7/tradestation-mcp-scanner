@@ -50,7 +50,10 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
     const includeSimAccount = parseBooleanQuery(req.query?.includeSimAccount);
     const limit = parseLimitQuery(req.query?.limit, includeReasoning ? 75 : 500);
     const accountMode = parseAccountModeQuery(req.query?.accountMode);
-    const insights = await getJournalInsights(limit, { includeReasoning, accountMode });
+    const insights = await getJournalInsights(limit, {
+      includeReasoning,
+      ...(accountMode ? { accountMode } : {}),
+    });
     const simAccount = includeSimAccount
       ? isPaperTraderAuthorized(req as RequestWithHeaders)
         ? await getPaperTraderSizingSnapshot()
