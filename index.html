@@ -3027,6 +3027,12 @@
         const stage3Failures = Array.isArray(health.stage3BarLoadFailures)
           ? health.stage3BarLoadFailures
           : [];
+        const stage2Failures = Array.isArray(health.stage2RequestFailures)
+          ? health.stage2RequestFailures
+          : [];
+        const stage2FailureRows = stage2Failures.slice(0, 8).map((item) =>
+          `${item.symbol}: ${item.endpoint} HTTP ${item.status}${item.requestTarget ? ` (${item.requestTarget})` : ""}`
+        );
         const stage3FailureRows = stage3Failures.map((item) => {
           const views = Array.isArray(item.failedViews)
             ? item.failedViews.map((view) => `${view.view}: ${view.loadIssue || `bars=${view.barCount}`}${view.status === null ? "" : `, HTTP ${view.status}`}, attempts=${view.attempts}`).join(" | ")
@@ -3038,6 +3044,7 @@
           <div class="summary-section data-health-warning">
             <h3>${health.severe ? "Market data issue likely" : "Market data degraded"}</h3>
             <div class="row">${escapeHtml(renderMaybe(health.summary))}</div>
+            ${stage2FailureRows.length > 0 ? renderList(stage2FailureRows) : ""}
             ${stage3FailureRows.length > 0 ? renderList(stage3FailureRows) : ""}
           </div>
         `;

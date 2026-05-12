@@ -115,6 +115,9 @@ type Stage2SymbolDiagnostic = {
   underlyingPrice: number | null;
   underlyingPriceFallback: string | null;
   expirationsFound: boolean;
+  expirationsStatus: number | null;
+  strikesRequestTarget: string | null;
+  strikesStatus: number | null;
   rawStrikeCount: number | null;
   normalizedStrikeCount: number | null;
   selectedExpiration: string | null;
@@ -304,12 +307,20 @@ type Stage3BarLoadFailure = {
   }[];
 };
 
+type Stage2RequestFailure = {
+  symbol: string;
+  endpoint: "underlying_quote" | "expirations" | "strikes" | "option_quote";
+  status: number;
+  requestTarget: string | null;
+};
+
 type MarketDataHealth = {
   degraded: boolean;
   severe: boolean;
   summary: string;
   stage1QuoteFailureRate: number;
   stage1PassRate: number;
+  stage2RequestFailures: Stage2RequestFailure[];
   stage3BarLoadFailures: Stage3BarLoadFailure[];
 };
 
@@ -776,12 +787,67 @@ function getStage3BarLoadFailures(
   });
 }
 
+function isDegradedHttpStatus(status: number | null | undefined): status is number {
+  return status === 429 || (typeof status === "number" && status >= 500);
+}
+
+function getStage2RequestFailures(
+  diagnostics: Stage2SymbolDiagnostic[],
+): Stage2RequestFailure[] {
+  return diagnostics.flatMap((diagnostic) => {
+    const failures: Stage2RequestFailure[] = [];
+
+    if (isDegradedHttpStatus(diagnostic.underlyingQuoteStatus)) {
+      failures.push({
+        symbol: diagnostic.symbol,
+        endpoint: "underlying_quote",
+        status: diagnostic.underlyingQuoteStatus,
+        requestTarget: diagnostic.underlyingQuoteRequestTarget,
+      });
+    }
+
+    if (isDegradedHttpStatus(diagnostic.expirationsStatus)) {
+      failures.push({
+        symbol: diagnostic.symbol,
+        endpoint: "expirations",
+        status: diagnostic.expirationsStatus,
+        requestTarget: `/marketdata/options/expirations/${encodeURIComponent(diagnostic.symbol)}`,
+      });
+    }
+
+    if (isDegradedHttpStatus(diagnostic.strikesStatus)) {
+      failures.push({
+        symbol: diagnostic.symbol,
+        endpoint: "strikes",
+        status: diagnostic.strikesStatus,
+        requestTarget: diagnostic.strikesRequestTarget,
+      });
+    }
+
+    for (const attempt of diagnostic.optionQuoteAttempts) {
+      if (!isDegradedHttpStatus(attempt.status)) {
+        continue;
+      }
+
+      failures.push({
+        symbol: diagnostic.symbol,
+        endpoint: "option_quote",
+        status: attempt.status,
+        requestTarget: attempt.requestTarget,
+      });
+    }
+
+    return failures;
+  });
+}
+
 function buildMarketDataHealth(params: {
   stage1EnteredCount: number;
   stage1PassedCount: number;
   stage1QuoteAttempts: number;
   stage1QuoteFailures: number;
   symbolsRecoveredByFallback: number;
+  stage2RequestFailures: Stage2RequestFailure[];
   stage3EvaluationsCount: number;
   stage3BarLoadFailures: Stage3BarLoadFailure[];
 }): MarketDataHealth {
@@ -791,6 +857,7 @@ function buildMarketDataHealth(params: {
     stage1QuoteAttempts,
     stage1QuoteFailures,
     symbolsRecoveredByFallback,
+    stage2RequestFailures,
     stage3EvaluationsCount,
     stage3BarLoadFailures,
   } = params;
@@ -800,18 +867,36 @@ function buildMarketDataHealth(params: {
     stage1EnteredCount > 0 ? stage1PassedCount / stage1EnteredCount : 1;
   const quoteCoverageDegraded =
     stage1QuoteAttempts >= 10 &&
-    stage1QuoteFailureRate >= 0.75 &&
+    stage1QuoteFailureRate >= 0.5 &&
     stage1PassRate < 0.5;
+  const stage2RequestDegraded = stage2RequestFailures.length > 0;
   const stage3LoadBlocked =
     stage3EvaluationsCount > 0 &&
     stage3BarLoadFailures.length === stage3EvaluationsCount;
-  const degraded = quoteCoverageDegraded || stage3BarLoadFailures.length > 0;
-  const severe = quoteCoverageDegraded || stage3LoadBlocked;
+  const degraded =
+    quoteCoverageDegraded ||
+    stage2RequestDegraded ||
+    stage3BarLoadFailures.length > 0;
+  const severe =
+    quoteCoverageDegraded ||
+    stage2RequestFailures.some((item) => item.status === 429) ||
+    stage3LoadBlocked;
   const summaryParts: string[] = [];
 
   if (quoteCoverageDegraded) {
     summaryParts.push(
       `Stage 1 quote coverage was degraded: ${stage1QuoteFailures}/${stage1QuoteAttempts} quote requests failed (${formatPercent(stage1QuoteFailureRate)}), with ${symbolsRecoveredByFallback} symbols recovered from fallback bars.`,
+    );
+  }
+
+  if (stage2RequestFailures.length > 0) {
+    const rateLimited = stage2RequestFailures.filter((item) => item.status === 429);
+    const sample = stage2RequestFailures
+      .slice(0, 5)
+      .map((item) => `${item.symbol} ${item.endpoint} HTTP ${item.status}`)
+      .join(", ");
+    summaryParts.push(
+      `Stage 2 option-data requests were degraded: ${stage2RequestFailures.length} transient request failures${rateLimited.length > 0 ? `, including ${rateLimited.length} rate-limit responses` : ""}${sample ? ` (${sample})` : ""}.`,
     );
   }
 
@@ -831,6 +916,7 @@ function buildMarketDataHealth(params: {
         : "Market data coverage looked usable for this scan.",
     stage1QuoteFailureRate,
     stage1PassRate,
+    stage2RequestFailures,
     stage3BarLoadFailures,
   };
 }
@@ -839,6 +925,7 @@ function buildStarterUniverseTelemetry(params: {
   stage1Entered: string[];
   stage1Passed: Stage1Candidate[];
   stage2Passed: OptionsCandidate[];
+  stage2Diagnostics: Stage2SymbolDiagnostic[];
   stage3Evaluations: Stage3Evaluation[];
   ranked: (ChartCandidate & { score: number })[];
   finalRankingDebug: FinalRankingEntry[];
@@ -862,6 +949,7 @@ function buildStarterUniverseTelemetry(params: {
     stage1Entered,
     stage1Passed,
     stage2Passed,
+    stage2Diagnostics,
     stage3Evaluations,
     ranked,
     finalRankingDebug,
@@ -1037,12 +1125,14 @@ function buildStarterUniverseTelemetry(params: {
     finalRanking: ranked.map((candidate) => candidate.symbol),
   };
   const stage3BarLoadFailures = getStage3BarLoadFailures(stage3Evaluations);
+  const stage2RequestFailures = getStage2RequestFailures(stage2Diagnostics);
   const dataHealth = buildMarketDataHealth({
     stage1EnteredCount: stage1Entered.length,
     stage1PassedCount: stage1Passed.length,
     stage1QuoteAttempts,
     stage1QuoteFailures,
     symbolsRecoveredByFallback,
+    stage2RequestFailures,
     stage3EvaluationsCount: stage3Evaluations.length,
     stage3BarLoadFailures,
   });
@@ -2079,6 +2169,24 @@ function selectBestReviewedFinalistsAcrossTiers(
     .slice(0, 5);
 }
 
+function selectMostInformativeNoTradeExecution(
+  executions: TierScanExecution[],
+): TierScanExecution | null {
+  return (
+    executions.find((item) => item.telemetry.stageCounts.finalRanking > 0) ??
+    executions.find((item) => item.telemetry.stageCounts.stage3Passed > 0) ??
+    executions.find((item) => item.telemetry.dataHealth.degraded) ??
+    executions.at(-1) ??
+    null
+  );
+}
+
+function formatMarketDataHealthSuffix(telemetry: StarterUniverseTelemetry): string {
+  return telemetry.dataHealth.degraded
+    ? ` Market data was degraded during the scan: ${telemetry.dataHealth.summary}`
+    : "";
+}
+
 function buildCrossTierNoTradeSummary(executions: TierScanExecution[]): {
   finalNoTradeExplanation: string;
   reviewedFinalistOutcomes: ReviewedFinalistOutcome[];
@@ -2102,10 +2210,18 @@ function buildCrossTierNoTradeSummary(executions: TierScanExecution[]): {
   const tierLabels = executions.map((item) => item.tier.label).join(", ");
 
   if (reviewedFinalistOutcomes.length === 0) {
+    const mostInformativeExecution =
+      selectMostInformativeNoTradeExecution(executions);
     const finalTierReason =
-      executions.at(-1)?.result.reason ?? "no_trade_today";
+      mostInformativeExecution?.result.reason ?? "no_trade_today";
+    const tierContext = mostInformativeExecution
+      ? ` Most relevant tier: ${mostInformativeExecution.tier.label}.`
+      : "";
+    const dataHealthSuffix = mostInformativeExecution
+      ? formatMarketDataHealthSuffix(mostInformativeExecution.telemetry)
+      : "";
     return {
-      finalNoTradeExplanation: `No confirmed setup survived across scanned tiers (${tierLabels}). ${finalTierReason}`,
+      finalNoTradeExplanation: `No confirmed setup survived across scanned tiers (${tierLabels}). ${finalTierReason}${tierContext}${dataHealthSuffix}`,
       reviewedFinalistOutcomes,
       bestReviewedFinalistsAcrossTiers: [],
       bestRejectedCandidates: [],
@@ -5001,6 +5117,9 @@ async function runStage2OptionsTradability(
       underlyingPrice: null,
       underlyingPriceFallback: null,
       expirationsFound: false,
+      expirationsStatus: null,
+      strikesRequestTarget: null,
+      strikesStatus: null,
       rawStrikeCount: null,
       normalizedStrikeCount: null,
       selectedExpiration: null,
@@ -5081,6 +5200,7 @@ async function runStage2OptionsTradability(
     const expirationsResponse = await get(
       `/marketdata/options/expirations/${encodeURIComponent(candidate.symbol)}`,
     );
+    diagnostic.expirationsStatus = expirationsResponse.status;
     if (!expirationsResponse.ok) {
       diagnostic.reason = `Expirations request failed (${expirationsResponse.status}).`;
       diagnostics.push(diagnostic);
@@ -5114,7 +5234,9 @@ async function runStage2OptionsTradability(
     diagnostic.selectedExpirationApiValue = targetExpiration.apiValue;
 
     const strikesPath = `/marketdata/options/strikes/${encodeURIComponent(candidate.symbol)}?expiration=${encodeURIComponent(targetExpiration.apiValue)}`;
+    diagnostic.strikesRequestTarget = strikesPath;
     const strikesResponse = await get(strikesPath);
+    diagnostic.strikesStatus = strikesResponse.status;
     if (!strikesResponse.ok) {
       diagnostic.reason = `Strikes request failed (${strikesResponse.status}).`;
       diagnostics.push(diagnostic);
@@ -5473,12 +5595,16 @@ function combineTelemetry(
   const stage3BarLoadFailures = executions.flatMap(
     (item) => item.telemetry.dataHealth.stage3BarLoadFailures,
   );
+  const stage2RequestFailures = executions.flatMap(
+    (item) => item.telemetry.dataHealth.stage2RequestFailures,
+  );
   const dataHealth = buildMarketDataHealth({
     stage1EnteredCount: stageCounts.stage1Entered,
     stage1PassedCount: stageCounts.stage1Passed,
     stage1QuoteAttempts,
     stage1QuoteFailures,
     symbolsRecoveredByFallback,
+    stage2RequestFailures,
     stage3EvaluationsCount: stageCounts.stage2Passed,
     stage3BarLoadFailures,
   });
@@ -5641,6 +5767,7 @@ async function runUniverseTierTradeStationScan(
 
   const buildScanTelemetry = (params: {
     stage2Passed?: OptionsCandidate[];
+    stage2Diagnostics?: Stage2SymbolDiagnostic[];
     stage3Evaluations?: Stage3Evaluation[];
     ranked?: (ChartCandidate & { score: number })[];
     finalRankingDebug?: FinalRankingEntry[];
@@ -5650,6 +5777,7 @@ async function runUniverseTierTradeStationScan(
     finalNoTradeExplanation?: string | null;
   }): StarterUniverseTelemetry => {
     const stage2Passed = params.stage2Passed ?? [];
+    const stage2Diagnostics = params.stage2Diagnostics ?? [];
     const stage3Evaluations = params.stage3Evaluations ?? [];
     const ranked = params.ranked ?? [];
     const finalRankingDebug = params.finalRankingDebug ?? [];
@@ -5661,6 +5789,7 @@ async function runUniverseTierTradeStationScan(
       stage1Entered,
       stage1Passed,
       stage2Passed,
+      stage2Diagnostics,
       stage3Evaluations,
       ranked,
       finalRankingDebug,
@@ -5737,6 +5866,7 @@ async function runUniverseTierTradeStationScan(
       reason: `No symbols passed Stage 2 options tradability filters in ${tier.label}.`,
       telemetry: buildScanTelemetry({
         stage2Passed,
+        stage2Diagnostics,
         finalNoTradeExplanation: `No symbols passed Stage 2 options tradability filters in ${tier.label}.`,
       }),
     };
@@ -5768,6 +5898,7 @@ async function runUniverseTierTradeStationScan(
       reason: `No symbols passed Stage 3 chart/bar review in ${tier.label}.`,
       telemetry: buildScanTelemetry({
         stage2Passed,
+        stage2Diagnostics,
         stage3Evaluations,
         finalNoTradeExplanation: `No symbols passed Stage 3 chart/bar review in ${tier.label}.`,
       }),
@@ -5837,6 +5968,7 @@ async function runUniverseTierTradeStationScan(
       reason,
       telemetry: buildScanTelemetry({
         stage2Passed,
+        stage2Diagnostics,
         stage3Evaluations,
         ranked,
         finalRankingDebug,
@@ -6319,6 +6451,7 @@ async function runUniverseTierTradeStationScan(
       logFinalistReviewDebugSection(finalistReviewResults, reviewResult.ticker);
       const telemetry = buildScanTelemetry({
         stage2Passed,
+        stage2Diagnostics,
         stage3Evaluations,
         ranked,
         finalRankingDebug,
@@ -6355,6 +6488,7 @@ async function runUniverseTierTradeStationScan(
   }
   const telemetry = buildScanTelemetry({
     stage2Passed,
+    stage2Diagnostics,
     stage3Evaluations,
     ranked,
     finalRankingDebug,
@@ -6404,6 +6538,10 @@ async function runStarterUniverseTradeStationScan(
         ...result,
         telemetry: combinedTelemetry,
       };
+    }
+
+    if (telemetry.dataHealth.degraded) {
+      break;
     }
   }
 

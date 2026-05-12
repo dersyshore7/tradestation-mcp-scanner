@@ -6,6 +6,8 @@ const TRADESTATION_BASE_URL_ENV_NAME = "TRADESTATION_BASE_URL";
 const TRADESTATION_AUTH_STATE_ENV_NAME = "TRADESTATION_AUTH_STATE";
 const DEFAULT_TRADESTATION_BASE_URL = "https://api.tradestation.com/v3";
 const TRADESTATION_SIGNIN_BASE_URL = "https://signin.tradestation.com";
+const TRADESTATION_GET_RETRY_ATTEMPTS = 3;
+const TRADESTATION_GET_RETRY_DELAY_MS = 1_500;
 
 type TradeStationTokenResponse = {
   access_token?: string;
@@ -156,10 +158,48 @@ export async function createTradeStationGetFetcher(baseUrlOverride?: string): Pr
     baseUrlOverride ? { baseUrl: baseUrlOverride } : undefined,
   );
 
+  const delay = (ms: number): Promise<void> =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+  const readRetryAfterMs = (response: Response): number | null => {
+    const raw = response.headers.get("retry-after");
+    if (!raw) {
+      return null;
+    }
+
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return seconds * 1000;
+    }
+
+    const dateMs = Date.parse(raw);
+    if (!Number.isNaN(dateMs)) {
+      return Math.max(0, dateMs - Date.now());
+    }
+
+    return null;
+  };
+  const shouldRetry = (response: Response): boolean =>
+    response.status === 429 || response.status >= 500;
+
   return async (path: string, init?: RequestInit) => {
-    return request(path, {
-      ...init,
-      method: "GET",
-    });
+    let response: Response | null = null;
+
+    for (let attempt = 1; attempt <= TRADESTATION_GET_RETRY_ATTEMPTS; attempt += 1) {
+      response = await request(path, {
+        ...init,
+        method: "GET",
+      });
+
+      if (!shouldRetry(response) || attempt === TRADESTATION_GET_RETRY_ATTEMPTS) {
+        return response;
+      }
+
+      await delay(
+        readRetryAfterMs(response) ??
+        TRADESTATION_GET_RETRY_DELAY_MS * attempt,
+      );
+    }
+
+    return response as Response;
   };
 }
