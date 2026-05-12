@@ -145,7 +145,19 @@ function readPresentationSummary(signalSnapshot: Record<string, unknown> | null)
   return asRecord(signalSnapshot?.presentationSummary);
 }
 
-function readStoredEntryFeatures(signalSnapshot: Record<string, unknown> | null): EntryRewardFeatureInput | null {
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function readKnownBucket(value: unknown): string | null {
+  const bucket = readString(value);
+  return bucket && bucket !== "unknown" ? bucket : null;
+}
+
+function readStoredEntryFeatureRecord(signalSnapshot: Record<string, unknown> | null): {
+  raw: Record<string, unknown>;
+  buckets: Record<string, unknown> | null;
+} | null {
   const direct = asRecord(signalSnapshot?.entryFeatures);
   const automation = asRecord(signalSnapshot?.automation);
   const paperTrader = asRecord(automation?.paperTrader);
@@ -154,8 +166,20 @@ function readStoredEntryFeatures(signalSnapshot: Record<string, unknown> | null)
     return null;
   }
 
-  const direction = stored.direction;
-  const setupType = stored.setupType;
+  return {
+    raw: asRecord(stored.raw) ?? stored,
+    buckets: asRecord(stored.buckets),
+  };
+}
+
+function readStoredEntryFeatures(signalSnapshot: Record<string, unknown> | null): EntryRewardFeatureInput | null {
+  const stored = readStoredEntryFeatureRecord(signalSnapshot);
+  if (!stored) {
+    return null;
+  }
+
+  const direction = stored.raw.direction;
+  const setupType = stored.raw.setupType;
   if ((direction !== "CALL" && direction !== "PUT") || typeof setupType !== "string") {
     return null;
   }
@@ -163,16 +187,20 @@ function readStoredEntryFeatures(signalSnapshot: Record<string, unknown> | null)
   return {
     direction,
     setupType,
-    confidenceBucket: typeof stored.confidenceBucket === "string" ? stored.confidenceBucket : null,
-    dteAtEntry: asFiniteNumber(stored.dteAtEntry),
-    plannedRewardRisk: asFiniteNumber(stored.plannedRewardRisk),
-    chartReviewScore: asFiniteNumber(stored.chartReviewScore),
-    volumeRatio: asFiniteNumber(stored.volumeRatio),
-    optionSpread: asFiniteNumber(stored.optionSpread),
-    marketRegime: typeof stored.marketRegime === "string" ? stored.marketRegime : null,
-    scanTier: typeof stored.scanTier === "string" ? stored.scanTier : null,
-    entryDay: typeof stored.entryDay === "string" ? stored.entryDay : null,
-    entryTime: typeof stored.entryTime === "string" ? stored.entryTime : null,
+    confidenceBucket: readString(stored.raw.confidenceBucket)
+      ?? readKnownBucket(stored.buckets?.confidenceBucket),
+    dteAtEntry: asFiniteNumber(stored.raw.dteAtEntry),
+    plannedRewardRisk: asFiniteNumber(stored.raw.plannedRewardRisk),
+    chartReviewScore: asFiniteNumber(stored.raw.chartReviewScore),
+    volumeRatio: asFiniteNumber(stored.raw.volumeRatio),
+    optionSpread: asFiniteNumber(stored.raw.optionSpread),
+    marketRegime: readString(stored.raw.marketRegime)
+      ?? readKnownBucket(stored.buckets?.marketRegimeBucket),
+    scanTier: readString(stored.raw.scanTier)
+      ?? readKnownBucket(stored.buckets?.scanTierBucket),
+    entryDay: readString(stored.raw.entryDay)
+      ?? readKnownBucket(stored.buckets?.entryDayBucket),
+    entryTime: readString(stored.raw.entryTime),
   };
 }
 
@@ -244,6 +272,32 @@ function extractTelemetryFeatures(telemetry: unknown, symbol: string): {
   };
 }
 
+function deriveScannerMarketRegime(telemetry: unknown): string | null {
+  const record = asRecord(telemetry);
+  const finalRankingDebug = Array.isArray(record?.finalRankingDebug)
+    ? record.finalRankingDebug
+    : [];
+  const directionEntries = finalRankingDebug
+    .map((item) => asRecord(item))
+    .filter((item): item is Record<string, unknown> =>
+      item?.direction === "bullish" || item?.direction === "bearish"
+    );
+
+  if (directionEntries.length === 0) {
+    return null;
+  }
+
+  const bullishCount = directionEntries.filter((item) => item.direction === "bullish").length;
+  const bullishShare = bullishCount / directionEntries.length;
+  if (bullishShare >= 0.67) {
+    return "scanner_risk_on";
+  }
+  if (bullishShare <= 0.33) {
+    return "scanner_risk_off";
+  }
+  return "scanner_mixed";
+}
+
 function extractTradeRewardRisk(trade: JournalTradeDetail): number | null {
   const directRewardRisk = calculateRewardRisk(trade.planned_profit_usd, trade.planned_risk_usd);
   if (directRewardRisk !== null) {
@@ -261,16 +315,10 @@ function extractTradeRewardRisk(trade: JournalTradeDetail): number | null {
 
 function extractTradeEntryFeatures(trade: JournalTradeDetail): EntryRewardFeatureInput {
   const snapshot = asRecord(trade.signal_snapshot_json);
-  const storedFeatures = readStoredEntryFeatures(snapshot);
-  if (storedFeatures) {
-    return storedFeatures;
-  }
-
   const telemetry = readTelemetry(snapshot);
   const telemetryFeatures = extractTelemetryFeatures(telemetry, trade.symbol);
   const telemetryRecord = asRecord(telemetry);
-
-  return {
+  const fallbackFeatures: EntryRewardFeatureInput = {
     direction: trade.direction,
     setupType: trade.setup_type,
     confidenceBucket: trade.confidence_bucket,
@@ -279,7 +327,7 @@ function extractTradeEntryFeatures(trade: JournalTradeDetail): EntryRewardFeatur
     chartReviewScore: telemetryFeatures.chartReviewScore,
     volumeRatio: telemetryFeatures.volumeRatio,
     optionSpread: telemetryFeatures.optionSpread,
-    marketRegime: trade.market_regime,
+    marketRegime: trade.market_regime ?? deriveScannerMarketRegime(telemetry),
     scanTier:
       typeof telemetryRecord?.finalSelectionSourceTier === "string"
         ? telemetryRecord.finalSelectionSourceTier
@@ -289,6 +337,26 @@ function extractTradeEntryFeatures(trade: JournalTradeDetail): EntryRewardFeatur
     entryDay: trade.entry_day,
     entryTime: trade.entry_time,
   };
+
+  const storedFeatures = readStoredEntryFeatures(snapshot);
+  if (storedFeatures) {
+    return {
+      direction: storedFeatures.direction,
+      setupType: storedFeatures.setupType,
+      confidenceBucket: storedFeatures.confidenceBucket ?? fallbackFeatures.confidenceBucket,
+      dteAtEntry: storedFeatures.dteAtEntry ?? fallbackFeatures.dteAtEntry,
+      plannedRewardRisk: storedFeatures.plannedRewardRisk ?? fallbackFeatures.plannedRewardRisk,
+      chartReviewScore: storedFeatures.chartReviewScore ?? fallbackFeatures.chartReviewScore,
+      volumeRatio: storedFeatures.volumeRatio ?? fallbackFeatures.volumeRatio,
+      optionSpread: storedFeatures.optionSpread ?? fallbackFeatures.optionSpread,
+      marketRegime: storedFeatures.marketRegime ?? fallbackFeatures.marketRegime,
+      scanTier: storedFeatures.scanTier ?? fallbackFeatures.scanTier,
+      entryDay: storedFeatures.entryDay ?? fallbackFeatures.entryDay,
+      entryTime: storedFeatures.entryTime ?? fallbackFeatures.entryTime,
+    };
+  }
+
+  return fallbackFeatures;
 }
 
 export function buildEntryRewardFeatureInput(params: {
@@ -322,7 +390,9 @@ export function buildEntryRewardFeatureInput(params: {
     chartReviewScore: telemetryFeatures.chartReviewScore,
     volumeRatio: telemetryFeatures.volumeRatio,
     optionSpread: telemetryFeatures.optionSpread,
-    marketRegime: (params.tradeCard.plannedJournalFields as { market_regime?: string | null }).market_regime ?? null,
+    marketRegime:
+      (params.tradeCard.plannedJournalFields as { market_regime?: string | null }).market_regime
+      ?? deriveScannerMarketRegime(params.scan.telemetry),
     scanTier: params.scan.telemetry?.finalSelectionSourceTier ?? params.scan.telemetry?.winningTier ?? null,
     entryDay: chicagoNow.weekday,
     entryTime: chicagoNow.time,

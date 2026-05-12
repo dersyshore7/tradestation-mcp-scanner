@@ -742,7 +742,10 @@ async function loadJournalTradesForPaperTraderStatus(): Promise<{
 }> {
   try {
     return {
-      trades: await listJournalTradeDetails(250, { includeSignalSnapshot: false }),
+      trades: await listJournalTradeDetails(250, {
+        accountMode: "paper",
+        includeSignalSnapshot: true,
+      }),
       warning: null,
     };
   } catch (error) {
@@ -763,7 +766,7 @@ async function loadPaperTraderCycleTrades(): Promise<JournalTradeDetail[]> {
     listJournalTradeDetails(300, {
       accountMode: "paper",
       status: "closed",
-      includeSignalSnapshot: false,
+      includeSignalSnapshot: true,
     }),
   ]);
   return [...openTrades, ...closedTrades];
@@ -2527,6 +2530,7 @@ async function maybeEnterNewPaperTrade(params: {
       position_cost_usd: positionCap.cappedPositionCostUsd,
       planned_risk_usd: Number((tradeCard.plannedJournalFields.planned_risk_usd * positionScale).toFixed(2)),
       planned_profit_usd: Number((tradeCard.plannedJournalFields.planned_profit_usd * positionScale).toFixed(2)),
+      market_regime: entryFeatures.marketRegime,
     };
     const capReasons = [
       cappedContracts < automation.contracts && cappedContracts === MAX_TRADESTATION_CONTRACTS_PER_ORDER
