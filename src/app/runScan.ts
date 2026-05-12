@@ -23,6 +23,9 @@ import {
 import type { FinalizedTradeGeometry } from "./runTradeConstruction.js";
 const FINAL_SCORE_TIE_TOLERANCE = 0.05;
 const YAHOO_FINANCE_BASE_URL = "https://query1.finance.yahoo.com";
+const MIN_STAGE3_BARS_PER_VIEW = 10;
+const STAGE3_BAR_LOAD_ATTEMPTS = 2;
+const STAGE3_BAR_LOAD_RETRY_DELAY_MS = 500;
 
 export type ScanInput = {
   prompt: string;
@@ -283,9 +286,32 @@ type Stage3TimeframeDiagnostic = {
   parsedLow: boolean;
   parsedClose: boolean;
   parsedVolume: boolean;
+  attempts: number;
+  loadIssue: string | null;
 };
 
 type StageFailureSummary = Record<string, number>;
+
+type Stage3BarLoadFailure = {
+  symbol: string;
+  failedViews: {
+    view: MultiTimeframeView;
+    status: number | null;
+    barCount: number;
+    attempts: number;
+    loadIssue: string | null;
+    requestTarget: string;
+  }[];
+};
+
+type MarketDataHealth = {
+  degraded: boolean;
+  severe: boolean;
+  summary: string;
+  stage1QuoteFailureRate: number;
+  stage1PassRate: number;
+  stage3BarLoadFailures: Stage3BarLoadFailure[];
+};
 
 type Stage3NearMiss = {
   symbol: string;
@@ -330,6 +356,7 @@ type Stage3Evaluation = {
   rejectionReason: string | null;
   issueBreakdown: Stage3IssueBreakdown;
   roomToTargetDiagnostics: Stage3Diagnostics["roomToTargetDiagnostics"] | null;
+  timeframeDiagnostics: Record<MultiTimeframeView, Stage3TimeframeDiagnostic>;
 };
 
 type FinalistAsymmetryDebug = {
@@ -567,6 +594,7 @@ export type StarterUniverseTelemetry = {
   perTierQuoteFailures: Partial<Record<ScanUniverseTierKey, number>>;
   perTierFallbackRecoveries: Partial<Record<ScanUniverseTierKey, number>>;
   effectiveCoverageSummary: string;
+  dataHealth: MarketDataHealth;
   nearMisses: Stage3NearMiss[];
   consistencyChecks: string[];
   finalSelectedSymbol: string | null;
@@ -709,6 +737,102 @@ export function mergeFinalizedAsymmetryIntoFinalistsReviewedDebug(
       asymmetryConsistencyReason: post.asymmetryConsistencyReason,
     };
   });
+}
+
+function formatPercent(value: number): string {
+  return `${(value * 100).toFixed(0)}%`;
+}
+
+function getStage3BarLoadFailures(
+  stage3Evaluations: Stage3Evaluation[],
+): Stage3BarLoadFailure[] {
+  return stage3Evaluations.flatMap((evaluation) => {
+    if (evaluation.summary !== "failed to load required multi-timeframe bars") {
+      return [];
+    }
+
+    const failedViews = (
+      Object.entries(evaluation.timeframeDiagnostics) as [
+        MultiTimeframeView,
+        Stage3TimeframeDiagnostic,
+      ][]
+    )
+      .filter(([, diagnostic]) =>
+        diagnostic.barCount < MIN_STAGE3_BARS_PER_VIEW ||
+        diagnostic.loadIssue !== null
+      )
+      .map(([view, diagnostic]) => ({
+        view,
+        status: diagnostic.status,
+        barCount: diagnostic.barCount,
+        attempts: diagnostic.attempts,
+        loadIssue: diagnostic.loadIssue,
+        requestTarget: diagnostic.requestTarget,
+      }));
+
+    return failedViews.length > 0
+      ? [{ symbol: evaluation.symbol, failedViews }]
+      : [];
+  });
+}
+
+function buildMarketDataHealth(params: {
+  stage1EnteredCount: number;
+  stage1PassedCount: number;
+  stage1QuoteAttempts: number;
+  stage1QuoteFailures: number;
+  symbolsRecoveredByFallback: number;
+  stage3EvaluationsCount: number;
+  stage3BarLoadFailures: Stage3BarLoadFailure[];
+}): MarketDataHealth {
+  const {
+    stage1EnteredCount,
+    stage1PassedCount,
+    stage1QuoteAttempts,
+    stage1QuoteFailures,
+    symbolsRecoveredByFallback,
+    stage3EvaluationsCount,
+    stage3BarLoadFailures,
+  } = params;
+  const stage1QuoteFailureRate =
+    stage1QuoteAttempts > 0 ? stage1QuoteFailures / stage1QuoteAttempts : 0;
+  const stage1PassRate =
+    stage1EnteredCount > 0 ? stage1PassedCount / stage1EnteredCount : 1;
+  const quoteCoverageDegraded =
+    stage1QuoteAttempts >= 10 &&
+    stage1QuoteFailureRate >= 0.75 &&
+    stage1PassRate < 0.5;
+  const stage3LoadBlocked =
+    stage3EvaluationsCount > 0 &&
+    stage3BarLoadFailures.length === stage3EvaluationsCount;
+  const degraded = quoteCoverageDegraded || stage3BarLoadFailures.length > 0;
+  const severe = quoteCoverageDegraded || stage3LoadBlocked;
+  const summaryParts: string[] = [];
+
+  if (quoteCoverageDegraded) {
+    summaryParts.push(
+      `Stage 1 quote coverage was degraded: ${stage1QuoteFailures}/${stage1QuoteAttempts} quote requests failed (${formatPercent(stage1QuoteFailureRate)}), with ${symbolsRecoveredByFallback} symbols recovered from fallback bars.`,
+    );
+  }
+
+  if (stage3BarLoadFailures.length > 0) {
+    const symbols = stage3BarLoadFailures.map((item) => item.symbol).join(", ");
+    summaryParts.push(
+      `Stage 3 could not load the required chart bars for ${symbols}.`,
+    );
+  }
+
+  return {
+    degraded,
+    severe,
+    summary:
+      summaryParts.length > 0
+        ? summaryParts.join(" ")
+        : "Market data coverage looked usable for this scan.",
+    stage1QuoteFailureRate,
+    stage1PassRate,
+    stage3BarLoadFailures,
+  };
 }
 
 function buildStarterUniverseTelemetry(params: {
@@ -912,6 +1036,16 @@ function buildStarterUniverseTelemetry(params: {
         : finalistReviewSource.finalists.map((candidate) => candidate.symbol),
     finalRanking: ranked.map((candidate) => candidate.symbol),
   };
+  const stage3BarLoadFailures = getStage3BarLoadFailures(stage3Evaluations);
+  const dataHealth = buildMarketDataHealth({
+    stage1EnteredCount: stage1Entered.length,
+    stage1PassedCount: stage1Passed.length,
+    stage1QuoteAttempts,
+    stage1QuoteFailures,
+    symbolsRecoveredByFallback,
+    stage3EvaluationsCount: stage3Evaluations.length,
+    stage3BarLoadFailures,
+  });
   const fallbackTier = scannedTiers[0] ?? "tier1";
   const resolvedTierSummaries: TierSummary[] =
     tierSummaries.length > 0
@@ -998,6 +1132,7 @@ function buildStarterUniverseTelemetry(params: {
     perTierQuoteFailures,
     perTierFallbackRecoveries,
     effectiveCoverageSummary,
+    dataHealth,
     nearMisses,
     consistencyChecks: [
       ...finalistReviewSource.warnings,
@@ -2150,13 +2285,14 @@ async function evaluateStage3Candidates(
         direction: "none",
         reviewScore: 0,
         summary: "failed to load required multi-timeframe bars",
-        rejectionReason: "other",
+        rejectionReason: "bar_data_unavailable",
         issueBreakdown: {
           hardVetoes: ["failed to load required multi-timeframe bars"],
           softIssues: [],
           info: [],
         },
         roomToTargetDiagnostics: null,
+        timeframeDiagnostics,
       });
       continue;
     }
@@ -2181,6 +2317,7 @@ async function evaluateStage3Candidates(
         rejectionReason: failReason,
         issueBreakdown,
         roomToTargetDiagnostics: review.diagnostics.roomToTargetDiagnostics,
+        timeframeDiagnostics,
       });
       if (process.env.SCANNER_DEBUG === "1") {
         console.log(
@@ -2209,6 +2346,7 @@ async function evaluateStage3Candidates(
       rejectionReason: null,
       issueBreakdown,
       roomToTargetDiagnostics: review.diagnostics.roomToTargetDiagnostics,
+      timeframeDiagnostics,
     });
   }
 
@@ -2940,6 +3078,147 @@ function getConfirmationRejectionReasons(review: ChartReviewResult): string[] {
   return getStage3FailReasons(review);
 }
 
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildStage3TimeframeDiagnostic(params: {
+  requestTarget: string;
+  status: number | null;
+  bars: Record<string, unknown>[];
+  attempts: number;
+  loadIssue: string | null;
+}): Stage3TimeframeDiagnostic {
+  const { requestTarget, status, bars, attempts, loadIssue } = params;
+  const latestBar = bars[bars.length - 1] ?? null;
+
+  return {
+    requestTarget,
+    status,
+    barCount: bars.length,
+    latestParsedBarSample: latestBar,
+    parsedOpen: readNumber(latestBar, ["Open"]) !== null,
+    parsedHigh: readNumber(latestBar, ["High"]) !== null,
+    parsedLow: readNumber(latestBar, ["Low"]) !== null,
+    parsedClose: readNumber(latestBar, ["Close"]) !== null,
+    parsedVolume:
+      readNumber(latestBar, [
+        "TotalVolume",
+        "Volume",
+        "Vol",
+        "TotalVolumeTraded",
+      ]) !== null,
+    attempts,
+    loadIssue,
+  };
+}
+
+function shouldRetryStage3BarLoad(
+  diagnostic: Stage3TimeframeDiagnostic,
+): boolean {
+  if (
+    diagnostic.status !== null &&
+    diagnostic.status >= 400 &&
+    diagnostic.status < 500 &&
+    diagnostic.status !== 429
+  ) {
+    return false;
+  }
+
+  return (
+    diagnostic.loadIssue !== null ||
+    diagnostic.barCount < MIN_STAGE3_BARS_PER_VIEW
+  );
+}
+
+async function loadTimeframeBarsWithRetry(
+  get: (path: string) => Promise<Response>,
+  requestTarget: string,
+): Promise<{
+  bars: Record<string, unknown>[];
+  diagnostic: Stage3TimeframeDiagnostic;
+}> {
+  let latestDiagnostic: Stage3TimeframeDiagnostic | null = null;
+  let latestBars: Record<string, unknown>[] = [];
+
+  for (let attempt = 1; attempt <= STAGE3_BAR_LOAD_ATTEMPTS; attempt += 1) {
+    let diagnostic: Stage3TimeframeDiagnostic;
+    let bars: Record<string, unknown>[] = [];
+
+    try {
+      const response = await get(requestTarget);
+      if (!response.ok) {
+        diagnostic = buildStage3TimeframeDiagnostic({
+          requestTarget,
+          status: response.status,
+          bars,
+          attempts: attempt,
+          loadIssue: `HTTP ${response.status}`,
+        });
+      } else {
+        try {
+          const payload = await response.json();
+          bars = parseBars(payload).map((bar) => normalizeBar(bar));
+          diagnostic = buildStage3TimeframeDiagnostic({
+            requestTarget,
+            status: response.status,
+            bars,
+            attempts: attempt,
+            loadIssue:
+              bars.length >= MIN_STAGE3_BARS_PER_VIEW
+                ? null
+                : `Only ${bars.length} bars parsed`,
+          });
+        } catch (error) {
+          diagnostic = buildStage3TimeframeDiagnostic({
+            requestTarget,
+            status: response.status,
+            bars,
+            attempts: attempt,
+            loadIssue: `JSON parse failed: ${getErrorMessage(error)}`,
+          });
+        }
+      }
+    } catch (error) {
+      diagnostic = buildStage3TimeframeDiagnostic({
+        requestTarget,
+        status: null,
+        bars,
+        attempts: attempt,
+        loadIssue: `Request failed: ${getErrorMessage(error)}`,
+      });
+    }
+
+    latestDiagnostic = diagnostic;
+    latestBars = bars;
+
+    if (!shouldRetryStage3BarLoad(diagnostic)) {
+      break;
+    }
+
+    if (attempt < STAGE3_BAR_LOAD_ATTEMPTS) {
+      await delay(STAGE3_BAR_LOAD_RETRY_DELAY_MS);
+    }
+  }
+
+  return {
+    bars: latestBars,
+    diagnostic:
+      latestDiagnostic ??
+      buildStage3TimeframeDiagnostic({
+        requestTarget,
+        status: null,
+        bars: [],
+        attempts: 0,
+        loadIssue: "No request attempted",
+      }),
+  };
+}
+
 async function loadMultiTimeframeBars(
   get: (path: string) => Promise<Response>,
   symbol: string,
@@ -2956,52 +3235,14 @@ async function loadMultiTimeframeBars(
     { interval: number; unit: "Daily" | "Weekly"; barsBack: number },
   ][]) {
     const requestTarget = `/marketdata/barcharts/${encodeURIComponent(symbol)}?interval=${config.interval}&unit=${config.unit}&barsback=${config.barsBack}`;
-    const response = await get(requestTarget);
-
-    if (!response.ok) {
-      allViewsLoaded = false;
-      timeframeDiagnostics[view] = {
-        requestTarget,
-        status: response.status,
-        barCount: 0,
-        latestParsedBarSample: null,
-        parsedOpen: false,
-        parsedHigh: false,
-        parsedLow: false,
-        parsedClose: false,
-        parsedVolume: false,
-      };
-      continue;
-    }
-
-    const payload = await response.json();
-    const bars = parseBars(payload).map((bar) => normalizeBar(bar));
-    const latestBar = bars[bars.length - 1] ?? null;
-    const parsedOpen = readNumber(latestBar, ["Open"]) !== null;
-    const parsedHigh = readNumber(latestBar, ["High"]) !== null;
-    const parsedLow = readNumber(latestBar, ["Low"]) !== null;
-    const parsedClose = readNumber(latestBar, ["Close"]) !== null;
-    const parsedVolume =
-      readNumber(latestBar, [
-        "TotalVolume",
-        "Volume",
-        "Vol",
-        "TotalVolumeTraded",
-      ]) !== null;
-
-    timeframeDiagnostics[view] = {
+    const { bars, diagnostic } = await loadTimeframeBarsWithRetry(
+      get,
       requestTarget,
-      status: response.status,
-      barCount: bars.length,
-      latestParsedBarSample: latestBar,
-      parsedOpen,
-      parsedHigh,
-      parsedLow,
-      parsedClose,
-      parsedVolume,
-    };
+    );
 
-    if (bars.length < 10) {
+    timeframeDiagnostics[view] = diagnostic;
+
+    if (bars.length < MIN_STAGE3_BARS_PER_VIEW) {
       allViewsLoaded = false;
       continue;
     }
@@ -5213,6 +5454,34 @@ function combineTelemetry(
   const reviewedFinalistOutcomes = executions.flatMap(
     (item) => item.telemetry.reviewedFinalistOutcomes,
   );
+  const stage1QuoteAttempts = executions.reduce(
+    (acc, item) => acc + item.telemetry.stage1QuoteAttempts,
+    0,
+  );
+  const stage1QuoteFailures = executions.reduce(
+    (acc, item) => acc + item.telemetry.stage1QuoteFailures,
+    0,
+  );
+  const stage1QuoteFallbackUsed = executions.reduce(
+    (acc, item) => acc + item.telemetry.stage1QuoteFallbackUsed,
+    0,
+  );
+  const symbolsRecoveredByFallback = executions.reduce(
+    (acc, item) => acc + item.telemetry.symbolsRecoveredByFallback,
+    0,
+  );
+  const stage3BarLoadFailures = executions.flatMap(
+    (item) => item.telemetry.dataHealth.stage3BarLoadFailures,
+  );
+  const dataHealth = buildMarketDataHealth({
+    stage1EnteredCount: stageCounts.stage1Entered,
+    stage1PassedCount: stageCounts.stage1Passed,
+    stage1QuoteAttempts,
+    stage1QuoteFailures,
+    symbolsRecoveredByFallback,
+    stage3EvaluationsCount: stageCounts.stage2Passed,
+    stage3BarLoadFailures,
+  });
 
   return {
     stageCounts,
@@ -5229,22 +5498,10 @@ function combineTelemetry(
     rejectionSummaries: mergeRejectionSummaries(
       ...executions.map((item) => item.telemetry.rejectionSummaries),
     ),
-    stage1QuoteAttempts: executions.reduce(
-      (acc, item) => acc + item.telemetry.stage1QuoteAttempts,
-      0,
-    ),
-    stage1QuoteFailures: executions.reduce(
-      (acc, item) => acc + item.telemetry.stage1QuoteFailures,
-      0,
-    ),
-    stage1QuoteFallbackUsed: executions.reduce(
-      (acc, item) => acc + item.telemetry.stage1QuoteFallbackUsed,
-      0,
-    ),
-    symbolsRecoveredByFallback: executions.reduce(
-      (acc, item) => acc + item.telemetry.symbolsRecoveredByFallback,
-      0,
-    ),
+    stage1QuoteAttempts,
+    stage1QuoteFailures,
+    stage1QuoteFallbackUsed,
+    symbolsRecoveredByFallback,
     perTierQuoteFailures: Object.fromEntries(
       executions.map((item) => [item.tier.key, item.telemetry.stage1QuoteFailures]),
     ),
@@ -5252,6 +5509,7 @@ function combineTelemetry(
       executions.map((item) => [item.tier.key, item.telemetry.symbolsRecoveredByFallback]),
     ),
     effectiveCoverageSummary: buildEffectiveCoverageSummary(executions),
+    dataHealth,
     nearMisses: executions.flatMap((item) => item.telemetry.nearMisses),
     consistencyChecks: executions.flatMap(
       (item) => item.telemetry.consistencyChecks,

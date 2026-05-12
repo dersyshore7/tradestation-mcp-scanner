@@ -370,6 +370,10 @@
         padding: 10px 12px;
         margin-top: 8px;
       }
+      .data-health-warning {
+        border-color: #d8942f;
+        background: #fff8e7;
+      }
       .pill {
         display: inline-block;
         border-radius: 999px;
@@ -3014,6 +3018,31 @@
         `;
       }
 
+      function renderDataHealthWarning(telemetry) {
+        const health = telemetry?.dataHealth;
+        if (!health?.degraded) {
+          return "";
+        }
+
+        const stage3Failures = Array.isArray(health.stage3BarLoadFailures)
+          ? health.stage3BarLoadFailures
+          : [];
+        const stage3FailureRows = stage3Failures.map((item) => {
+          const views = Array.isArray(item.failedViews)
+            ? item.failedViews.map((view) => `${view.view}: ${view.loadIssue || `bars=${view.barCount}`}${view.status === null ? "" : `, HTTP ${view.status}`}, attempts=${view.attempts}`).join(" | ")
+            : "no timeframe detail";
+          return `${item.symbol}: ${views}`;
+        });
+
+        return `
+          <div class="summary-section data-health-warning">
+            <h3>${health.severe ? "Market data issue likely" : "Market data degraded"}</h3>
+            <div class="row">${escapeHtml(renderMaybe(health.summary))}</div>
+            ${stage3FailureRows.length > 0 ? renderList(stage3FailureRows) : ""}
+          </div>
+        `;
+      }
+
       function renderPresentationSummary(summary) {
         if (!summary) {
           return "";
@@ -3073,6 +3102,7 @@
       function renderNoTrade(scan, telemetry, presentationSummary) {
         resultArea.innerHTML = `
           ${renderPresentationSummary(presentationSummary)}
+          ${renderDataHealthWarning(telemetry)}
 
           <hr class="hr" />
           <h3>Calibration Debug Summary</h3>
