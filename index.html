@@ -3604,6 +3604,114 @@
       });
       setActivePage(readPageFromHash(), false);
 
+      const manualScanStateStorageKey = "manual-scan-active-state";
+
+      function shouldUseChunkedManualScan(customPrompt) {
+        if (customPrompt.length === 0) {
+          return true;
+        }
+        return /\b(full|broad|all\s+tiers|entire\s+universe|new scan|scan for this week)\b/i.test(customPrompt);
+      }
+
+      function waitForNextManualScanChunk() {
+        return new Promise((resolve) => window.setTimeout(resolve, 300));
+      }
+
+      function saveManualScanState(state) {
+        try {
+          if (state) {
+            window.localStorage.setItem(manualScanStateStorageKey, JSON.stringify(state));
+          }
+        } catch {
+          // Local progress persistence is best-effort; the scan still continues in memory.
+        }
+      }
+
+      function clearManualScanState() {
+        try {
+          window.localStorage.removeItem(manualScanStateStorageKey);
+        } catch {
+          // Ignore storage failures.
+        }
+      }
+
+      function loadManualScanState(requestBody) {
+        try {
+          const raw = window.localStorage.getItem(manualScanStateStorageKey);
+          if (!raw) {
+            return null;
+          }
+          const state = JSON.parse(raw);
+          const prompt = requestBody?.prompt || "Run a new Scan for this week";
+          return state?.prompt === prompt && state?.status !== "completed" ? state : null;
+        } catch {
+          return null;
+        }
+      }
+
+      async function parseJsonWorkflowResponse(response) {
+        const contentType = response.headers.get("content-type") || "";
+        const isJsonResponse = contentType.toLowerCase().includes("application/json");
+
+        if (!isJsonResponse) {
+          const text = await response.text();
+          const preview = text.slice(0, 200);
+          throw new Error(`Workflow request failed: ${preview || "Empty response from server."}`);
+        }
+
+        const data = await response.json();
+        if (!response.ok) {
+          const message = typeof data?.message === "string"
+            ? data.message
+            : typeof data?.error === "string"
+              ? data.error
+              : "Request failed.";
+          throw new Error(message);
+        }
+        return data;
+      }
+
+      async function runSingleWorkflowRequest(requestBody) {
+        const response = await fetch("/api/workflow", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(requestBody),
+        });
+        return await parseJsonWorkflowResponse(response);
+      }
+
+      async function runChunkedManualScan(requestBody) {
+        let state = loadManualScanState(requestBody);
+        if (!state) {
+          clearManualScanState();
+        }
+
+        for (;;) {
+          const response = await fetch("/api/manual-scan", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              ...requestBody,
+              state,
+            }),
+          });
+          const data = await parseJsonWorkflowResponse(response);
+          latestBackendData = data;
+          state = data.state || null;
+          saveManualScanState(state);
+
+          if (data.status === "completed") {
+            clearManualScanState();
+            return data;
+          }
+
+          resultArea.textContent = typeof data?.progress?.text === "string"
+            ? data.progress.text
+            : "Manual scan is still running...";
+          await waitForNextManualScanChunk();
+        }
+      }
+
       runScanButton.addEventListener("click", async () => {
         runScanButton.disabled = true;
         resultArea.textContent = "Running scan...";
@@ -3612,34 +3720,10 @@
         try {
           const customPrompt = promptInput.value.trim();
           const requestBody = customPrompt.length > 0 ? { prompt: customPrompt } : {};
-
-          const response = await fetch("/api/workflow", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(requestBody),
-          });
-          const contentType = response.headers.get("content-type") || "";
-          const isJsonResponse = contentType.toLowerCase().includes("application/json");
-
-          if (!isJsonResponse) {
-            const text = await response.text();
-            const preview = text.slice(0, 200);
-            resultArea.textContent = `Workflow request failed: ${preview || "Empty response from server."}`;
-            return;
-          }
-
-          const data = await response.json();
+          const data = shouldUseChunkedManualScan(customPrompt)
+            ? await runChunkedManualScan(requestBody)
+            : await runSingleWorkflowRequest(requestBody);
           latestBackendData = data;
-
-          if (!response.ok) {
-            const message = typeof data?.message === "string"
-              ? data.message
-              : typeof data?.error === "string"
-                ? data.error
-                : "Request failed.";
-            resultArea.textContent = message;
-            return;
-          }
 
           if (!data.tradeCard) {
             renderNoTrade(data.scan, data.telemetry || null, data.presentationSummary || null);

@@ -1,6 +1,14 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "outputDirectory": ".",
+  "functions": {
+    "api/manual-scan.ts": {
+      "maxDuration": 300
+    },
+    "api/workflow.ts": {
+      "maxDuration": 300
+    }
+  },
   "headers": [
     {
       "source": "/",

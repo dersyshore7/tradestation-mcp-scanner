@@ -1,6 +1,5 @@
 import { DEFAULT_SCAN_PROMPT } from "../config/defaultScanPrompt.js";
 
-const AUTO_TRADER_ENABLED_ENV = "AUTO_TRADER_ENABLED";
 const AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV = "AUTO_TRADER_ALLOW_ORDER_PLACEMENT";
 const AUTO_TRADER_MAX_POSITION_PCT_ENV = "AUTO_TRADER_MAX_POSITION_PCT";
 const AUTO_TRADER_SCAN_PROMPT_ENV = "AUTO_TRADER_SCAN_PROMPT";
@@ -73,12 +72,11 @@ export function readPaperTraderApiSecrets(): string[] {
 export function readPaperTraderConfig(): PaperTraderConfig {
   const automationBaseUrl = (
     readStringEnv(TRADESTATION_AUTOMATION_BASE_URL_ENV)
-    ?? readStringEnv("TRADESTATION_BASE_URL")
     ?? "https://sim-api.tradestation.com/v3"
   ).replace(/\/$/, "");
 
   return {
-    enabled: readBooleanEnv(AUTO_TRADER_ENABLED_ENV, false),
+    enabled: true,
     allowOrderPlacement: readBooleanEnv(AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV, false),
     maxOpenTrades: null,
     maxDailyLossUsd: null,
@@ -93,10 +91,6 @@ export function readPaperTraderConfig(): PaperTraderConfig {
 }
 
 export function assertPaperTraderConfig(config: PaperTraderConfig): void {
-  if (!config.enabled) {
-    throw new Error(`Set ${AUTO_TRADER_ENABLED_ENV}=1 to enable the paper trader module.`);
-  }
-
   if (!config.accountId) {
     throw new Error(
       `Missing ${TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV}. The paper trader requires a dedicated paper account id.`,

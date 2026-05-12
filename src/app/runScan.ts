@@ -32,6 +32,8 @@ export type ScanInput = {
   excludedTickers?: string[];
   tradestationBaseUrlOverride?: string;
   paperLearningPreferences?: ScanLearningPreference[];
+  scanTierLimit?: number;
+  maxSymbolsPerTier?: number;
 };
 
 export type ScanLearningPreference = {
@@ -3346,16 +3348,18 @@ async function loadMultiTimeframeBars(
   >;
   let allViewsLoaded = true;
 
-  for (const [view, config] of Object.entries(MULTI_TIMEFRAME_BAR_CONFIG) as [
-    MultiTimeframeView,
-    { interval: number; unit: "Daily" | "Weekly"; barsBack: number },
-  ][]) {
-    const requestTarget = `/marketdata/barcharts/${encodeURIComponent(symbol)}?interval=${config.interval}&unit=${config.unit}&barsback=${config.barsBack}`;
-    const { bars, diagnostic } = await loadTimeframeBarsWithRetry(
-      get,
-      requestTarget,
-    );
+  const loads = await Promise.all(
+    (Object.entries(MULTI_TIMEFRAME_BAR_CONFIG) as [
+      MultiTimeframeView,
+      { interval: number; unit: "Daily" | "Weekly"; barsBack: number },
+    ][]).map(async ([view, config]) => {
+      const requestTarget = `/marketdata/barcharts/${encodeURIComponent(symbol)}?interval=${config.interval}&unit=${config.unit}&barsback=${config.barsBack}`;
+      const loadResult = await loadTimeframeBarsWithRetry(get, requestTarget);
+      return { view, ...loadResult };
+    }),
+  );
 
+  for (const { view, bars, diagnostic } of loads) {
     timeframeDiagnostics[view] = diagnostic;
 
     if (bars.length < MIN_STAGE3_BARS_PER_VIEW) {
@@ -5385,6 +5389,18 @@ function buildTierSummary(
   };
 }
 
+function limitSymbolsForScanInput(
+  symbols: readonly string[],
+  input: ScanInput,
+): string[] {
+  const limit = input.maxSymbolsPerTier;
+  if (!Number.isFinite(limit) || limit === undefined || limit <= 0) {
+    return [...symbols];
+  }
+
+  return symbols.slice(0, Math.floor(limit));
+}
+
 function mergeRejectionSummaries(
   ...summaries: StarterUniverseTelemetry["rejectionSummaries"][]
 ): StarterUniverseTelemetry["rejectionSummaries"] {
@@ -5690,8 +5706,9 @@ async function runUniverseTierTradeStationScan(
   const excludedSet = new Set(
     (input.excludedTickers ?? []).map((item) => item.toUpperCase()),
   );
-  const stage1Entered = tier.symbols.filter(
-    (symbol) => !excludedSet.has(symbol),
+  const stage1Entered = limitSymbolsForScanInput(
+    tier.symbols.filter((symbol) => !excludedSet.has(symbol)),
+    input,
   );
   const stage1RejectionSummary: StageFailureSummary = {};
   const stage2RejectionSummary: StageFailureSummary = {};
@@ -5703,11 +5720,7 @@ async function runUniverseTierTradeStationScan(
   logGeneralScanDebug(`${tier.label} Stage 1 entered`, stage1Entered);
 
   const stage1Passed: Stage1Candidate[] = [];
-  for (const symbol of tier.symbols) {
-    if (excludedSet.has(symbol)) {
-      continue;
-    }
-
+  for (const symbol of stage1Entered) {
     const resolution = await resolveStage1MarketData(get, symbol);
     stage1QuoteAttempts += resolution.quoteAttempted ? 1 : 0;
     stage1QuoteFailures += resolution.quoteFailed ? 1 : 0;
@@ -6513,8 +6526,13 @@ async function runStarterUniverseTradeStationScan(
 ): Promise<ScanResult> {
   const get = await createTradeStationGetFetcher(input.tradestationBaseUrlOverride);
   const tierExecutions: TierScanExecution[] = [];
+  const scanTierLimit =
+    Number.isFinite(input.scanTierLimit) && input.scanTierLimit !== undefined && input.scanTierLimit > 0
+      ? Math.min(SCAN_UNIVERSE_TIERS.length, Math.floor(input.scanTierLimit))
+      : SCAN_UNIVERSE_TIERS.length;
+  const tiersToScan = SCAN_UNIVERSE_TIERS.slice(0, scanTierLimit);
 
-  for (const tier of SCAN_UNIVERSE_TIERS) {
+  for (const tier of tiersToScan) {
     const result = await runUniverseTierTradeStationScan(get, input, tier);
     const telemetry = result.telemetry;
     if (!telemetry) {

@@ -25,6 +25,8 @@ type VercelResponseLike = {
 type WorkflowRequestBody = {
   prompt?: string;
   excludedTickers?: string[];
+  maxSymbolsPerTier?: number;
+  scanTierLimit?: number;
 };
 
 function readErrorMessage(error: unknown): string {
@@ -68,8 +70,16 @@ function normalizeInput(body: unknown): ScanInput {
   const excludedTickers = Array.isArray(payload.excludedTickers)
     ? payload.excludedTickers.filter((item): item is string => typeof item === "string")
     : [];
-
-  return { prompt, excludedTickers };
+  return {
+    prompt,
+    excludedTickers,
+    ...(typeof payload.maxSymbolsPerTier === "number" && Number.isFinite(payload.maxSymbolsPerTier)
+      ? { maxSymbolsPerTier: payload.maxSymbolsPerTier }
+      : {}),
+    ...(typeof payload.scanTierLimit === "number" && Number.isFinite(payload.scanTierLimit)
+      ? { scanTierLimit: payload.scanTierLimit }
+      : {}),
+  };
 }
 
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
