@@ -96,7 +96,16 @@ function buildWhyThisWon(scan: ScanResult, telemetry: StarterUniverseTelemetry |
   if (!topRankedSymbol || topRankedSymbol === selectedSymbol) {
     return `${selectedSymbol} was the top-ranked finalist and also the first reviewed candidate to survive confirmation and final trade-card validation.`;
   }
-  return `${selectedSymbol} was not the top-ranked candidate, but it was the first ranked finalist that survived confirmation and final trade-card validation after ${topRankedSymbol} was blocked or rejected earlier in the review ladder.`;
+  const rankedSymbols = telemetry?.finalRankingDebug?.map((item) => item.symbol) ?? [];
+  const selectedIndex = rankedSymbols.indexOf(selectedSymbol);
+  const earlierReviewedSymbols =
+    selectedIndex > 0
+      ? rankedSymbols.slice(0, selectedIndex).filter((symbol) =>
+          telemetry?.reviewedFinalistOutcomes?.some((item) => item.symbol === symbol),
+        )
+      : [topRankedSymbol];
+  const earlierText = earlierReviewedSymbols.join(", ") || topRankedSymbol;
+  return `${selectedSymbol} was not the top-ranked candidate, but it was the first ranked finalist that survived confirmation and final trade-card validation after ${earlierText} ${earlierReviewedSymbols.length === 1 ? "was" : "were"} blocked or rejected earlier in the review ladder.`;
 }
 
 function buildConciseReasoning(scan: ScanResult, tradeCard: TradeConstructionResult | null): string {

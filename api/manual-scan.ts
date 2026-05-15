@@ -438,6 +438,60 @@ function buildManualNoTradeReason(
   return `Manual scan completed ${chunkCount} chunk(s) over ${scannedText}. No confirmed trade-card-ready setup survived the scanner, confirmation, and trade-card gates.${funnelSummary}${closestCandidates}${dataHealth}`;
 }
 
+function describeReviewedOutcome(
+  outcome: StarterUniverseTelemetry["reviewedFinalistOutcomes"][number],
+): string {
+  if (outcome.candidateBlockedPostConfirmation) {
+    return `${outcome.symbol} blocked after confirmation`;
+  }
+  if (outcome.candidateConfirmedInPrompt2) {
+    return `${outcome.symbol} confirmed`;
+  }
+  return `${outcome.symbol} rejected in confirmation`;
+}
+
+function buildSelectedManualScanReason(params: {
+  selectedSymbol: string;
+  scannedText: string;
+  telemetry: StarterUniverseTelemetry;
+  fallbackReason: string;
+}): string {
+  const reviewedBySymbol = new Map(
+    params.telemetry.reviewedFinalistOutcomes.map((item) => [item.symbol, item]),
+  );
+  const reviewedInGlobalRankOrder = params.telemetry.finalRankingDebug
+    .map((item) => reviewedBySymbol.get(item.symbol) ?? null)
+    .filter(
+      (
+        item,
+      ): item is StarterUniverseTelemetry["reviewedFinalistOutcomes"][number] =>
+        item !== null,
+    );
+  const selectedIndex = reviewedInGlobalRankOrder.findIndex(
+    (item) => item.symbol === params.selectedSymbol,
+  );
+  const selectedOutcome =
+    selectedIndex >= 0 ? reviewedInGlobalRankOrder[selectedIndex] ?? null : null;
+  const earlierOutcomes =
+    selectedIndex > 0 ? reviewedInGlobalRankOrder.slice(0, selectedIndex) : [];
+  const rankingScore =
+    selectedOutcome?.rankingScore ??
+    params.telemetry.finalRankingDebug.find(
+      (item) => item.symbol === params.selectedSymbol,
+    )?.score ??
+    null;
+  const reviewedText = reviewedInGlobalRankOrder.map((item) => item.symbol).join(", ");
+  const rankScoreText =
+    rankingScore === null ? "" : `; rank score ${rankingScore.toFixed(2)}`;
+  const earlierText =
+    earlierOutcomes.length > 0
+      ? ` after ${earlierOutcomes.map((item) => describeReviewedOutcome(item)).join(", ")}`
+      : "";
+  const selectedDetail = selectedOutcome?.reason ?? params.fallbackReason;
+
+  return `Selected ${params.selectedSymbol} as the best confirmed setup after scanning ${params.scannedText}. Finalist confirmation used the merged full-universe ladder (reviewed: ${reviewedText || params.selectedSymbol}; selected: ${params.selectedSymbol}${rankScoreText}). ${params.selectedSymbol} was the first trade-card-ready survivor in global rank order${earlierText}. ${selectedDetail}`;
+}
+
 function buildEmptyTelemetry(): StarterUniverseTelemetry {
   const stageCounts = buildEmptyStageCounts();
   const stageSymbols = buildEmptyStageSymbols();
@@ -903,9 +957,18 @@ async function finalizeState(state: ManualScanState): Promise<ManualScanState> {
     winningTier,
     noTradeReason: null,
   });
+  const selectedSymbol = best.scan.ticker;
+  if (!selectedSymbol) {
+    throw new Error("Manual scan best candidate was missing a ticker.");
+  }
   const scan: ScanResult = {
     ...best.scan,
-    reason: `Selected ${best.scan.ticker} as the best confirmed setup after scanning ${scannedText}. ${best.scan.reason}`,
+    reason: buildSelectedManualScanReason({
+      selectedSymbol,
+      scannedText,
+      telemetry,
+      fallbackReason: best.scan.reason,
+    }),
     telemetry,
   };
   const presentationSummary = buildWorkflowPresentationSummary({
