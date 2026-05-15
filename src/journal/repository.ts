@@ -433,6 +433,27 @@ export async function updateJournalTradeSignalSnapshot(
   return refreshedTrade;
 }
 
+export async function archiveJournalTradeWithoutReview(
+  id: string,
+  input: { entry_notes?: string | null } = {},
+): Promise<JournalTradeDetail> {
+  await supabaseUpdateAndSelectOne<JournalTradeRecord>({
+    table: "journal_trades",
+    filters: [`id=eq.${id}`],
+    values: {
+      status: "closed",
+      ...(input.entry_notes !== undefined ? { entry_notes: input.entry_notes } : {}),
+    },
+  });
+
+  const refreshedTrade = await getJournalTradeById(id);
+  if (!refreshedTrade) {
+    throw new Error("Archived trade could not be reloaded.");
+  }
+
+  return refreshedTrade;
+}
+
 export async function updateJournalTrade(id: string, input: JournalTradeUpdateInput): Promise<JournalTradeDetail> {
   const trade = await getJournalTradeById(id);
   if (!trade) {

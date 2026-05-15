@@ -61,6 +61,8 @@ function buildCompactRunResult(rawResult: Record<string, unknown>): Record<strin
       ? {
           inspected: reconciliation.inspected ?? null,
           updated: reconciliation.updated ?? null,
+          staleArchived: reconciliation.staleArchived ?? null,
+          adoptedPositions: reconciliation.adoptedPositions ?? null,
           updates: Array.isArray(reconciliation.updates)
             ? reconciliation.updates.slice(0, 20)
             : [],
@@ -91,6 +93,8 @@ function buildCompactRunResult(rawResult: Record<string, unknown>): Record<strin
           reason: entry.reason ?? null,
           orderId: entry.orderId ?? null,
           journalTradeId: entry.journalTradeId ?? null,
+          scanSummary: entry.scanSummary ?? null,
+          automatedScanState: entry.automatedScanState ?? null,
         }
       : null,
   };
@@ -152,4 +156,18 @@ export async function listRecentPaperTraderRuns(
         "Supabase is missing the paper_trader_runs table. Apply supabase/migrations/202604290001_paper_trader_runs.sql to show paper-trader cron/run history in the app.",
     };
   }
+}
+
+export async function loadLatestPaperTraderRunWithRaw(
+  options: { dryRun: boolean },
+): Promise<PaperTraderRunRecord | null> {
+  const runs = await supabaseSelect<PaperTraderRunRecord>({
+    table: "paper_trader_runs",
+    select: "id,created_at,mode,dry_run,outcome,symbol,reason,raw_result_json",
+    filters: [`dry_run=eq.${options.dryRun}`],
+    order: ["created_at.desc"],
+    limit: 1,
+  });
+
+  return runs[0] ?? null;
 }

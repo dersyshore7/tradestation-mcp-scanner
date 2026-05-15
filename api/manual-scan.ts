@@ -1,7 +1,7 @@
 import {
   extractFinalizedTradeGeometryFromTelemetry,
+  mergeFinalizedAsymmetryIntoFinalistsReviewedDebug,
   runScan,
-  type ScanLearningPreference,
   type ScanResult,
   type StarterUniverseTelemetry,
 } from "../src/app/runScan.js";
@@ -11,11 +11,11 @@ import {
   type TradeConstructionResult,
 } from "../src/app/runTradeConstruction.js";
 import { DEFAULT_SCAN_PROMPT } from "../src/config/defaultScanPrompt.js";
-import { SCAN_UNIVERSE_TIERS } from "../src/config/scanUniverseTiers.js";
-import { listJournalTradeDetails } from "../src/journal/repository.js";
+import {
+  SCAN_UNIVERSE_TIERS,
+  type ScanUniverseTierKey,
+} from "../src/config/scanUniverseTiers.js";
 import { createTradeRecommendation } from "../src/recommendations/repository.js";
-import { trainEntryRewardModel } from "../src/automation/entryRewardModel.js";
-import { buildPaperLearningPreferences } from "../src/automation/paperLearningPreferences.js";
 
 type VercelRequestLike = {
   method?: string;
@@ -56,6 +56,7 @@ type ManualScanBest = {
 };
 
 type ManualScanState = {
+  version: 2;
   scanRunId: string;
   prompt: string;
   status: "running" | "completed";
@@ -64,9 +65,9 @@ type ManualScanState = {
   chunkCount: number;
   scannedSymbolCount: number;
   startedAt: string;
-  paperLearningPreferences: ScanLearningPreference[];
   bestConfirmed: ManualScanBest | null;
   chunkSummaries: ManualScanChunkSummary[];
+  accumulatedTelemetry: StarterUniverseTelemetry | null;
   latestDataHealth: StarterUniverseTelemetry["dataHealth"] | null;
   finalResponse: ManualScanCompletedPayload | null;
 };
@@ -88,7 +89,6 @@ type ManualScanCompletedPayload = {
     totalSymbolCount: number;
     bestSymbol: string | null;
     chunkSummaries: ManualScanChunkSummary[];
-    learningPreferenceCount: number;
   };
 };
 
@@ -99,10 +99,25 @@ type ManualScanProgress = {
   totalSymbolCount: number;
   chunkCount: number;
   bestSymbol: string | null;
-  learningPreferenceCount: number;
 };
 
 const DEFAULT_CHUNK_SIZE = 8;
+const STAGE_COUNT_KEYS = [
+  "stage1Entered",
+  "stage1Passed",
+  "stage2Passed",
+  "stage3Passed",
+  "continuationEligibleFinalists",
+  "confirmationEligibleFinalists",
+  "finalistsReviewed",
+  "finalRanking",
+] as const;
+const STAGE_SYMBOL_KEYS = [...STAGE_COUNT_KEYS] as const;
+
+type StageCounts = StarterUniverseTelemetry["stageCounts"];
+type StageSymbols = StarterUniverseTelemetry["stageSymbols"];
+type RejectionSummaries = StarterUniverseTelemetry["rejectionSummaries"];
+type TierSummary = StarterUniverseTelemetry["tierSummaries"][number];
 
 function readErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -146,15 +161,554 @@ function countSymbolsBeforeTier(tierIndex: number): number {
     .reduce((total, tier) => total + tier.symbols.length, 0);
 }
 
+function buildEmptyStageCounts(): StageCounts {
+  return {
+    stage1Entered: 0,
+    stage1Passed: 0,
+    stage2Passed: 0,
+    stage3Passed: 0,
+    continuationEligibleFinalists: 0,
+    confirmationEligibleFinalists: 0,
+    finalistsReviewed: 0,
+    finalRanking: 0,
+  };
+}
+
+function buildEmptyStageSymbols(): StageSymbols {
+  return {
+    stage1Entered: [],
+    stage1Passed: [],
+    stage2Passed: [],
+    stage3Passed: [],
+    continuationEligibleFinalists: [],
+    confirmationEligibleFinalists: [],
+    finalistsReviewed: [],
+    finalRanking: [],
+  };
+}
+
+function mergeStageCounts(left: StageCounts, right: StageCounts): StageCounts {
+  return STAGE_COUNT_KEYS.reduce((merged, key) => {
+    merged[key] = left[key] + right[key];
+    return merged;
+  }, buildEmptyStageCounts());
+}
+
+function mergeStageSymbols(left: StageSymbols, right: StageSymbols): StageSymbols {
+  return STAGE_SYMBOL_KEYS.reduce((merged, key) => {
+    merged[key] = [...left[key], ...right[key]];
+    return merged;
+  }, buildEmptyStageSymbols());
+}
+
+function mergeFailureSummaries(
+  left: Record<string, number>,
+  right: Record<string, number>,
+): Record<string, number> {
+  const merged = { ...left };
+  for (const [reason, count] of Object.entries(right)) {
+    merged[reason] = (merged[reason] ?? 0) + count;
+  }
+  return merged;
+}
+
+function mergeRejectionSummaries(
+  left: RejectionSummaries,
+  right: RejectionSummaries,
+): RejectionSummaries {
+  return {
+    stage1: mergeFailureSummaries(left.stage1, right.stage1),
+    stage2: mergeFailureSummaries(left.stage2, right.stage2),
+    stage3: mergeFailureSummaries(left.stage3, right.stage3),
+  };
+}
+
+function buildEmptyRejectionSummaries(): RejectionSummaries {
+  return {
+    stage1: {},
+    stage2: {},
+    stage3: {},
+  };
+}
+
+function uniqueStrings<T extends string>(values: readonly T[]): T[] {
+  return [...new Set(values)];
+}
+
+function formatPercent(value: number): string {
+  return `${(value * 100).toFixed(0)}%`;
+}
+
+function buildMergedDataHealth(params: {
+  stageCounts: StageCounts;
+  stage1QuoteAttempts: number;
+  stage1QuoteFailures: number;
+  symbolsRecoveredByFallback: number;
+  stage2RequestFailures: StarterUniverseTelemetry["dataHealth"]["stage2RequestFailures"];
+  stage3BarLoadFailures: StarterUniverseTelemetry["dataHealth"]["stage3BarLoadFailures"];
+}): StarterUniverseTelemetry["dataHealth"] {
+  const {
+    stageCounts,
+    stage1QuoteAttempts,
+    stage1QuoteFailures,
+    symbolsRecoveredByFallback,
+    stage2RequestFailures,
+    stage3BarLoadFailures,
+  } = params;
+  const stage1QuoteFailureRate =
+    stage1QuoteAttempts > 0 ? stage1QuoteFailures / stage1QuoteAttempts : 0;
+  const stage1PassRate =
+    stageCounts.stage1Entered > 0
+      ? stageCounts.stage1Passed / stageCounts.stage1Entered
+      : 1;
+  const quoteCoverageDegraded =
+    stage1QuoteAttempts >= 10 &&
+    stage1QuoteFailureRate >= 0.5 &&
+    stage1PassRate < 0.5;
+  const stage2RequestDegraded = stage2RequestFailures.length > 0;
+  const stage3LoadBlocked =
+    stageCounts.stage2Passed > 0 &&
+    stage3BarLoadFailures.length === stageCounts.stage2Passed;
+  const degraded =
+    quoteCoverageDegraded ||
+    stage2RequestDegraded ||
+    stage3BarLoadFailures.length > 0;
+  const severe =
+    quoteCoverageDegraded ||
+    stage2RequestFailures.some((item) => item.status === 429) ||
+    stage3LoadBlocked;
+  const summaryParts: string[] = [];
+
+  if (quoteCoverageDegraded) {
+    summaryParts.push(
+      `Stage 1 quote coverage was degraded: ${stage1QuoteFailures}/${stage1QuoteAttempts} quote requests failed (${formatPercent(stage1QuoteFailureRate)}), with ${symbolsRecoveredByFallback} symbols recovered from fallback bars.`,
+    );
+  }
+  if (stage2RequestFailures.length > 0) {
+    const rateLimited = stage2RequestFailures.filter((item) => item.status === 429);
+    const sample = stage2RequestFailures
+      .slice(0, 5)
+      .map((item) => `${item.symbol} ${item.endpoint} HTTP ${item.status}`)
+      .join(", ");
+    summaryParts.push(
+      `Stage 2 option-data requests were degraded: ${stage2RequestFailures.length} transient request failures${rateLimited.length > 0 ? `, including ${rateLimited.length} rate-limit responses` : ""}${sample ? ` (${sample})` : ""}.`,
+    );
+  }
+  if (stage3BarLoadFailures.length > 0) {
+    summaryParts.push(
+      `Stage 3 could not load the required chart bars for ${stage3BarLoadFailures
+        .map((item) => item.symbol)
+        .join(", ")}.`,
+    );
+  }
+
+  return {
+    degraded,
+    severe,
+    summary: summaryParts.join(" ") || "Market data coverage looked usable for this scan.",
+    stage1QuoteFailureRate,
+    stage1PassRate,
+    stage2RequestFailures,
+    stage3BarLoadFailures,
+  };
+}
+
+function buildEffectiveCoverageSummary(symbolsRecoveredByFallback: number): string {
+  return symbolsRecoveredByFallback > 0
+    ? `Recovered ${symbolsRecoveredByFallback} symbols via fallback quote/bar data.`
+    : "Stage 1 quote handling did not reduce scan coverage.";
+}
+
+function tierSummaryInformationScore(summary: TierSummary): number {
+  return (
+    summary.counts.finalRanking * 8 +
+    summary.counts.finalistsReviewed * 6 +
+    summary.counts.stage3Passed * 4 +
+    summary.counts.stage2Passed * 2 +
+    summary.counts.stage1Passed
+  );
+}
+
+function mergeTierSummary(
+  existing: TierSummary | null,
+  incoming: TierSummary,
+): TierSummary {
+  if (!existing) {
+    return incoming;
+  }
+
+  const incomingMoreInformative =
+    tierSummaryInformationScore(incoming) >= tierSummaryInformationScore(existing);
+  return {
+    ...existing,
+    counts: mergeStageCounts(existing.counts, incoming.counts),
+    quoteFailures: existing.quoteFailures + incoming.quoteFailures,
+    fallbackRecoveries: existing.fallbackRecoveries + incoming.fallbackRecoveries,
+    symbols: mergeStageSymbols(existing.symbols, incoming.symbols),
+    finalistsReviewed: [
+      ...existing.finalistsReviewed,
+      ...incoming.finalistsReviewed,
+    ],
+    concludedWith:
+      incoming.concludedWith === "confirmed" || existing.concludedWith !== "confirmed"
+        ? incoming.concludedWith
+        : existing.concludedWith,
+    winner: incoming.winner ?? existing.winner,
+    noTradeReason: incomingMoreInformative
+      ? incoming.noTradeReason
+      : existing.noTradeReason,
+  };
+}
+
+function sortFinalRanking(
+  ranking: StarterUniverseTelemetry["finalRankingDebug"],
+): StarterUniverseTelemetry["finalRankingDebug"] {
+  return [...ranking].sort((left, right) => {
+    const scoreDelta = (right.score ?? Number.NEGATIVE_INFINITY) -
+      (left.score ?? Number.NEGATIVE_INFINITY);
+    return scoreDelta !== 0 ? scoreDelta : left.symbol.localeCompare(right.symbol);
+  });
+}
+
+function selectBestRejectedCandidates(
+  reviewed: StarterUniverseTelemetry["reviewedFinalistOutcomes"],
+): StarterUniverseTelemetry["bestRejectedCandidates"] {
+  const bestBySymbol = new Map<string, StarterUniverseTelemetry["reviewedFinalistOutcomes"][number]>();
+  for (const finalist of reviewed) {
+    if (finalist.conclusion === "confirmed") {
+      continue;
+    }
+    const existing = bestBySymbol.get(finalist.symbol);
+    if (!existing || finalist.rankingScore > existing.rankingScore) {
+      bestBySymbol.set(finalist.symbol, finalist);
+    }
+  }
+
+  return [...bestBySymbol.values()]
+    .sort((left, right) => {
+      const scoreDelta = right.rankingScore - left.rankingScore;
+      return scoreDelta !== 0 ? scoreDelta : left.symbol.localeCompare(right.symbol);
+    })
+    .slice(0, 5)
+    .map((item) => ({
+      symbol: item.symbol,
+      tier: item.tier,
+      tierLabel: item.tierLabel,
+      rejectionReasons: item.confirmationFailureReasons,
+    }));
+}
+
+function buildCrossTierFinalistSummary(
+  finalists: StarterUniverseTelemetry["bestRejectedCandidates"],
+): string | null {
+  if (finalists.length === 0) {
+    return null;
+  }
+
+  return `The closest reviewed candidates were ${finalists
+    .map((item) => `${item.symbol} (${item.tierLabel})`)
+    .join(", ")}.`;
+}
+
+function buildManualNoTradeReason(
+  chunkCount: number,
+  telemetry: StarterUniverseTelemetry,
+): string {
+  const scannedText = `${totalSymbolCount()} symbols across Tier 1, Tier 2, and Tier 3`;
+  const counts = telemetry.stageCounts;
+  const funnelSummary =
+    telemetry.bestRejectedCandidates.length > 0
+      ? ""
+      : counts.finalRanking > 0
+        ? " Ranked finalists existed, but none survived deterministic confirmation and trade-card validation."
+        : counts.stage3Passed > 0
+          ? " Stage 3 produced pass-through names, but none remained eligible for final confirmation."
+          : counts.stage2Passed > 0
+            ? " Some symbols passed options tradability, but none survived Stage 3 chart review."
+            : " No symbol cleared the options-tradability gate after the broad symbol scan.";
+  const closestCandidates = telemetry.bestRejectedCandidates.length > 0
+    ? ` Closest reviewed candidates: ${telemetry.bestRejectedCandidates
+        .map((item) => `${item.symbol} (${item.tierLabel})`)
+        .join(", ")}.`
+    : "";
+  const dataHealth = telemetry.dataHealth.degraded
+    ? ` Market data was degraded during the scan: ${telemetry.dataHealth.summary}`
+    : "";
+
+  return `Manual scan completed ${chunkCount} chunk(s) over ${scannedText}. No confirmed trade-card-ready setup survived the scanner, confirmation, and trade-card gates.${funnelSummary}${closestCandidates}${dataHealth}`;
+}
+
+function buildEmptyTelemetry(): StarterUniverseTelemetry {
+  const stageCounts = buildEmptyStageCounts();
+  const stageSymbols = buildEmptyStageSymbols();
+  const dataHealth = buildMergedDataHealth({
+    stageCounts,
+    stage1QuoteAttempts: 0,
+    stage1QuoteFailures: 0,
+    symbolsRecoveredByFallback: 0,
+    stage2RequestFailures: [],
+    stage3BarLoadFailures: [],
+  });
+  return {
+    stageCounts,
+    stageSymbols,
+    finalistsReviewedDebug: [],
+    stage3PassedDetails: [],
+    finalRankingDebug: [],
+    rejectionSummaries: buildEmptyRejectionSummaries(),
+    stage1QuoteAttempts: 0,
+    stage1QuoteFailures: 0,
+    stage1QuoteFallbackUsed: 0,
+    symbolsRecoveredByFallback: 0,
+    perTierQuoteFailures: {},
+    perTierFallbackRecoveries: {},
+    effectiveCoverageSummary: buildEffectiveCoverageSummary(0),
+    dataHealth,
+    nearMisses: [],
+    consistencyChecks: [],
+    finalSelectedSymbol: null,
+    topRankedSymbol: null,
+    scannedTiers: [],
+    winningTier: null,
+    finalSelectionSourceTier: null,
+    finalOutcomeSource: "cross_tier_no_trade",
+    tierSummaries: [],
+    tierStageCounts: {},
+    tierFinalistsReviewed: {},
+    cumulativeStageCounts: stageCounts,
+    finalNoTradeExplanation: null,
+    reviewedFinalistOutcomes: [],
+    bestReviewedFinalistsAcrossTiers: [],
+    bestRejectedCandidates: [],
+    crossTierFinalistSummary: null,
+  };
+}
+
+function mergeManualTelemetry(
+  current: StarterUniverseTelemetry | null,
+  incoming: StarterUniverseTelemetry,
+  tierKey: ScanUniverseTierKey,
+): StarterUniverseTelemetry {
+  const existing = current ?? buildEmptyTelemetry();
+  const stageCounts = mergeStageCounts(existing.stageCounts, incoming.stageCounts);
+  const stageSymbols = mergeStageSymbols(existing.stageSymbols, incoming.stageSymbols);
+  const stage1QuoteAttempts = existing.stage1QuoteAttempts + incoming.stage1QuoteAttempts;
+  const stage1QuoteFailures = existing.stage1QuoteFailures + incoming.stage1QuoteFailures;
+  const stage1QuoteFallbackUsed =
+    existing.stage1QuoteFallbackUsed + incoming.stage1QuoteFallbackUsed;
+  const symbolsRecoveredByFallback =
+    existing.symbolsRecoveredByFallback + incoming.symbolsRecoveredByFallback;
+  const stage2RequestFailures = [
+    ...existing.dataHealth.stage2RequestFailures,
+    ...incoming.dataHealth.stage2RequestFailures,
+  ];
+  const stage3BarLoadFailures = [
+    ...existing.dataHealth.stage3BarLoadFailures,
+    ...incoming.dataHealth.stage3BarLoadFailures,
+  ];
+  const tierSummary = incoming.tierSummaries.find((item) => item.tier === tierKey) ?? null;
+  const tierSummaryByKey = new Map(
+    existing.tierSummaries.map((item) => [item.tier, item]),
+  );
+  if (tierSummary) {
+    tierSummaryByKey.set(
+      tierKey,
+      mergeTierSummary(tierSummaryByKey.get(tierKey) ?? null, tierSummary),
+    );
+  }
+  const tierSummaries = SCAN_UNIVERSE_TIERS
+    .map((tier) => tierSummaryByKey.get(tier.key) ?? null)
+    .filter((item): item is TierSummary => item !== null);
+  const finalRankingDebug = sortFinalRanking([
+    ...existing.finalRankingDebug,
+    ...incoming.finalRankingDebug,
+  ]);
+  const reviewedFinalistOutcomes = [
+    ...existing.reviewedFinalistOutcomes,
+    ...incoming.reviewedFinalistOutcomes,
+  ];
+  const bestRejectedCandidates = selectBestRejectedCandidates(reviewedFinalistOutcomes);
+  const dataHealth = buildMergedDataHealth({
+    stageCounts,
+    stage1QuoteAttempts,
+    stage1QuoteFailures,
+    symbolsRecoveredByFallback,
+    stage2RequestFailures,
+    stage3BarLoadFailures,
+  });
+
+  return {
+    ...existing,
+    stageCounts,
+    stageSymbols,
+    finalistsReviewedDebug: [
+      ...existing.finalistsReviewedDebug,
+      ...incoming.finalistsReviewedDebug,
+    ],
+    stage3PassedDetails: [
+      ...existing.stage3PassedDetails,
+      ...incoming.stage3PassedDetails,
+    ],
+    finalRankingDebug,
+    rejectionSummaries: mergeRejectionSummaries(
+      existing.rejectionSummaries,
+      incoming.rejectionSummaries,
+    ),
+    stage1QuoteAttempts,
+    stage1QuoteFailures,
+    stage1QuoteFallbackUsed,
+    symbolsRecoveredByFallback,
+    perTierQuoteFailures: {
+      ...existing.perTierQuoteFailures,
+      [tierKey]:
+        (existing.perTierQuoteFailures[tierKey] ?? 0) +
+        (tierSummary?.quoteFailures ?? 0),
+    },
+    perTierFallbackRecoveries: {
+      ...existing.perTierFallbackRecoveries,
+      [tierKey]:
+        (existing.perTierFallbackRecoveries[tierKey] ?? 0) +
+        (tierSummary?.fallbackRecoveries ?? 0),
+    },
+    effectiveCoverageSummary: buildEffectiveCoverageSummary(symbolsRecoveredByFallback),
+    dataHealth,
+    nearMisses: [...existing.nearMisses, ...incoming.nearMisses],
+    consistencyChecks: [...existing.consistencyChecks, ...incoming.consistencyChecks],
+    topRankedSymbol: finalRankingDebug[0]?.symbol ?? null,
+    scannedTiers: uniqueStrings([...existing.scannedTiers, tierKey]),
+    tierSummaries,
+    tierStageCounts: Object.fromEntries(
+      tierSummaries.map((summary) => [summary.tier, summary.counts]),
+    ),
+    tierFinalistsReviewed: Object.fromEntries(
+      tierSummaries.map((summary) => [summary.tier, summary.finalistsReviewed]),
+    ),
+    cumulativeStageCounts: stageCounts,
+    reviewedFinalistOutcomes,
+    bestReviewedFinalistsAcrossTiers: reviewedFinalistOutcomes.map((item) => item.symbol),
+    bestRejectedCandidates,
+    crossTierFinalistSummary: buildCrossTierFinalistSummary(bestRejectedCandidates),
+  };
+}
+
+function markTradeCardBlock(
+  scan: ScanResult,
+  telemetry: StarterUniverseTelemetry,
+  blockerReason: string,
+): StarterUniverseTelemetry {
+  if (!scan.ticker) {
+    return telemetry;
+  }
+
+  const reviewedFinalistOutcomes = telemetry.reviewedFinalistOutcomes.map((item) =>
+    item.symbol === scan.ticker
+      ? {
+          ...item,
+          candidateBlockedPostConfirmation: true,
+          blockedConfirmationReason: blockerReason,
+          tierAbandonedAfterBlock: true,
+          scanContinuedAfterBlock: true,
+          survivedFinalSelection: false,
+          conclusion: "no_trade_today" as const,
+          reason: blockerReason,
+        }
+      : item,
+  );
+  const bestRejectedCandidates = selectBestRejectedCandidates(reviewedFinalistOutcomes);
+  return {
+    ...telemetry,
+    finalSelectedSymbol: null,
+    winningTier: null,
+    finalSelectionSourceTier: null,
+    finalOutcomeSource: "tier_blocked_post_confirmation",
+    finalistsReviewedDebug: mergeFinalizedAsymmetryIntoFinalistsReviewedDebug(
+      telemetry.finalistsReviewedDebug,
+      reviewedFinalistOutcomes,
+    ),
+    reviewedFinalistOutcomes,
+    bestReviewedFinalistsAcrossTiers: reviewedFinalistOutcomes.map((item) => item.symbol),
+    bestRejectedCandidates,
+    crossTierFinalistSummary: buildCrossTierFinalistSummary(bestRejectedCandidates),
+  };
+}
+
+function finalizeManualTelemetry(
+  telemetry: StarterUniverseTelemetry | null,
+  params: {
+    selectedSymbol: string | null;
+    winningTier: ScanUniverseTierKey | null;
+    noTradeReason: string | null;
+  },
+): StarterUniverseTelemetry {
+  const accumulated = telemetry ?? buildEmptyTelemetry();
+  const finalRankingDebug = sortFinalRanking(accumulated.finalRankingDebug);
+  const topRankedSymbol = finalRankingDebug[0]?.symbol ?? null;
+  const reviewedFinalistOutcomes = accumulated.reviewedFinalistOutcomes.map((item) => ({
+    ...item,
+    survivedFinalSelection:
+      params.selectedSymbol !== null && item.symbol === params.selectedSymbol,
+  }));
+  const bestRejectedCandidates = selectBestRejectedCandidates(reviewedFinalistOutcomes);
+  const tierSummaries = accumulated.tierSummaries.map((summary) =>
+    summary.tier === params.winningTier && params.selectedSymbol
+      ? {
+          ...summary,
+          concludedWith: "confirmed" as const,
+          winner: params.selectedSymbol,
+          noTradeReason: null,
+        }
+      : summary,
+  );
+
+  return {
+    ...accumulated,
+    finalRankingDebug: finalRankingDebug.map((item, index) => ({
+      ...item,
+      topRankedCandidate: index === 0,
+      confirmedFinalSelection:
+        params.selectedSymbol !== null && item.symbol === params.selectedSymbol,
+      selected: index === 0,
+    })),
+    finalSelectedSymbol: params.selectedSymbol,
+    topRankedSymbol,
+    winningTier: params.winningTier,
+    finalSelectionSourceTier: params.winningTier,
+    finalOutcomeSource:
+      params.selectedSymbol !== null
+        ? "tier_confirmed"
+        : reviewedFinalistOutcomes.some((item) => item.candidateBlockedPostConfirmation)
+          ? "tier_blocked_post_confirmation"
+          : "cross_tier_no_trade",
+    tierSummaries,
+    tierStageCounts: Object.fromEntries(
+      tierSummaries.map((summary) => [summary.tier, summary.counts]),
+    ),
+    tierFinalistsReviewed: Object.fromEntries(
+      tierSummaries.map((summary) => [summary.tier, summary.finalistsReviewed]),
+    ),
+    finalNoTradeExplanation: params.noTradeReason,
+    reviewedFinalistOutcomes,
+    bestReviewedFinalistsAcrossTiers: reviewedFinalistOutcomes.map((item) => item.symbol),
+    bestRejectedCandidates,
+    crossTierFinalistSummary: buildCrossTierFinalistSummary(bestRejectedCandidates),
+  };
+}
+
 function readManualScanState(value: unknown): ManualScanState | null {
   const record = value && typeof value === "object" && !Array.isArray(value)
     ? value as Partial<ManualScanState>
     : null;
-  if (!record || typeof record.scanRunId !== "string" || typeof record.prompt !== "string") {
+  if (
+    !record ||
+    record.version !== 2 ||
+    typeof record.scanRunId !== "string" ||
+    typeof record.prompt !== "string"
+  ) {
     return null;
   }
 
   return {
+    version: 2,
     scanRunId: record.scanRunId,
     prompt: record.prompt,
     status: record.status === "completed" ? "completed" : "running",
@@ -171,30 +725,19 @@ function readManualScanState(value: unknown): ManualScanState | null {
       ? Math.max(0, Math.floor(record.scannedSymbolCount))
       : 0,
     startedAt: typeof record.startedAt === "string" ? record.startedAt : new Date().toISOString(),
-    paperLearningPreferences: Array.isArray(record.paperLearningPreferences)
-      ? record.paperLearningPreferences as ScanLearningPreference[]
-      : [],
     bestConfirmed: record.bestConfirmed ?? null,
     chunkSummaries: Array.isArray(record.chunkSummaries)
       ? record.chunkSummaries.slice(-80) as ManualScanChunkSummary[]
       : [],
+    accumulatedTelemetry: record.accumulatedTelemetry ?? null,
     latestDataHealth: record.latestDataHealth ?? null,
     finalResponse: record.finalResponse ?? null,
   };
 }
 
-async function buildLearningPreferences(): Promise<ScanLearningPreference[]> {
-  try {
-    const trades = await listJournalTradeDetails(200, { accountMode: "paper" });
-    return buildPaperLearningPreferences(trainEntryRewardModel(trades));
-  } catch (error) {
-    console.warn("Manual scan could not load paper-learning preferences.", error);
-    return [];
-  }
-}
-
-async function createInitialState(body: unknown): Promise<ManualScanState> {
+function createInitialState(body: unknown): ManualScanState {
   return {
+    version: 2,
     scanRunId: buildScanRunId(),
     prompt: readPrompt(body),
     status: "running",
@@ -203,9 +746,9 @@ async function createInitialState(body: unknown): Promise<ManualScanState> {
     chunkCount: 0,
     scannedSymbolCount: 0,
     startedAt: new Date().toISOString(),
-    paperLearningPreferences: await buildLearningPreferences(),
     bestConfirmed: null,
     chunkSummaries: [],
+    accumulatedTelemetry: null,
     latestDataHealth: null,
     finalResponse: null,
   };
@@ -270,7 +813,6 @@ function buildProgress(state: ManualScanState, text: string): ManualScanProgress
     totalSymbolCount: totalSymbolCount(),
     chunkCount: state.chunkCount,
     bestSymbol: state.bestConfirmed?.scan.ticker ?? null,
-    learningPreferenceCount: state.paperLearningPreferences.length,
   };
 }
 
@@ -304,17 +846,28 @@ async function finalizeState(state: ManualScanState): Promise<ManualScanState> {
   const scannedText = `${totalSymbolCount()} symbols across Tier 1, Tier 2, and Tier 3`;
 
   if (!best) {
+    const provisionalTelemetry = finalizeManualTelemetry(state.accumulatedTelemetry, {
+      selectedSymbol: null,
+      winningTier: null,
+      noTradeReason: null,
+    });
+    const noTradeReason = buildManualNoTradeReason(state.chunkCount, provisionalTelemetry);
+    const telemetry = finalizeManualTelemetry(state.accumulatedTelemetry, {
+      selectedSymbol: null,
+      winningTier: null,
+      noTradeReason,
+    });
     const scan: ScanResult = {
       ticker: null,
       direction: null,
       confidence: null,
       conclusion: "no_trade_today",
-      reason: `Manual scan completed ${state.chunkCount} chunk(s) over ${scannedText}. No confirmed trade-card-ready setup survived the scanner, confirmation, and trade-card gates.`,
-      telemetry: null,
+      reason: noTradeReason,
+      telemetry,
     };
     const presentationSummary = buildWorkflowPresentationSummary({
       scan,
-      telemetry: null,
+      telemetry,
       tradeCard: null,
     });
     const progress = buildProgress(state, "Manual scan complete: no confirmed setup survived all gates.");
@@ -326,7 +879,7 @@ async function finalizeState(state: ManualScanState): Promise<ManualScanState> {
       scan,
       tradeCard: null,
       tradeRecommendation: null,
-      telemetry: null,
+      telemetry,
       presentationSummary,
       manualScan: {
         chunkCount: state.chunkCount,
@@ -334,7 +887,6 @@ async function finalizeState(state: ManualScanState): Promise<ManualScanState> {
         totalSymbolCount: totalSymbolCount(),
         bestSymbol: null,
         chunkSummaries: state.chunkSummaries,
-        learningPreferenceCount: state.paperLearningPreferences.length,
       },
     };
     return {
@@ -345,24 +897,30 @@ async function finalizeState(state: ManualScanState): Promise<ManualScanState> {
     };
   }
 
+  const winningTier = best.chunkSummary.tier as ScanUniverseTierKey;
+  const telemetry = finalizeManualTelemetry(state.accumulatedTelemetry, {
+    selectedSymbol: best.scan.ticker,
+    winningTier,
+    noTradeReason: null,
+  });
   const scan: ScanResult = {
     ...best.scan,
     reason: `Selected ${best.scan.ticker} as the best confirmed setup after scanning ${scannedText}. ${best.scan.reason}`,
+    telemetry,
   };
   const presentationSummary = buildWorkflowPresentationSummary({
     scan,
-    telemetry: best.telemetry,
+    telemetry,
     tradeCard: best.tradeCard,
   });
   const signalSnapshotJson = {
     scan,
-    telemetry: best.telemetry,
+    telemetry,
     tradeCard: best.tradeCard,
     presentationSummary,
     manualScan: {
       chunkCount: state.chunkCount,
       chunkSummaries: state.chunkSummaries,
-      learningPreferenceCount: state.paperLearningPreferences.length,
     },
   };
   let tradeRecommendation = null;
@@ -394,7 +952,7 @@ async function finalizeState(state: ManualScanState): Promise<ManualScanState> {
     tradeCard: best.tradeCard,
     journalPlannedTrade: best.tradeCard.plannedJournalFields,
     tradeRecommendation,
-    telemetry: best.telemetry,
+    telemetry,
     presentationSummary,
     manualScan: {
       chunkCount: state.chunkCount,
@@ -402,7 +960,6 @@ async function finalizeState(state: ManualScanState): Promise<ManualScanState> {
       totalSymbolCount: totalSymbolCount(),
       bestSymbol: scan.ticker,
       chunkSummaries: state.chunkSummaries,
-      learningPreferenceCount: state.paperLearningPreferences.length,
     },
   };
 
@@ -440,12 +997,11 @@ async function advanceState(initialState: ManualScanState): Promise<ManualScanSt
     excludedTickers: buildExcludedTickers(state.tierIndex, state.tierCursor),
     scanTierLimit: state.tierIndex + 1,
     maxSymbolsPerTier: chunkSize,
-    paperLearningPreferences: state.paperLearningPreferences,
   });
   if (!scan.telemetry) {
     throw new Error("Manual scan did not receive TradeStation universe telemetry; market data was unavailable for this chunk.");
   }
-  const telemetry = scan.telemetry ?? null;
+  let telemetry = scan.telemetry;
   const rankingScore = readSelectedRankingScore(scan, telemetry);
   let tradeCard: TradeConstructionResult | null = null;
   let tradeCardBlockReason: string | null = null;
@@ -454,6 +1010,7 @@ async function advanceState(initialState: ManualScanState): Promise<ManualScanSt
     tradeCard = await maybeBuildTradeCard(scan, telemetry);
   } catch (error) {
     tradeCardBlockReason = readErrorMessage(error);
+    telemetry = markTradeCardBlock(scan, telemetry, tradeCardBlockReason);
   }
 
   const chunkSummary: ManualScanChunkSummary = {
@@ -482,13 +1039,19 @@ async function advanceState(initialState: ManualScanState): Promise<ManualScanSt
           chunkSummary,
         }
       : state.bestConfirmed;
+  const accumulatedTelemetry = mergeManualTelemetry(
+    state.accumulatedTelemetry,
+    telemetry,
+    tier.key,
+  );
   const nextState = normalizeScanPosition({
     ...state,
     tierCursor: to,
     chunkCount: state.chunkCount + 1,
     bestConfirmed,
     chunkSummaries: [...state.chunkSummaries, chunkSummary].slice(-80),
-    latestDataHealth: telemetry?.dataHealth ?? state.latestDataHealth,
+    accumulatedTelemetry,
+    latestDataHealth: accumulatedTelemetry.dataHealth,
   });
 
   if (nextState.tierIndex >= SCAN_UNIVERSE_TIERS.length) {

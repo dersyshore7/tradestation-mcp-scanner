@@ -4,7 +4,8 @@ import type {
   EntryRewardModel,
 } from "./entryRewardModel.js";
 
-const MIN_PAPER_LEARNING_SELECTION_SAMPLE = 3;
+const MIN_PAPER_LEARNING_PENALTY_SAMPLE = 8;
+const MIN_PAPER_LEARNING_HARD_BLOCK_SAMPLE = 15;
 
 function parseEntryRewardContextKey(key: string): Record<string, string> {
   const parsed: Record<string, string> = {};
@@ -72,6 +73,24 @@ function buildPaperLearningPreference(
     return null;
   }
 
+  const isHardBlock =
+    decision === "avoid" &&
+    context.count >= MIN_PAPER_LEARNING_HARD_BLOCK_SAMPLE &&
+    context.averageRewardR <= -1.25 &&
+    context.winRate <= 0.2;
+  const effect: NonNullable<ScanLearningPreference["effect"]> =
+    decision === "prefer"
+      ? "boost"
+      : isHardBlock
+        ? "hard_block"
+        : "penalty";
+  const boundedReward = Math.max(-3, Math.min(3, context.averageRewardR));
+  const scoreAdjustment =
+    effect === "hard_block"
+      ? -8
+      : decision === "prefer"
+        ? Number(Math.max(1, boundedReward).toFixed(2))
+        : Number(Math.min(-1, boundedReward).toFixed(2));
   const preference: ScanLearningPreference = {
     direction,
     setupType,
@@ -79,9 +98,12 @@ function buildPaperLearningPreference(
     rewardRiskBucket,
     chartScoreBucket,
     decision,
+    effect,
+    scoreAdjustment,
     reason: `${decision === "avoid" ? "Weak" : "Rewarded"} paper setup context ${context.key}: avg ${context.averageRewardR.toFixed(2)}R over ${context.count} trade(s).`,
     sampleSize: context.count,
     averageRewardR: context.averageRewardR,
+    winRate: context.winRate,
   };
 
   if (parts.volume && parts.volume !== "unknown") {
@@ -106,14 +128,13 @@ export function buildPaperLearningPreferences(
   const contexts = summarizeEntryRewardBuckets(model);
   const avoided = contexts
     .filter((context) =>
-      context.count >= MIN_PAPER_LEARNING_SELECTION_SAMPLE
-      && context.averageRewardR <= -0.75
-      && context.winRate <= 0.34
+      context.count >= MIN_PAPER_LEARNING_PENALTY_SAMPLE
+      && context.averageRewardR < 0
     )
     .sort((left, right) => left.averageRewardR - right.averageRewardR);
   const preferred = contexts
     .filter((context) =>
-      context.count >= MIN_PAPER_LEARNING_SELECTION_SAMPLE
+      context.count >= MIN_PAPER_LEARNING_PENALTY_SAMPLE
       && context.averageRewardR >= 0.75
       && context.winRate >= 0.5
     )

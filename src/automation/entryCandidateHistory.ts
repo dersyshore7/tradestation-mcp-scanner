@@ -37,6 +37,10 @@ export type PaperEntryCandidateRecord = {
   entry_policy_win_rate: string | null;
   entry_policy_matched_key: string | null;
   entry_policy_summary: string | null;
+  ml_action?: string | null;
+  ml_score_adjustment?: string | null;
+  selected?: boolean;
+  eventual_outcome_trade_id?: string | null;
   feature_json: Record<string, unknown>;
   scan_json: Record<string, unknown> | null;
   trade_card_json: Record<string, unknown> | null;
@@ -52,6 +56,10 @@ export type PaperEntryCandidateCreateInput = {
   orderId?: string | null;
   features?: EntryRewardFeatureInput | null;
   entryPolicy?: EntryPolicyRecommendation | null;
+  mlAction?: string | null;
+  mlScoreAdjustment?: number | null;
+  selected?: boolean;
+  eventualOutcomeTradeId?: string | null;
   scan?: Record<string, unknown> | null;
   tradeCard?: Record<string, unknown> | null;
 };
@@ -70,6 +78,19 @@ function isPaperEntryCandidatesTableMissing(error: unknown): boolean {
   ) || (
     message.toLowerCase().includes("could not find the table")
     && message.includes("paper_entry_candidates")
+  );
+}
+
+function isLearningColumnsMissing(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("paper_entry_candidates")
+    && (
+      message.includes("ml_action")
+      || message.includes("ml_score_adjustment")
+      || message.includes("selected")
+      || message.includes("eventual_outcome_trade_id")
+    )
   );
 }
 
@@ -168,45 +189,61 @@ export async function recordPaperEntryCandidate(
     : null;
   const raw = featureSnapshot?.raw ?? null;
   const buckets = featureSnapshot?.buckets ?? null;
+  const baseValues = {
+    scan_run_id: input.scanRunId,
+    source: "paper_trader",
+    dry_run: input.dryRun,
+    symbol: input.symbol,
+    decision: input.decision,
+    decision_reason: input.decisionReason,
+    paper_trade_id: input.paperTradeId ?? null,
+    order_id: input.orderId ?? null,
+    direction: raw?.direction ?? null,
+    setup_type: raw?.setupType ?? null,
+    confidence_bucket: raw?.confidenceBucket ?? null,
+    dte_at_entry: numericOrNull(raw?.dteAtEntry),
+    planned_reward_risk: numericOrNull(raw?.plannedRewardRisk),
+    chart_review_score: numericOrNull(raw?.chartReviewScore),
+    volume_ratio: numericOrNull(raw?.volumeRatio),
+    option_spread: numericOrNull(raw?.optionSpread),
+    market_regime: raw?.marketRegime ?? null,
+    scan_tier: raw?.scanTier ?? null,
+    entry_day: raw?.entryDay ?? null,
+    entry_time_bucket: buckets?.entryTimeBucket ?? null,
+    entry_policy_decision: input.entryPolicy?.decision ?? null,
+    entry_policy_sample_size: input.entryPolicy?.sampleSize ?? null,
+    entry_policy_average_reward_r: numericOrNull(input.entryPolicy?.averageRewardR),
+    entry_policy_win_rate: numericOrNull(input.entryPolicy?.winRate),
+    entry_policy_matched_key: input.entryPolicy?.matchedKey ?? null,
+    entry_policy_summary: input.entryPolicy?.summary ?? null,
+    feature_json: featureSnapshot ?? {},
+    scan_json: compactScanSnapshot(input.scan),
+    trade_card_json: compactTradeCardSnapshot(input.tradeCard),
+  };
+  const learningValues = {
+    ...(input.mlAction !== undefined ? { ml_action: input.mlAction } : {}),
+    ...(input.mlScoreAdjustment !== undefined ? { ml_score_adjustment: numericOrNull(input.mlScoreAdjustment) } : {}),
+    ...(input.selected !== undefined ? { selected: input.selected } : {}),
+    ...(input.eventualOutcomeTradeId !== undefined ? { eventual_outcome_trade_id: input.eventualOutcomeTradeId } : {}),
+  };
 
   try {
     return await supabaseInsertAndSelectOne<PaperEntryCandidateRecord>({
       table: "paper_entry_candidates",
       values: {
-        scan_run_id: input.scanRunId,
-        source: "paper_trader",
-        dry_run: input.dryRun,
-        symbol: input.symbol,
-        decision: input.decision,
-        decision_reason: input.decisionReason,
-        paper_trade_id: input.paperTradeId ?? null,
-        order_id: input.orderId ?? null,
-        direction: raw?.direction ?? null,
-        setup_type: raw?.setupType ?? null,
-        confidence_bucket: raw?.confidenceBucket ?? null,
-        dte_at_entry: numericOrNull(raw?.dteAtEntry),
-        planned_reward_risk: numericOrNull(raw?.plannedRewardRisk),
-        chart_review_score: numericOrNull(raw?.chartReviewScore),
-        volume_ratio: numericOrNull(raw?.volumeRatio),
-        option_spread: numericOrNull(raw?.optionSpread),
-        market_regime: raw?.marketRegime ?? null,
-        scan_tier: raw?.scanTier ?? null,
-        entry_day: raw?.entryDay ?? null,
-        entry_time_bucket: buckets?.entryTimeBucket ?? null,
-        entry_policy_decision: input.entryPolicy?.decision ?? null,
-        entry_policy_sample_size: input.entryPolicy?.sampleSize ?? null,
-        entry_policy_average_reward_r: numericOrNull(input.entryPolicy?.averageRewardR),
-        entry_policy_win_rate: numericOrNull(input.entryPolicy?.winRate),
-        entry_policy_matched_key: input.entryPolicy?.matchedKey ?? null,
-        entry_policy_summary: input.entryPolicy?.summary ?? null,
-        feature_json: featureSnapshot ?? {},
-        scan_json: compactScanSnapshot(input.scan),
-        trade_card_json: compactTradeCardSnapshot(input.tradeCard),
+        ...baseValues,
+        ...learningValues,
       },
     });
   } catch (error) {
     if (isPaperEntryCandidatesTableMissing(error)) {
       return null;
+    }
+    if (isLearningColumnsMissing(error)) {
+      return await supabaseInsertAndSelectOne<PaperEntryCandidateRecord>({
+        table: "paper_entry_candidates",
+        values: baseValues,
+      });
     }
     throw error;
   }

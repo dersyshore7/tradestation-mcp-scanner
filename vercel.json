@@ -5,6 +5,12 @@
     "api/manual-scan.ts": {
       "maxDuration": 300
     },
+    "api/paper-trader-run.ts": {
+      "maxDuration": 300
+    },
+    "api/paper-trader.ts": {
+      "maxDuration": 300
+    },
     "api/workflow.ts": {
       "maxDuration": 300
     }

@@ -1,11 +1,9 @@
 import { buildWorkflowPresentationSummary } from "../app/resultPresentation.js";
 import { MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO } from "../app/chartAnchoredTradability.js";
-import { runScan, type ScanLearningPreference } from "../app/runScan.js";
+import { runScan } from "../app/runScan.js";
+import type { TradeConstructionResult } from "../app/runTradeConstruction.js";
 import {
-  constructTradeCard,
-  type TradeConstructionResult,
-} from "../app/runTradeConstruction.js";
-import {
+  archiveJournalTradeWithoutReview,
   closeJournalTrade,
   createJournalTrade,
   listJournalTradeDetails,
@@ -23,6 +21,10 @@ import {
   decideAiManagementAction,
   enforceAiManagementGuardrails,
 } from "./aiManager.js";
+import {
+  runAutomatedEntryScan,
+  type AutomatedEntryScanState,
+} from "./automatedEntryScan.js";
 import {
   recommendPolicyAction,
   trainPolicyModel,
@@ -52,18 +54,20 @@ import {
   type AutomationTradeStationClient,
   type TradeStationOrderRequest,
   type TradeStationOrderResult,
+  type TradeStationPositionSnapshot,
 } from "./tradestation.js";
 import {
+  loadLatestPaperTraderRunWithRaw,
   listRecentPaperTraderRuns,
   recordPaperTraderRun,
   type PaperTraderRunRecord,
 } from "./paperTraderHistory.js";
 
-const MAX_ENTRY_POLICY_SCAN_ATTEMPTS = 3;
 const MAX_TRADESTATION_CONTRACTS_PER_ORDER = 2000;
 // Paper entries are daily/weekly continuation trades, not penny-distance scalps.
 const MIN_AUTOMATED_ENTRY_TARGET_ROOM_PCT = 0.0075;
 const MIN_AUTOMATED_ENTRY_RISK_ROOM_PCT = 0.0025;
+const MAX_AUTOMATED_SCAN_RESUME_AGE_MS = 6 * 60 * 60 * 1000;
 
 type PaperTraderRunOptions = {
   prompt?: string;
@@ -240,6 +244,8 @@ export type PaperTraderStatus = {
   maxPositionPct: number;
   requiresSecret: boolean;
   openPaperTrades: number;
+  liveSimPositions: number | null;
+  staleOpenJournalTrades: number | null;
   sizing: {
     accountValueUsd: number | null;
     unrealizedPlUsd: number | null;
@@ -314,6 +320,8 @@ type PaperTraderRunResult = {
   };
   guards: {
     openPaperTrades: number;
+    liveSimPositions: number | null;
+    staleOpenJournalTrades: number | null;
     todayRealizedPlUsd: number;
     newEntriesAllowed: boolean;
   };
@@ -321,6 +329,8 @@ type PaperTraderRunResult = {
     inspected: number;
     updated: number;
     partialFills: number;
+    staleArchived: number;
+    adoptedPositions: number;
     updates: {
       tradeId: string;
       symbol: string;
@@ -331,6 +341,7 @@ type PaperTraderRunResult = {
       remainingQuantity: number | null;
       averageFillPrice: number | null;
       note: string;
+      archived?: boolean;
     }[];
     skipped: {
       tradeId: string;
@@ -369,6 +380,7 @@ type PaperTraderRunResult = {
       | "outside_market_hours"
       | "skipped_after_guard"
       | "no_trade_today"
+      | "scan_in_progress"
       | "trade_card_blocked"
       | "zero_contract_trade"
       | "preview_only"
@@ -381,6 +393,16 @@ type PaperTraderRunResult = {
     tradeCard?: TradeConstructionResult | null;
     reasoning?: PaperTraderEntryReasoning;
     evaluatedCandidates?: PaperTraderEntryCandidateEvaluation[];
+    scanSummary?: {
+      status: "running" | "completed";
+      scannedSymbolCount: number;
+      totalSymbolCount: number;
+      chunkCount: number;
+      finalistCount: number;
+      confirmedCandidateCount: number;
+      mlAdjustmentSummary: string[];
+    };
+    automatedScanState?: AutomatedEntryScanState | null;
   };
   decisionLog: PaperTraderDecisionLogEntry[];
   paperTradeHistory: PaperTraderTradeHistoryItem[];
@@ -562,6 +584,44 @@ function buildScanRunId(): string {
   return `paper_scan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function mlActionFromEntryPolicy(
+  entryPolicy: EntryPolicyRecommendation | null | undefined,
+): string | null {
+  if (!entryPolicy) {
+    return null;
+  }
+  if (entryPolicy.decision === "block") {
+    return "hard_block";
+  }
+  if (entryPolicy.decision === "caution") {
+    return "penalty";
+  }
+  if (entryPolicy.decision === "favor") {
+    return "boost";
+  }
+  return entryPolicy.sampleSize > 0 && entryPolicy.sampleSize < 8
+    ? "shadow"
+    : "allow";
+}
+
+function mlScoreAdjustmentFromEntryPolicy(
+  entryPolicy: EntryPolicyRecommendation | null | undefined,
+): number | null {
+  if (!entryPolicy) {
+    return null;
+  }
+  if (entryPolicy.decision === "block") {
+    return -8;
+  }
+  if (entryPolicy.decision === "caution") {
+    return Math.min(-1, Math.max(-3, entryPolicy.averageRewardR ?? -1));
+  }
+  if (entryPolicy.decision === "favor") {
+    return Math.max(1, Math.min(3, entryPolicy.averageRewardR ?? 1));
+  }
+  return 0;
+}
+
 async function recordEntryCandidateAudit(input: {
   scanRunId: string;
   dryRun: boolean;
@@ -572,6 +632,7 @@ async function recordEntryCandidateAudit(input: {
   orderId?: string | null;
   features?: EntryRewardFeatureInput | null;
   entryPolicy?: EntryPolicyRecommendation | null;
+  selected?: boolean;
   scan?: unknown;
   tradeCard?: unknown;
 }): Promise<void> {
@@ -586,6 +647,9 @@ async function recordEntryCandidateAudit(input: {
       orderId: input.orderId ?? null,
       features: input.features ?? null,
       entryPolicy: input.entryPolicy ?? null,
+      mlAction: mlActionFromEntryPolicy(input.entryPolicy),
+      mlScoreAdjustment: mlScoreAdjustmentFromEntryPolicy(input.entryPolicy),
+      selected: input.selected ?? false,
       scan: asRecord(input.scan) ?? null,
       tradeCard: asRecord(input.tradeCard) ?? null,
     });
@@ -610,6 +674,50 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   }
 
   return value as Record<string, unknown>;
+}
+
+function readAutomatedScanStateFromLatestRun(
+  run: PaperTraderRunRecord | null,
+): AutomatedEntryScanState | null {
+  if (!run || run.outcome !== "scan_in_progress") {
+    return null;
+  }
+  const createdAtMs = Date.parse(run.created_at);
+  if (
+    !Number.isFinite(createdAtMs)
+    || Date.now() - createdAtMs > MAX_AUTOMATED_SCAN_RESUME_AGE_MS
+  ) {
+    return null;
+  }
+
+  const raw = asRecord(run.raw_result_json);
+  const entry = asRecord(raw?.entry);
+  const state = asRecord(entry?.automatedScanState);
+  if (
+    state?.version !== 1 ||
+    state.status !== "running" ||
+    typeof state.scanRunId !== "string" ||
+    typeof state.prompt !== "string"
+  ) {
+    return null;
+  }
+
+  return state as AutomatedEntryScanState;
+}
+
+async function loadResumableAutomatedScanState(
+  dryRun: boolean,
+): Promise<AutomatedEntryScanState | null> {
+  try {
+    const latestRun = await loadLatestPaperTraderRunWithRaw({ dryRun });
+    return readAutomatedScanStateFromLatestRun(latestRun);
+  } catch (error) {
+    console.warn(
+      "paper trader could not load resumable automated scan state",
+      error instanceof Error ? error.message : String(error),
+    );
+    return null;
+  }
 }
 
 function buildUpdatedSignalSnapshot(
@@ -1670,6 +1778,14 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
   const runHistory = await loadPaperTraderRunHistory();
   const entryCandidateHistory = await loadPaperEntryCandidateHistory(200);
   const sizing = await loadPaperTraderSizingSnapshot(config);
+  const openJournalTrades = trades.filter(
+    (trade) => trade.account_mode === "paper" && trade.status === "open",
+  );
+  const liveSimPositions = sizing.openPositionCount;
+  const staleOpenJournalTrades =
+    liveSimPositions === null
+      ? null
+      : Math.max(0, openJournalTrades.length - liveSimPositions);
   const entryPolicyEffectiveness = buildEntryPolicyEffectivenessSummary(
     trades,
     entryCandidateHistory.entryCandidateHistory,
@@ -1685,9 +1801,9 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
     maxDailyLossUsd: config.maxDailyLossUsd,
     maxPositionPct: config.maxPositionPct,
     requiresSecret: config.apiSecret !== null,
-    openPaperTrades: trades.filter(
-      (trade) => trade.account_mode === "paper" && trade.status === "open",
-    ).length,
+    openPaperTrades: openJournalTrades.length,
+    liveSimPositions,
+    staleOpenJournalTrades,
     sizing,
     configurationIssues,
     dataWarnings: loadedTrades.warning ? [loadedTrades.warning] : [],
@@ -1738,11 +1854,172 @@ function computeFillStatus(params: {
   return "filled";
 }
 
+function parseTradeStationOptionSymbol(symbol: string): {
+  underlying: string;
+  expirationDate: string | null;
+  direction: "CALL" | "PUT";
+} | null {
+  const match = symbol.trim().match(/^([A-Z.]+)\s+(\d{2})(\d{2})(\d{2})([CP])\d+(?:\.\d+)?$/i);
+  if (!match?.[1] || !match[2] || !match[3] || !match[4] || !match[5]) {
+    return null;
+  }
+
+  return {
+    underlying: match[1].toUpperCase(),
+    expirationDate: `20${match[2]}-${match[3]}-${match[4]}`,
+    direction: match[5].toUpperCase() === "C" ? "CALL" : "PUT",
+  };
+}
+
+function optionSymbolsForOpenTrades(trades: JournalTradeDetail[]): Set<string> {
+  return new Set(
+    trades
+      .map((trade) => readAutomationSnapshot(trade)?.optionSymbol)
+      .filter((symbol): symbol is string => typeof symbol === "string" && symbol.length > 0)
+      .map((symbol) => symbol.replace(/\s+/g, "").toUpperCase()),
+  );
+}
+
+function normalizeOptionSymbolForMatch(symbol: string): string {
+  return symbol.replace(/\s+/g, "").toUpperCase();
+}
+
+function appendEntryNote(existing: string | null, note: string): string {
+  return [existing, note].filter((value): value is string =>
+    typeof value === "string" && value.trim().length > 0
+  ).join("\n");
+}
+
 function numbersDiffer(left: number | null | undefined, right: number | null | undefined): boolean {
   if (left === null || left === undefined || right === null || right === undefined) {
     return left !== right;
   }
   return Math.abs(left - right) > 0.0001;
+}
+
+async function adoptUnlinkedLiveSimPositions(params: {
+  config: PaperTraderConfig;
+  client: AutomationTradeStationClient;
+  accountId: string;
+  positionsPayload: unknown;
+  openPaperTrades: JournalTradeDetail[];
+  updateJournal: boolean;
+}): Promise<{
+  adopted: number;
+  updates: PaperTraderRunResult["reconciliation"]["updates"];
+}> {
+  if (!params.updateJournal) {
+    return { adopted: 0, updates: [] };
+  }
+
+  const linkedOptionSymbols = optionSymbolsForOpenTrades(params.openPaperTrades);
+  const livePositions = extractPositionSnapshots(params.positionsPayload);
+  const updates: PaperTraderRunResult["reconciliation"]["updates"] = [];
+  let adopted = 0;
+
+  for (const position of livePositions) {
+    if (linkedOptionSymbols.has(normalizeOptionSymbolForMatch(position.symbol))) {
+      continue;
+    }
+
+    const parsed = parseTradeStationOptionSymbol(position.symbol);
+    const quantity = Math.abs(position.quantity ?? 0);
+    if (!parsed || quantity <= 0) {
+      continue;
+    }
+
+    let underlyingEntryPrice: number | null = null;
+    try {
+      underlyingEntryPrice = (await params.client.fetchQuote(parsed.underlying)).last;
+    } catch {
+      underlyingEntryPrice = null;
+    }
+
+    const optionEntryPrice = position.averagePrice ?? null;
+    const positionCostUsd =
+      optionEntryPrice !== null
+        ? Number((quantity * optionEntryPrice * 100).toFixed(2))
+        : Math.max(1, Math.abs(position.marketValue ?? 0));
+    const now = new Date();
+    const chicagoNow = formatChicagoParts(now);
+    const decisionLog: PaperTraderDecisionLogEntry[] = [{
+      timestamp: now.toISOString(),
+      symbol: parsed.underlying,
+      kind: "order_check",
+      action: "adopted_live_sim_position",
+      note: `Adopted live TradeStation SIM position ${position.symbol} into the paper journal because no open journal row was linked to it.`,
+      optionSymbol: position.symbol,
+      quantity,
+    }];
+
+    const createdTrade = await createJournalTrade({
+      account_mode: "paper",
+      entry_date: chicagoNow.date,
+      entry_time: chicagoNow.time,
+      contracts: quantity,
+      option_entry_price: optionEntryPrice,
+      entry_notes: "Adopted from live TradeStation SIM position during paper-trader reconciliation.",
+      planned_trade: {
+        symbol: parsed.underlying,
+        direction: parsed.direction,
+        expiration_date: parsed.expirationDate,
+        position_cost_usd: positionCostUsd,
+        underlying_entry_price: underlyingEntryPrice,
+        planned_risk_usd: null,
+        planned_profit_usd: null,
+        setup_type: "adopted_sim_position",
+        setup_subtype: "reconciliation",
+        confidence_bucket: "adopted",
+        intended_stop_underlying: null,
+        intended_target_underlying: null,
+        market_regime: "unknown",
+      },
+      signal_snapshot_json: {
+        automation: {
+          lane: "paper_trader_v1",
+          paperTrader: {
+            accountId: params.accountId,
+            optionSymbol: position.symbol,
+            quantity,
+            requestedQuantity: quantity,
+            filledQuantity: quantity,
+            remainingQuantity: 0,
+            entryAverageFillPrice: optionEntryPrice,
+            entryFillStatus: "filled",
+            lastOrderStatus: "filled",
+            lastOrderCheckAt: now.toISOString(),
+            lastPositionQuantity: quantity,
+            managementStyle: "ai",
+            lastManagementAction: "hold",
+            lastManagementConfidence: "medium",
+            lastManagementNote: "Live SIM position adopted. AI management can review it on the next cycle.",
+            lastManagementThesis: "Adopted live SIM position without original scanner thesis.",
+            lastManagementAt: now.toISOString(),
+            managementHistory: [],
+            decisionLog,
+            maxPositionPct: params.config.maxPositionPct,
+          },
+        },
+      },
+      status: "open",
+    });
+
+    linkedOptionSymbols.add(normalizeOptionSymbolForMatch(position.symbol));
+    adopted += 1;
+    updates.push({
+      tradeId: createdTrade.id,
+      symbol: parsed.underlying,
+      orderId: null,
+      fillStatus: "filled",
+      filledQuantity: quantity,
+      requestedQuantity: quantity,
+      remainingQuantity: 0,
+      averageFillPrice: optionEntryPrice,
+      note: `Adopted live SIM position ${position.symbol} into the paper journal.`,
+    });
+  }
+
+  return { adopted, updates };
 }
 
 async function reconcileOpenPaperOrders(
@@ -1753,31 +2030,63 @@ async function reconcileOpenPaperOrders(
   const openPaperTrades = allTrades.filter(
     (trade) => trade.account_mode === "paper" && trade.status === "open",
   );
+  const client = await createAutomationTradeStationClient(config.automationBaseUrl);
   if (openPaperTrades.length === 0) {
+    if (config.accountId) {
+      const positionsPayload = await client.getPositions(config.accountId);
+      const adoption = await adoptUnlinkedLiveSimPositions({
+        config,
+        client,
+        accountId: config.accountId,
+        positionsPayload,
+        openPaperTrades,
+        updateJournal,
+      });
+      return {
+        inspected: 0,
+        updated: adoption.adopted,
+        partialFills: 0,
+        staleArchived: 0,
+        adoptedPositions: adoption.adopted,
+        updates: adoption.updates,
+        skipped: [],
+      };
+    }
     return {
       inspected: 0,
       updated: 0,
       partialFills: 0,
+      staleArchived: 0,
+      adoptedPositions: 0,
       updates: [],
       skipped: [],
     };
   }
 
-  const client = await createAutomationTradeStationClient(config.automationBaseUrl);
   const positionPayloads = new Map<string, unknown>();
   const updates: PaperTraderRunResult["reconciliation"]["updates"] = [];
   const skipped: PaperTraderRunResult["reconciliation"]["skipped"] = [];
   let updated = 0;
   let partialFills = 0;
+  let staleArchived = 0;
 
   for (const trade of openPaperTrades) {
     const automation = readAutomationSnapshot(trade);
-    if (!automation?.accountId || !automation.optionSymbol || !automation.orderId) {
-      skipped.push({
-        tradeId: trade.id,
-        symbol: trade.symbol,
-        reason: "Missing paper-trader order metadata for reconciliation.",
-      });
+    if (!automation?.accountId || !automation.optionSymbol) {
+      const reason = "Missing paper-trader order metadata for reconciliation; archived this stale local journal row because TradeStation SIM positions are the source of truth.";
+      if (updateJournal) {
+        await archiveJournalTradeWithoutReview(trade.id, {
+          entry_notes: appendEntryNote(trade.entry_notes, reason),
+        });
+        staleArchived += 1;
+        updated += 1;
+      } else {
+        skipped.push({
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          reason,
+        });
+      }
       continue;
     }
 
@@ -1786,15 +2095,17 @@ async function reconcileOpenPaperOrders(
     let executionAveragePrice: number | null = null;
     let orderCheckError: string | null = null;
 
-    try {
-      const executions = await client.getExecutions(automation.accountId, automation.orderId);
-      const executionSummary = summarizeExecutions(executions);
-      executionFilledQuantity = executionSummary.filledQuantity;
-      executionAveragePrice = executionSummary.averageFillPrice;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!message.includes("TradeStation request failed (404)")) {
-        orderCheckError = message;
+    if (automation.orderId) {
+      try {
+        const executions = await client.getExecutions(automation.accountId, automation.orderId);
+        const executionSummary = summarizeExecutions(executions);
+        executionFilledQuantity = executionSummary.filledQuantity;
+        executionAveragePrice = executionSummary.averageFillPrice;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!message.includes("TradeStation request failed (404)")) {
+          orderCheckError = message;
+        }
       }
     }
 
@@ -1826,6 +2137,12 @@ async function reconcileOpenPaperOrders(
     if (fillStatus === "partial") {
       partialFills += 1;
     }
+    const missingLivePosition = !position || positionQuantity === null || positionQuantity <= 0;
+    if (fillStatus === "unknown" && orderCheckError === null) {
+      orderCheckError =
+        `No executions or live SIM position were found for ${automation.optionSymbol}; fill status remains unknown until TradeStation returns order evidence.`;
+    }
+    const shouldArchiveStaleRow = missingLivePosition;
 
     const shouldLogOrderCheck =
       fillStatus !== automation.entryFillStatus
@@ -1841,7 +2158,7 @@ async function reconcileOpenPaperOrders(
             ? `Order check warning: ${orderCheckError}`
             : `Order check found ${fillStatus} fill status for ${automation.optionSymbol}.`,
           optionSymbol: automation.optionSymbol,
-          orderId: automation.orderId,
+          orderId: automation.orderId ?? null,
           quantity: filledQuantity,
         })
       : readDecisionLog(automation);
@@ -1860,14 +2177,16 @@ async function reconcileOpenPaperOrders(
     };
 
     if (updateJournal) {
-      await updateJournalTradeSignalSnapshot(
-        trade.id,
-        buildUpdatedSignalSnapshot(trade, snapshotUpdates),
-      );
+      const updatedSnapshot = buildUpdatedSignalSnapshot(trade, {
+        ...snapshotUpdates,
+        ...(shouldArchiveStaleRow ? { staleReconciledAt: new Date().toISOString() } : {}),
+      });
+      await updateJournalTradeSignalSnapshot(trade.id, updatedSnapshot);
 
       if (
         filledQuantity !== null
         && filledQuantity > 0
+        && !shouldArchiveStaleRow
         && (
           numbersDiffer(trade.contracts, filledQuantity)
           || numbersDiffer(readNumber(trade.option_entry_price), averageFillPrice)
@@ -1878,13 +2197,22 @@ async function reconcileOpenPaperOrders(
           ...(averageFillPrice !== null ? { option_entry_price: averageFillPrice } : {}),
         });
       }
+      if (shouldArchiveStaleRow) {
+        await archiveJournalTradeWithoutReview(trade.id, {
+          entry_notes: appendEntryNote(
+            trade.entry_notes,
+            `Archived by paper-trader reconciliation: no live TradeStation SIM position for ${automation.optionSymbol}.`,
+          ),
+        });
+        staleArchived += 1;
+      }
       updated += 1;
     }
 
     updates.push({
       tradeId: trade.id,
       symbol: trade.symbol,
-      orderId: automation.orderId,
+      orderId: automation.orderId ?? null,
       fillStatus,
       filledQuantity,
       requestedQuantity,
@@ -1893,13 +2221,36 @@ async function reconcileOpenPaperOrders(
       note: orderCheckError
         ? `Order check warning: ${orderCheckError}`
         : `Reconciled ${automation.optionSymbol}: ${fillStatus}.`,
+      archived: shouldArchiveStaleRow && updateJournal,
     });
+  }
+
+  let adoptedPositions = 0;
+  if (config.accountId) {
+    let accountPositions = positionPayloads.get(config.accountId);
+    if (!accountPositions) {
+      accountPositions = await client.getPositions(config.accountId);
+      positionPayloads.set(config.accountId, accountPositions);
+    }
+    const adoption = await adoptUnlinkedLiveSimPositions({
+      config,
+      client,
+      accountId: config.accountId,
+      positionsPayload: accountPositions,
+      openPaperTrades,
+      updateJournal,
+    });
+    adoptedPositions = adoption.adopted;
+    updates.push(...adoption.updates);
+    updated += adoption.adopted;
   }
 
   return {
     inspected: openPaperTrades.length,
     updated,
     partialFills,
+    staleArchived,
+    adoptedPositions,
     updates,
     skipped,
   };
@@ -2399,53 +2750,66 @@ async function maybeEnterNewPaperTrade(params: {
     prompt,
   } = params;
 
-  const scanRunId = buildScanRunId();
   const entryRewardModel = trainEntryRewardModel(allTrades);
-  const paperLearningPreferences = buildPaperLearningPreferences(entryRewardModel);
+  const resumableScanState = await loadResumableAutomatedScanState(dryRun);
+  const scanRunId = resumableScanState?.scanRunId ?? buildScanRunId();
+  const paperLearningPreferences =
+    resumableScanState?.paperLearningPreferences
+    ?? buildPaperLearningPreferences(entryRewardModel);
   const openSymbols = openPaperTrades.map((trade) => trade.symbol);
   const policySkippedSymbols: string[] = [];
   const policySkipReasons: string[] = [];
   const evaluatedCandidates: PaperTraderEntryCandidateEvaluation[] = [];
+  const automatedScan = await runAutomatedEntryScan({
+    scanRunId,
+    prompt,
+    excludedTickers: openSymbols,
+    tradestationBaseUrlOverride: config.automationBaseUrl,
+    paperLearningPreferences,
+    state: resumableScanState,
+    onCandidate: async (candidate) => {
+      await recordEntryCandidateAudit({
+        scanRunId,
+        dryRun,
+        symbol: candidate.symbol,
+        decision: candidate.decision,
+        decisionReason: candidate.reason,
+        scan: candidate.scan,
+      });
+    },
+  });
+  const entryScanSummary = {
+    status: automatedScan.status,
+    scannedSymbolCount: automatedScan.scannedSymbolCount,
+    totalSymbolCount: automatedScan.totalSymbolCount,
+    chunkCount: automatedScan.chunkCount,
+    finalistCount: automatedScan.finalistCount,
+    confirmedCandidateCount: automatedScan.confirmedCandidates.length,
+    mlAdjustmentSummary: automatedScan.chunkSummaries
+      .flatMap((chunk) => chunk.reason.match(/Paper learning[^.]+\./g) ?? [])
+      .slice(0, 8),
+  };
+  if (!automatedScan.completed) {
+    return {
+      attempted: true,
+      outcome: "scan_in_progress",
+      symbol: automatedScan.confirmedCandidates[0]?.scan.ticker ?? null,
+      reason: `Automated scan is in progress: scanned ${automatedScan.scannedSymbolCount}/${automatedScan.totalSymbolCount} symbols across ${automatedScan.chunkCount} chunk(s), with ${automatedScan.confirmedCandidates.length} confirmed candidate(s) stored so far. The next paper-trader run will resume from this point.`,
+      evaluatedCandidates,
+      scanSummary: entryScanSummary,
+      automatedScanState: automatedScan.state,
+    };
+  }
   let selectedScan: Awaited<ReturnType<typeof runScan>> | null = null;
   let selectedTradeCard: TradeConstructionResult | null = null;
   let selectedEntryReasoning: PaperTraderEntryReasoning | null = null;
   let selectedEntryPolicy: EntryPolicyRecommendation | null = null;
   let selectedEntryFeatures: EntryRewardFeatureInput | null = null;
 
-  for (let attempt = 0; attempt < MAX_ENTRY_POLICY_SCAN_ATTEMPTS; attempt += 1) {
-    const scan = await runScan({
-      prompt,
-      excludedTickers: [...openSymbols, ...policySkippedSymbols],
-      tradestationBaseUrlOverride: config.automationBaseUrl,
-      paperLearningPreferences,
-    });
-
-    if (
-      scan.conclusion !== "confirmed"
-      || !scan.ticker
-      || !scan.direction
-      || !scan.confidence
-    ) {
-      const skippedNote = policySkipReasons.length > 0
-        ? ` Earlier candidate(s) were rejected before this no-trade result: ${policySkipReasons.join(" ")}`
-        : "";
-      return {
-        attempted: true,
-        outcome: "no_trade_today",
-        symbol: scan.ticker,
-        reason: `${scan.reason}${skippedNote}`,
-        reasoning: buildEntryReasoning(scan, null),
-        evaluatedCandidates,
-      };
-    }
-
+  for (const candidate of automatedScan.confirmedCandidates) {
+    const scan = candidate.scan;
+    const tradeCard = candidate.tradeCard;
     try {
-      const tradeCard = await constructTradeCard({
-        prompt: `build trade ${scan.ticker}`,
-        confirmedDirection: scan.direction,
-        confirmedConfidence: scan.confidence,
-        tradestationBaseUrlOverride: config.automationBaseUrl,
-      });
       const entryFeatures = buildEntryRewardFeatureInput({
         scan,
         tradeCard,
@@ -2453,8 +2817,9 @@ async function maybeEnterNewPaperTrade(params: {
       });
       const geometryError = validateEntryGeometry(tradeCard);
       if (geometryError) {
-        policySkippedSymbols.push(scan.ticker);
-        policySkipReasons.push(`${scan.ticker}: ${geometryError}`);
+        const symbol = scan.ticker ?? "unknown";
+        policySkippedSymbols.push(symbol);
+        policySkipReasons.push(`${symbol}: ${geometryError}`);
         evaluatedCandidates.push({
           symbol: scan.ticker,
           decision: "trade_card_blocked",
@@ -2482,8 +2847,9 @@ async function maybeEnterNewPaperTrade(params: {
 
       if (entryPolicy.decision === "block") {
         const decisionReason = entryPolicy.summary;
-        policySkippedSymbols.push(scan.ticker);
-        policySkipReasons.push(`${scan.ticker}: ${decisionReason}`);
+        const symbol = scan.ticker ?? "unknown";
+        policySkippedSymbols.push(symbol);
+        policySkipReasons.push(`${symbol}: ${decisionReason}`);
         evaluatedCandidates.push({
           symbol: scan.ticker,
           decision: "policy_blocked",
@@ -2520,8 +2886,8 @@ async function maybeEnterNewPaperTrade(params: {
       break;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Trade construction failed.";
-      policySkippedSymbols.push(scan.ticker);
-      policySkipReasons.push(`${scan.ticker}: ${message}`);
+      policySkippedSymbols.push(scan.ticker ?? "unknown");
+      policySkipReasons.push(`${scan.ticker ?? "unknown"}: ${message}`);
       evaluatedCandidates.push({
         symbol: scan.ticker,
         decision: "trade_card_blocked",
@@ -2542,12 +2908,14 @@ async function maybeEnterNewPaperTrade(params: {
   }
 
   if (!selectedScan || !selectedTradeCard || !selectedEntryReasoning || !selectedEntryPolicy || !selectedEntryFeatures) {
+    const scanSummary = `Scanned ${automatedScan.scannedSymbolCount}/${automatedScan.totalSymbolCount} symbols across ${automatedScan.chunkCount} chunk(s), ranked ${automatedScan.finalistCount} finalist row(s), confirmed ${automatedScan.confirmedCandidates.length} trade-card-ready candidate(s).`;
     return {
       attempted: true,
       outcome: "no_trade_today",
       symbol: policySkippedSymbols.at(-1) ?? null,
-      reason: `No eligible entry survived after rejecting ${policySkippedSymbols.length} candidate(s) across ${MAX_ENTRY_POLICY_SCAN_ATTEMPTS} scan attempt(s): ${policySkipReasons.join(" ")}`,
+      reason: `${scanSummary} No eligible entry survived final automation policy/risk checks: ${policySkipReasons.join(" ") || "no confirmed candidate survived the full scan."}`,
       evaluatedCandidates,
+      scanSummary: entryScanSummary,
     };
   }
 
@@ -2569,6 +2937,7 @@ async function maybeEnterNewPaperTrade(params: {
         decisionReason: reason,
         features: entryFeatures,
         entryPolicy: entryPolicyRecommendation,
+        selected: true,
         scan,
         tradeCard,
       });
@@ -2580,6 +2949,36 @@ async function maybeEnterNewPaperTrade(params: {
         tradeCard,
         reasoning: entryReasoning,
         evaluatedCandidates,
+        scanSummary: entryScanSummary,
+      };
+    }
+    const duplicateOpenTrade = openPaperTrades.find((trade) => {
+      const existingAutomation = readAutomationSnapshot(trade);
+      return trade.symbol === scan.ticker || existingAutomation?.optionSymbol === automation.optionSymbol;
+    });
+    if (duplicateOpenTrade) {
+      const reason = `Duplicate-entry guard blocked ${scan.ticker}; an open paper trade already exists for ${duplicateOpenTrade.symbol}.`;
+      await recordEntryCandidateAudit({
+        scanRunId,
+        dryRun,
+        symbol: scan.ticker,
+        decision: "duplicate_position_blocked",
+        decisionReason: reason,
+        features: entryFeatures,
+        entryPolicy: entryPolicyRecommendation,
+        selected: true,
+        scan,
+        tradeCard,
+      });
+      return {
+        attempted: true,
+        outcome: "trade_card_blocked",
+        symbol: scan.ticker,
+        reason,
+        tradeCard,
+        reasoning: entryReasoning,
+        evaluatedCandidates,
+        scanSummary: entryScanSummary,
       };
     }
 
@@ -2593,6 +2992,7 @@ async function maybeEnterNewPaperTrade(params: {
         decisionReason: geometryError,
         features: entryFeatures,
         entryPolicy: entryPolicyRecommendation,
+        selected: true,
         scan,
         tradeCard,
       });
@@ -2604,6 +3004,7 @@ async function maybeEnterNewPaperTrade(params: {
         tradeCard,
         reasoning: entryReasoning,
         evaluatedCandidates,
+        scanSummary: entryScanSummary,
       };
     }
 
@@ -2630,6 +3031,7 @@ async function maybeEnterNewPaperTrade(params: {
         decisionReason: reason,
         features: entryFeatures,
         entryPolicy: entryPolicyRecommendation,
+        selected: true,
         scan,
         tradeCard,
       });
@@ -2641,6 +3043,7 @@ async function maybeEnterNewPaperTrade(params: {
         tradeCard,
         reasoning: entryReasoning,
         evaluatedCandidates,
+        scanSummary: entryScanSummary,
       };
     }
     if (accountValueUsd === null || accountValueUsd <= 0) {
@@ -2653,6 +3056,7 @@ async function maybeEnterNewPaperTrade(params: {
         decisionReason: reason,
         features: entryFeatures,
         entryPolicy: entryPolicyRecommendation,
+        selected: true,
         scan,
         tradeCard,
       });
@@ -2664,6 +3068,7 @@ async function maybeEnterNewPaperTrade(params: {
         tradeCard,
         reasoning: entryReasoning,
         evaluatedCandidates,
+        scanSummary: entryScanSummary,
       };
     }
 
@@ -2690,6 +3095,7 @@ async function maybeEnterNewPaperTrade(params: {
         decisionReason: reason,
         features: entryFeatures,
         entryPolicy: entryPolicyRecommendation,
+        selected: true,
         scan,
         tradeCard,
       });
@@ -2701,6 +3107,7 @@ async function maybeEnterNewPaperTrade(params: {
         tradeCard,
         reasoning: entryReasoning,
         evaluatedCandidates,
+        scanSummary: entryScanSummary,
       };
     }
 
@@ -2749,6 +3156,7 @@ async function maybeEnterNewPaperTrade(params: {
         decisionReason: reason,
         features: entryFeatures,
         entryPolicy: entryPolicyRecommendation,
+        selected: true,
         scan,
         tradeCard,
       });
@@ -2760,6 +3168,7 @@ async function maybeEnterNewPaperTrade(params: {
         tradeCard,
         reasoning: entryReasoning,
         evaluatedCandidates,
+        scanSummary: entryScanSummary,
       };
     }
 
@@ -2773,6 +3182,7 @@ async function maybeEnterNewPaperTrade(params: {
         decisionReason: reason,
         features: entryFeatures,
         entryPolicy: entryPolicyRecommendation,
+        selected: true,
         scan,
         tradeCard,
       });
@@ -2784,6 +3194,7 @@ async function maybeEnterNewPaperTrade(params: {
         tradeCard,
         reasoning: entryReasoning,
         evaluatedCandidates,
+        scanSummary: entryScanSummary,
       };
     }
 
@@ -2799,6 +3210,7 @@ async function maybeEnterNewPaperTrade(params: {
         orderId: orderResult.orderId,
         features: entryFeatures,
         entryPolicy: entryPolicyRecommendation,
+        selected: true,
         scan,
         tradeCard,
       });
@@ -2810,6 +3222,7 @@ async function maybeEnterNewPaperTrade(params: {
         tradeCard,
         reasoning: entryReasoning,
         evaluatedCandidates,
+        scanSummary: entryScanSummary,
       };
     }
 
@@ -2940,6 +3353,7 @@ async function maybeEnterNewPaperTrade(params: {
       orderId: orderResult.orderId,
       features: entryFeatures,
       entryPolicy: entryPolicyRecommendation,
+      selected: true,
       scan,
       tradeCard,
     });
@@ -2954,6 +3368,7 @@ async function maybeEnterNewPaperTrade(params: {
       tradeCard,
       reasoning: entryReasoning,
       evaluatedCandidates,
+      scanSummary: entryScanSummary,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Trade construction failed.";
@@ -2965,6 +3380,7 @@ async function maybeEnterNewPaperTrade(params: {
       decisionReason: message,
       features: entryFeatures,
       entryPolicy: entryPolicyRecommendation,
+      selected: true,
       scan,
       tradeCard,
     });
@@ -2975,6 +3391,7 @@ async function maybeEnterNewPaperTrade(params: {
       reason: message,
       reasoning: buildEntryReasoning(scan, null),
       evaluatedCandidates,
+      scanSummary: entryScanSummary,
     };
   }
 }
@@ -3032,6 +3449,8 @@ export async function runPaperTraderCycle(
       },
       guards: {
         openPaperTrades: openPaperTrades.length,
+        liveSimPositions: null,
+        staleOpenJournalTrades: reconciliation.staleArchived,
         todayRealizedPlUsd,
         newEntriesAllowed: false,
       },
@@ -3067,6 +3486,8 @@ export async function runPaperTraderCycle(
       },
       guards: {
         openPaperTrades: openPaperTrades.length,
+        liveSimPositions: null,
+        staleOpenJournalTrades: reconciliation.staleArchived,
         todayRealizedPlUsd,
         newEntriesAllowed: false,
       },
@@ -3127,6 +3548,8 @@ export async function runPaperTraderCycle(
     },
     guards: {
       openPaperTrades: remainingOpenPaperTrades.length,
+      liveSimPositions: null,
+      staleOpenJournalTrades: reconciliation.staleArchived,
       todayRealizedPlUsd,
       newEntriesAllowed: true,
     },

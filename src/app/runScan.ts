@@ -47,9 +47,12 @@ export type ScanLearningPreference = {
   scanTierBucket?: string;
   marketRegimeBucket?: string;
   decision: "prefer" | "avoid";
+  effect?: "shadow" | "boost" | "penalty" | "hard_block";
+  scoreAdjustment?: number;
   reason: string;
   sampleSize: number;
   averageRewardR: number;
+  winRate?: number;
 };
 
 export type ScanResult = {
@@ -1566,33 +1569,33 @@ function applyPaperLearningSelection(params: {
       preferences,
     ),
   }));
-  const avoided = decorated.filter(
-    (item) => item.preference?.decision === "avoid",
+  const hardBlocked = decorated.filter(
+    (item) => item.preference?.decision === "avoid" && item.preference.effect === "hard_block",
+  );
+  const penalized = decorated.filter(
+    (item) => item.preference?.decision === "avoid" && item.preference.effect !== "hard_block",
   );
   const preferred = decorated.filter(
     (item) => item.preference?.decision === "prefer",
   );
+  const blockableSymbols = new Set(
+    hardBlocked.length < decorated.length
+      ? hardBlocked.map((item) => item.candidate.symbol)
+      : [],
+  );
   const kept = decorated
-    .filter((item) => item.preference?.decision !== "avoid")
+    .filter((item) => !blockableSymbols.has(item.candidate.symbol))
     .sort((left, right) => {
-      const leftPreference = left.preference;
-      const rightPreference = right.preference;
-      const leftBoost = leftPreference?.decision === "prefer" ? 1 : 0;
-      const rightBoost = rightPreference?.decision === "prefer" ? 1 : 0;
-      if (leftBoost !== rightBoost) {
-        return rightBoost - leftBoost;
-      }
-
-      const rewardDelta =
-        (rightPreference?.averageRewardR ?? 0)
-        - (leftPreference?.averageRewardR ?? 0);
-      if (rewardDelta !== 0) {
-        return rewardDelta;
+      const leftAdjustedScore = left.candidate.score + (left.preference?.scoreAdjustment ?? 0);
+      const rightAdjustedScore = right.candidate.score + (right.preference?.scoreAdjustment ?? 0);
+      const scoreDelta = rightAdjustedScore - leftAdjustedScore;
+      if (scoreDelta !== 0) {
+        return scoreDelta;
       }
 
       const sampleDelta =
-        (rightPreference?.sampleSize ?? 0)
-        - (leftPreference?.sampleSize ?? 0);
+        (right.preference?.sampleSize ?? 0)
+        - (left.preference?.sampleSize ?? 0);
       return sampleDelta !== 0 ? sampleDelta : left.index - right.index;
     });
 
@@ -1605,17 +1608,26 @@ function applyPaperLearningSelection(params: {
         .join(", ")} from rewarded setup history.`,
     );
   }
-  if (avoided.length > 0) {
+  if (penalized.length > 0) {
     warnings.push(
-      `Paper learning avoided ${avoided
+      `Paper learning penalized ${penalized
         .slice(0, 5)
         .map((item) => `${item.candidate.symbol} (${item.preference?.averageRewardR.toFixed(2)}R)`)
-        .join(", ")} from weak setup history.`,
+        .join(", ")} from weak setup history without vetoing the setup.`,
     );
   }
-  if (kept.length === 0) {
+  if (blockableSymbols.size > 0) {
     warnings.push(
-      "Paper learning avoided every confirmation-eligible finalist; automated paper trader will stand down for this scan.",
+      `Paper learning hard-blocked ${hardBlocked
+        .filter((item) => blockableSymbols.has(item.candidate.symbol))
+        .slice(0, 5)
+        .map((item) => `${item.candidate.symbol} (${item.preference?.averageRewardR.toFixed(2)}R, n=${item.preference?.sampleSize})`)
+        .join(", ")} from high-confidence weak setup history.`,
+    );
+  }
+  if (hardBlocked.length === decorated.length && hardBlocked.length > 0) {
+    warnings.push(
+      "Paper learning found weak history on every confirmation-eligible finalist, but kept the candidates alive because ML may not erase the full board.",
     );
   }
 

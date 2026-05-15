@@ -1650,16 +1650,20 @@
                   const orderUpdates = Array.isArray(reconciliation.updates) ? reconciliation.updates : [];
                   const orderSkipped = Array.isArray(reconciliation.skipped) ? reconciliation.skipped : [];
                   const managementSkipped = Array.isArray(management.skipped) ? management.skipped : [];
+                  const staleArchived = reconciliation.staleArchived || 0;
+                  const adoptedPositions = reconciliation.adoptedPositions || 0;
                   const entryOutcome = entry.outcome || run.outcome;
                   const entryLabel = formatAutomationEntryOutcome(entryOutcome, entry.symbol || run.symbol);
                   const existingTradeSummary = [
                     `${orderUpdates.length} order check(s)`,
                     `${updates.length} live trade review(s)`,
                     `${exits.length} exit trigger(s)`,
-                    `${orderSkipped.length + managementSkipped.length} skipped/stale row(s)`,
+                    `${staleArchived} stale archived`,
+                    `${adoptedPositions} live adopted`,
+                    `${orderSkipped.length + managementSkipped.length} skipped row(s)`,
                   ].join(" | ");
                   const orderDetails = orderUpdates.slice(0, 5).map((item) =>
-                    `${item.symbol}: ${item.fillStatus || "order check"} | filled ${renderMaybe(item.filledQuantity)} / ${renderMaybe(item.requestedQuantity)}`,
+                    `${item.symbol}: ${item.fillStatus || "order check"} | filled ${renderMaybe(item.filledQuantity)} / ${renderMaybe(item.requestedQuantity)}${item.archived ? " | archived stale row" : ""}`,
                   ).concat(
                     orderSkipped.slice(0, 5).map((item) => `${item.symbol}: ${item.reason}`),
                   );
@@ -2185,6 +2189,10 @@
               <div class="stat-value">${escapeHtml(renderMaybe(status?.openPaperTrades, "0"))}</div>
             </div>
             <div class="stat-card">
+              <div class="stat-label">Stale Journal Rows</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(status?.staleOpenJournalTrades, "0"))}</div>
+            </div>
+            <div class="stat-card">
               <div class="stat-label">Open Trade Cap</div>
               <div class="stat-value">${escapeHtml(renderMaybe(status?.maxOpenTrades, "Unlimited"))}</div>
             </div>
@@ -2300,6 +2308,14 @@
               <div class="stat-value">${escapeHtml(renderMaybe(result?.guards?.openPaperTrades, "0"))}</div>
             </div>
             <div class="stat-card">
+              <div class="stat-label">Stale Archived</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(result?.reconciliation?.staleArchived, "0"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Live Adopted</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(result?.reconciliation?.adoptedPositions, "0"))}</div>
+            </div>
+            <div class="stat-card">
               <div class="stat-label">Today Realized P/L</div>
               <div class="stat-value ${escapeHtml(numberToneClass(result?.guards?.todayRealizedPlUsd))}">${escapeHtml(formatMoney(result?.guards?.todayRealizedPlUsd))}</div>
             </div>
@@ -2329,7 +2345,7 @@
             ${renderRunSection(
               "Order Reconciliation",
               [
-                ...reconciled.map((item) => `${item.symbol}: ${item.fillStatus} | filled ${renderMaybe(item.filledQuantity)} / ${renderMaybe(item.requestedQuantity)} | avg ${renderMaybe(item.averageFillPrice)}${item.note ? ` - ${item.note}` : ""}`),
+                ...reconciled.map((item) => `${item.symbol}: ${item.fillStatus} | filled ${renderMaybe(item.filledQuantity)} / ${renderMaybe(item.requestedQuantity)} | avg ${renderMaybe(item.averageFillPrice)}${item.archived ? " | archived stale row" : ""}${item.note ? ` - ${item.note}` : ""}`),
                 ...reconciliationSkipped.map((item) => `${item.symbol}: ${item.reason}`),
               ],
             )}
@@ -3107,13 +3123,17 @@
       }
 
       function renderNoTrade(scan, telemetry, presentationSummary) {
+        const scannedSymbolCount = telemetry?.stageCounts?.stage1Entered
+          ?? latestBackendData?.manualScan?.scannedSymbolCount
+          ?? 0;
         resultArea.innerHTML = `
           ${renderPresentationSummary(presentationSummary)}
           ${renderDataHealthWarning(telemetry)}
 
           <hr class="hr" />
           <h3>Calibration Debug Summary</h3>
-          <div class="row"><strong>Stage pass counts:</strong></div>
+          <div class="row"><strong>Universe symbols scanned:</strong> ${escapeHtml(renderMaybe(scannedSymbolCount, "0"))}</div>
+          <div class="row"><strong>Qualified candidates after each gate:</strong></div>
           ${renderObjectRows(telemetry?.stageCounts)}
 
           <div class="row"><strong>Rejection summaries:</strong></div>

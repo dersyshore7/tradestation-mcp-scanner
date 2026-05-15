@@ -5,7 +5,8 @@ import type { JournalTradeDetail, TradeDirection } from "../journal/types.js";
 export type EntryPolicyDecision = "favor" | "allow" | "caution" | "block";
 
 const ENTRY_REWARD_R_CAP = 5;
-const MIN_ENTRY_POLICY_SAMPLE = 3;
+const MIN_ENTRY_POLICY_INFLUENCE_SAMPLE = 8;
+const MIN_ENTRY_POLICY_BLOCK_SAMPLE = 15;
 
 export type EntryRewardFeatureInput = {
   direction: TradeDirection;
@@ -711,17 +712,17 @@ export function recommendEntryPolicy(
     }
 
     const summary = summarizeBucket(key, aggregate);
-    if (summary.count < MIN_ENTRY_POLICY_SAMPLE) {
+    if (summary.count < MIN_ENTRY_POLICY_INFLUENCE_SAMPLE) {
       sparseMatch = sparseMatch ?? summary;
       continue;
     }
 
     const decision: EntryPolicyDecision =
-      summary.count >= 5 && summary.averageRewardR <= -0.75 && summary.winRate <= 0.25
+      summary.count >= MIN_ENTRY_POLICY_BLOCK_SAMPLE && summary.averageRewardR <= -1.25 && summary.winRate <= 0.2
         ? "block"
-        : summary.count >= 3 && summary.averageRewardR < 0
+        : summary.averageRewardR < 0
           ? "caution"
-          : summary.count >= 3 && summary.averageRewardR >= 0.75
+          : summary.averageRewardR >= 0.75
             ? "favor"
             : "allow";
     const decisionText =
