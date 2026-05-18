@@ -94,18 +94,28 @@ function normalizeSymbols(symbols: readonly string[]): string[] {
 }
 
 function readChunkSize(value: number | undefined): number {
+  const envValue = process.env.AUTO_TRADER_SCAN_CHUNK_SIZE;
   const requestedValue =
-    value ?? Number(process.env.AUTO_TRADER_SCAN_CHUNK_SIZE ?? "");
-  if (!Number.isFinite(requestedValue) || requestedValue === undefined) {
+    value ?? (
+      envValue && envValue.trim().length > 0
+        ? Number(envValue)
+        : undefined
+    );
+  if (typeof requestedValue !== "number" || !Number.isFinite(requestedValue)) {
     return DEFAULT_AUTOMATED_SCAN_CHUNK_SIZE;
   }
   return Math.max(3, Math.min(20, Math.floor(requestedValue)));
 }
 
 function readTimeBudgetMs(value: number | undefined): number {
+  const envValue = process.env.AUTO_TRADER_SCAN_TIME_BUDGET_MS;
   const requestedValue =
-    value ?? Number(process.env.AUTO_TRADER_SCAN_TIME_BUDGET_MS ?? "");
-  if (!Number.isFinite(requestedValue) || requestedValue === undefined) {
+    value ?? (
+      envValue && envValue.trim().length > 0
+        ? Number(envValue)
+        : undefined
+    );
+  if (typeof requestedValue !== "number" || !Number.isFinite(requestedValue)) {
     return DEFAULT_AUTOMATED_SCAN_TIME_BUDGET_MS;
   }
   return Math.max(15_000, Math.min(270_000, Math.floor(requestedValue)));
