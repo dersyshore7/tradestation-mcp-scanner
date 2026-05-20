@@ -4,9 +4,27 @@ import type { JournalTradeDetail, TradeDirection } from "../journal/types.js";
 
 export type EntryPolicyDecision = "favor" | "allow" | "caution" | "block";
 
-const ENTRY_REWARD_R_CAP = 5;
 const MIN_ENTRY_POLICY_INFLUENCE_SAMPLE = 8;
 const MIN_ENTRY_POLICY_BLOCK_SAMPLE = 15;
+
+export type EntryChartLearningContext = {
+  alignment: string | null;
+  expansion: string | null;
+  bodyWick: string | null;
+  chop: string | null;
+  continuation: string | null;
+  pullbackBody: string | null;
+  pullbackVolume: string | null;
+  triggerZone: string | null;
+  higherTimeframeRoom: string | null;
+  higherTimeframe2R: string | null;
+  asymmetryTier: string | null;
+  failedChecks: string[];
+  movePct: number | null;
+  roomPct: number | null;
+  preReviewRewardRisk: number | null;
+  postConfirmationRewardRisk: number | null;
+};
 
 export type EntryRewardFeatureInput = {
   direction: TradeDirection;
@@ -21,6 +39,7 @@ export type EntryRewardFeatureInput = {
   scanTier: string | null;
   entryDay: string | null;
   entryTime: string | null;
+  chartContext?: EntryChartLearningContext | null;
 };
 
 export type EntryRewardFeatureBuckets = {
@@ -36,6 +55,18 @@ export type EntryRewardFeatureBuckets = {
   scanTierBucket: string;
   entryDayBucket: string;
   entryTimeBucket: string;
+  alignmentBucket: string;
+  expansionBucket: string;
+  bodyWickBucket: string;
+  chopBucket: string;
+  continuationBucket: string;
+  pullbackBodyBucket: string;
+  pullbackVolumeBucket: string;
+  triggerZoneBucket: string;
+  higherTimeframeRoomBucket: string;
+  higherTimeframe2RBucket: string;
+  asymmetryTierBucket: string;
+  failedCheckBucket: string;
 };
 
 export type EntryRewardFeatureSnapshot = {
@@ -107,10 +138,6 @@ function asFiniteNumber(value: unknown): number | null {
   return null;
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
 function parseRewardRisk(value: unknown): number | null {
   const numeric = asFiniteNumber(value);
   if (numeric !== null) {
@@ -153,6 +180,59 @@ function readString(value: unknown): string | null {
 function readKnownBucket(value: unknown): string | null {
   const bucket = readString(value);
   return bucket && bucket !== "unknown" ? bucket : null;
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+}
+
+function emptyChartContext(): EntryChartLearningContext {
+  return {
+    alignment: null,
+    expansion: null,
+    bodyWick: null,
+    chop: null,
+    continuation: null,
+    pullbackBody: null,
+    pullbackVolume: null,
+    triggerZone: null,
+    higherTimeframeRoom: null,
+    higherTimeframe2R: null,
+    asymmetryTier: null,
+    failedChecks: [],
+    movePct: null,
+    roomPct: null,
+    preReviewRewardRisk: null,
+    postConfirmationRewardRisk: null,
+  };
+}
+
+function readStoredChartContext(raw: Record<string, unknown>): EntryChartLearningContext | null {
+  const context = asRecord(raw.chartContext);
+  if (!context) {
+    return null;
+  }
+
+  return {
+    alignment: readString(context.alignment),
+    expansion: readString(context.expansion),
+    bodyWick: readString(context.bodyWick),
+    chop: readString(context.chop),
+    continuation: readString(context.continuation),
+    pullbackBody: readString(context.pullbackBody),
+    pullbackVolume: readString(context.pullbackVolume),
+    triggerZone: readString(context.triggerZone),
+    higherTimeframeRoom: readString(context.higherTimeframeRoom),
+    higherTimeframe2R: readString(context.higherTimeframe2R),
+    asymmetryTier: readString(context.asymmetryTier),
+    failedChecks: readStringArray(context.failedChecks).slice(0, 5),
+    movePct: asFiniteNumber(context.movePct),
+    roomPct: asFiniteNumber(context.roomPct),
+    preReviewRewardRisk: asFiniteNumber(context.preReviewRewardRisk),
+    postConfirmationRewardRisk: asFiniteNumber(context.postConfirmationRewardRisk),
+  };
 }
 
 function readStoredEntryFeatureRecord(signalSnapshot: Record<string, unknown> | null): {
@@ -202,6 +282,7 @@ function readStoredEntryFeatures(signalSnapshot: Record<string, unknown> | null)
     entryDay: readString(stored.raw.entryDay)
       ?? readKnownBucket(stored.buckets?.entryDayBucket),
     entryTime: readString(stored.raw.entryTime),
+    chartContext: readStoredChartContext(stored.raw),
   };
 }
 
@@ -244,11 +325,86 @@ function findTelemetryItem(telemetry: unknown, listKey: string, symbol: string):
     ?? null;
 }
 
+function roundCompactNumber(value: unknown): number | null {
+  const numeric = asFiniteNumber(value);
+  return numeric === null ? null : Number(numeric.toFixed(3));
+}
+
+function normalizeCheckState(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\//g, "_")
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "") || null;
+}
+
+function parseStructureChecks(value: unknown): Map<string, string> {
+  const checks = new Map<string, string>();
+  if (typeof value !== "string") {
+    return checks;
+  }
+
+  for (const part of value.split(",")) {
+    const [checkRaw, stateRaw] = part.trim().split(":", 2);
+    const check = normalizeCheckState(checkRaw ?? null);
+    const state = normalizeCheckState(stateRaw ?? null);
+    if (check && state) {
+      checks.set(check, state);
+    }
+  }
+  return checks;
+}
+
+function readCheck(checks: Map<string, string>, key: string): string | null {
+  return checks.get(key) ?? null;
+}
+
+function extractChartContextFromTelemetry(telemetry: unknown, symbol: string): EntryChartLearningContext {
+  const ranking = findTelemetryItem(telemetry, "finalRankingDebug", symbol);
+  const rankingInputs = asRecord(ranking?.scoreInputs);
+  const reviewed = findTelemetryItem(telemetry, "reviewedFinalistOutcomes", symbol);
+  const stage3Inputs = asRecord(reviewed?.stage3Inputs);
+  const asymmetryDebug = asRecord(reviewed?.asymmetryDebug);
+  const checks = parseStructureChecks(stage3Inputs?.structureChecks);
+  const failedChecks = Array.from(checks.entries())
+    .filter(([, state]) => state.startsWith("fail"))
+    .map(([check]) => check)
+    .slice(0, 5);
+
+  return {
+    alignment: readCheck(checks, "alignment"),
+    expansion: readCheck(checks, "expansion"),
+    bodyWick: readCheck(checks, "body_wick"),
+    chop: readCheck(checks, "choppy"),
+    continuation: readCheck(checks, "continuation"),
+    pullbackBody: readCheck(checks, "pullback_body_control"),
+    pullbackVolume: readCheck(checks, "pullback_volume_control"),
+    triggerZone: readCheck(checks, "trigger_zone_flips"),
+    higherTimeframeRoom: readCheck(checks, "higher_timeframe_room"),
+    higherTimeframe2R: readCheck(checks, "higher_timeframe_2r_viability"),
+    asymmetryTier:
+      readString(asymmetryDebug?.finalizedTradeGeometryTier)
+      ?? readString(asymmetryDebug?.postConfirmationAsymmetryTier)
+      ?? readString(asymmetryDebug?.preReviewAsymmetryTier),
+    failedChecks,
+    movePct: roundCompactNumber(stage3Inputs?.movePct ?? rankingInputs?.movePct),
+    roomPct: roundCompactNumber(asymmetryDebug?.stage3RoomPct),
+    preReviewRewardRisk: roundCompactNumber(asymmetryDebug?.preReviewActualRewardRiskRatio),
+    postConfirmationRewardRisk: roundCompactNumber(asymmetryDebug?.postConfirmationActualRewardRiskRatio),
+  };
+}
+
 function extractTelemetryFeatures(telemetry: unknown, symbol: string): {
   chartReviewScore: number | null;
   volumeRatio: number | null;
   optionSpread: number | null;
   plannedRewardRisk: number | null;
+  targetDte: number | null;
+  chartContext: EntryChartLearningContext;
 } {
   const ranking = findTelemetryItem(telemetry, "finalRankingDebug", symbol);
   const rankingInputs = asRecord(ranking?.scoreInputs);
@@ -270,6 +426,8 @@ function extractTelemetryFeatures(telemetry: unknown, symbol: string): {
     plannedRewardRisk:
       asFiniteNumber(asymmetryDebug?.finalizedTradeRewardRiskRatio)
       ?? asFiniteNumber(asymmetryDebug?.postConfirmationActualRewardRiskRatio),
+    targetDte: asFiniteNumber(stage2Inputs?.targetDte),
+    chartContext: extractChartContextFromTelemetry(telemetry, symbol),
   };
 }
 
@@ -337,6 +495,7 @@ function extractTradeEntryFeatures(trade: JournalTradeDetail): EntryRewardFeatur
           : null,
     entryDay: trade.entry_day,
     entryTime: trade.entry_time,
+    chartContext: telemetryFeatures.chartContext,
   };
 
   const storedFeatures = readStoredEntryFeatures(snapshot);
@@ -354,6 +513,7 @@ function extractTradeEntryFeatures(trade: JournalTradeDetail): EntryRewardFeatur
       scanTier: storedFeatures.scanTier ?? fallbackFeatures.scanTier,
       entryDay: storedFeatures.entryDay ?? fallbackFeatures.entryDay,
       entryTime: storedFeatures.entryTime ?? fallbackFeatures.entryTime,
+      chartContext: storedFeatures.chartContext ?? fallbackFeatures.chartContext ?? null,
     };
   }
 
@@ -374,6 +534,8 @@ export function buildEntryRewardFeatureInput(params: {
         volumeRatio: null,
         optionSpread: null,
         plannedRewardRisk: null,
+        targetDte: null,
+        chartContext: emptyChartContext(),
       };
 
   return {
@@ -397,6 +559,40 @@ export function buildEntryRewardFeatureInput(params: {
     scanTier: params.scan.telemetry?.finalSelectionSourceTier ?? params.scan.telemetry?.winningTier ?? null,
     entryDay: chicagoNow.weekday,
     entryTime: chicagoNow.time,
+    chartContext: telemetryFeatures.chartContext,
+  };
+}
+
+export function buildEntryRewardFeatureInputFromScan(params: {
+  scan: ScanResult;
+  entryTimestamp?: Date;
+}): EntryRewardFeatureInput | null {
+  if (!params.scan.ticker || (params.scan.direction !== "bullish" && params.scan.direction !== "bearish")) {
+    return null;
+  }
+
+  const chicagoNow = formatChicagoParts(params.entryTimestamp);
+  const telemetryFeatures = extractTelemetryFeatures(
+    params.scan.telemetry ?? null,
+    params.scan.ticker,
+  );
+
+  return {
+    direction: params.scan.direction === "bullish" ? "CALL" : "PUT",
+    setupType: params.scan.direction === "bullish"
+      ? "bullish_continuation"
+      : "bearish_continuation",
+    confidenceBucket: params.scan.confidence,
+    dteAtEntry: telemetryFeatures.targetDte,
+    plannedRewardRisk: telemetryFeatures.plannedRewardRisk,
+    chartReviewScore: telemetryFeatures.chartReviewScore,
+    volumeRatio: telemetryFeatures.volumeRatio,
+    optionSpread: telemetryFeatures.optionSpread,
+    marketRegime: deriveScannerMarketRegime(params.scan.telemetry),
+    scanTier: params.scan.telemetry?.finalSelectionSourceTier ?? params.scan.telemetry?.winningTier ?? null,
+    entryDay: chicagoNow.weekday,
+    entryTime: chicagoNow.time,
+    chartContext: telemetryFeatures.chartContext,
   };
 }
 
@@ -515,7 +711,20 @@ function bucketEntryTime(value: string | null): string {
   return "mid_session";
 }
 
+function bucketChartCheck(value: string | null | undefined): string {
+  return bucketText(value ?? null);
+}
+
+function bucketFailedChecks(value: string[] | null | undefined): string {
+  const count = value?.length ?? 0;
+  if (count === 0) {
+    return "none";
+  }
+  return count === 1 ? "one" : "multi";
+}
+
 function buildFeatureBuckets(input: EntryRewardFeatureInput): EntryRewardFeatureBuckets {
+  const chartContext = input.chartContext ?? emptyChartContext();
   return {
     direction: input.direction,
     setupType: input.setupType,
@@ -529,6 +738,18 @@ function buildFeatureBuckets(input: EntryRewardFeatureInput): EntryRewardFeature
     scanTierBucket: bucketText(input.scanTier),
     entryDayBucket: bucketEntryDay(input.entryDay),
     entryTimeBucket: bucketEntryTime(input.entryTime),
+    alignmentBucket: bucketChartCheck(chartContext.alignment),
+    expansionBucket: bucketChartCheck(chartContext.expansion),
+    bodyWickBucket: bucketChartCheck(chartContext.bodyWick),
+    chopBucket: bucketChartCheck(chartContext.chop),
+    continuationBucket: bucketChartCheck(chartContext.continuation),
+    pullbackBodyBucket: bucketChartCheck(chartContext.pullbackBody),
+    pullbackVolumeBucket: bucketChartCheck(chartContext.pullbackVolume),
+    triggerZoneBucket: bucketChartCheck(chartContext.triggerZone),
+    higherTimeframeRoomBucket: bucketChartCheck(chartContext.higherTimeframeRoom),
+    higherTimeframe2RBucket: bucketChartCheck(chartContext.higherTimeframe2R),
+    asymmetryTierBucket: bucketChartCheck(chartContext.asymmetryTier),
+    failedCheckBucket: bucketFailedChecks(chartContext.failedChecks),
   };
 }
 
@@ -550,6 +771,18 @@ function buildEntryPolicyKeys(buckets: EntryRewardFeatureBuckets): string[] {
       `chart=${buckets.chartScoreBucket}`,
       `volume=${buckets.volumeBucket}`,
       `spread=${buckets.optionSpreadBucket}`,
+      `alignment=${buckets.alignmentBucket}`,
+      `expansion=${buckets.expansionBucket}`,
+      `body_wick=${buckets.bodyWickBucket}`,
+      `chop=${buckets.chopBucket}`,
+      `continuation=${buckets.continuationBucket}`,
+      `pullback_body=${buckets.pullbackBodyBucket}`,
+      `pullback_volume=${buckets.pullbackVolumeBucket}`,
+      `trigger_zone=${buckets.triggerZoneBucket}`,
+      `htf_room=${buckets.higherTimeframeRoomBucket}`,
+      `htf_2r=${buckets.higherTimeframe2RBucket}`,
+      `asym=${buckets.asymmetryTierBucket}`,
+      `failed_checks=${buckets.failedCheckBucket}`,
       `tier=${buckets.scanTierBucket}`,
       `regime=${buckets.marketRegimeBucket}`,
       `day=${buckets.entryDayBucket}`,
@@ -562,6 +795,9 @@ function buildEntryPolicyKeys(buckets: EntryRewardFeatureBuckets): string[] {
       `dte=${buckets.dteBucket}`,
       `rr=${buckets.rewardRiskBucket}`,
       `chart=${buckets.chartScoreBucket}`,
+      `continuation=${buckets.continuationBucket}`,
+      `htf_2r=${buckets.higherTimeframe2RBucket}`,
+      `asym=${buckets.asymmetryTierBucket}`,
       `tier=${buckets.scanTierBucket}`,
     ].join("|"),
     [
@@ -603,6 +839,17 @@ function summarizeFeatureCoverage(experiences: EntryRewardExperience[]): EntryFe
     { feature: "option_spread", read: (buckets) => buckets.optionSpreadBucket },
     { feature: "scan_tier", read: (buckets) => buckets.scanTierBucket },
     { feature: "market_regime", read: (buckets) => buckets.marketRegimeBucket },
+    { feature: "alignment", read: (buckets) => buckets.alignmentBucket },
+    { feature: "expansion", read: (buckets) => buckets.expansionBucket },
+    { feature: "body_wick", read: (buckets) => buckets.bodyWickBucket },
+    { feature: "chop", read: (buckets) => buckets.chopBucket },
+    { feature: "continuation", read: (buckets) => buckets.continuationBucket },
+    { feature: "pullback_body", read: (buckets) => buckets.pullbackBodyBucket },
+    { feature: "pullback_volume", read: (buckets) => buckets.pullbackVolumeBucket },
+    { feature: "trigger_zone", read: (buckets) => buckets.triggerZoneBucket },
+    { feature: "higher_timeframe_room", read: (buckets) => buckets.higherTimeframeRoomBucket },
+    { feature: "higher_timeframe_2r", read: (buckets) => buckets.higherTimeframe2RBucket },
+    { feature: "asymmetry_tier", read: (buckets) => buckets.asymmetryTierBucket },
     { feature: "entry_day", read: (buckets) => buckets.entryDayBucket },
     { feature: "entry_time", read: (buckets) => buckets.entryTimeBucket },
   ];
@@ -646,7 +893,7 @@ function extractEntryRewardExperiences(trades: JournalTradeDetail[]): EntryRewar
 
     experiences.push({
       symbol: trade.symbol,
-      rewardR: Number(clamp(realizedR, -ENTRY_REWARD_R_CAP, ENTRY_REWARD_R_CAP).toFixed(3)),
+      rewardR: Number(realizedR.toFixed(3)),
       buckets: buildFeatureBuckets(extractTradeEntryFeatures(trade)),
     });
   }
@@ -780,7 +1027,7 @@ export function summarizeEntryRewardModel(model: EntryRewardModel): string | nul
     .join("\n");
 
   return [
-    `Entry reward model: ${model.experienceCount} closed paper entry outcome(s), trained on realized R only with a ${ENTRY_REWARD_R_CAP}R outlier cap.`,
+    `Entry reward model: ${model.experienceCount} closed paper entry outcome(s), trained on raw realized R including outliers.`,
     `Feature audit: ${model.featureCoverage.map((item) => `${item.feature} unknown ${(item.unknownPct * 100).toFixed(0)}%`).join(", ")}.`,
     top ? `Best contexts:\n${top}` : null,
     weak ? `Weak contexts:\n${weak}` : null,

@@ -85,8 +85,8 @@ type AutomatedEntryScanParams = {
   onCandidate?: (candidate: AutomatedEntryScanCandidateAudit) => Promise<void>;
 };
 
-const DEFAULT_AUTOMATED_SCAN_CHUNK_SIZE = 8;
-const DEFAULT_AUTOMATED_SCAN_TIME_BUDGET_MS = 210_000;
+const DEFAULT_AUTOMATED_SCAN_CHUNK_SIZE = 20;
+const DEFAULT_AUTOMATED_SCAN_TIME_BUDGET_MS = 270_000;
 const MAX_STORED_CHUNK_SUMMARIES = 120;
 
 function normalizeSymbols(symbols: readonly string[]): string[] {

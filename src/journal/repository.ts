@@ -309,8 +309,28 @@ function resolvePositionCostUsd(
   return plannedPositionCostUsd;
 }
 
-function calculateCloseReviewValues(
-  trade: Pick<JournalTradeRecord, "position_cost_usd" | "planned_risk_usd">,
+function inferEntryQuantityForReview(
+  trade: Pick<JournalTradeRecord, "contracts" | "position_cost_usd" | "option_entry_price">,
+  quantityClosed: number,
+): number {
+  if (typeof trade.contracts === "number" && trade.contracts > 0) {
+    return trade.contracts;
+  }
+
+  const optionEntryPrice = toNumber(trade.option_entry_price);
+  const positionCostUsd = toNumber(trade.position_cost_usd);
+  if (optionEntryPrice !== null && optionEntryPrice > 0 && positionCostUsd !== null && positionCostUsd > 0) {
+    const derivedContracts = Math.round(positionCostUsd / (optionEntryPrice * 100));
+    if (derivedContracts > 0) {
+      return derivedContracts;
+    }
+  }
+
+  return quantityClosed;
+}
+
+export function calculateCloseReviewValues(
+  trade: Pick<JournalTradeRecord, "contracts" | "position_cost_usd" | "option_entry_price" | "planned_risk_usd">,
   latestExit: Pick<JournalTradeExitRecord, "option_exit_price" | "quantity_closed" | "fees_usd" | "slippage_usd">,
 ): {
   soldForUsd: number;
@@ -323,12 +343,20 @@ function calculateCloseReviewValues(
   const plannedRiskUsd = toNumber(trade.planned_risk_usd);
   const feesUsd = toNumber(latestExit.fees_usd) ?? 0;
   const slippageUsd = toNumber(latestExit.slippage_usd) ?? 0;
-  const soldForUsd = optionExitPrice * latestExit.quantity_closed * 100;
-  const realizedPlUsd = soldForUsd - positionCostUsd - feesUsd - slippageUsd;
-  const realizedRMultiple = plannedRiskUsd !== null && plannedRiskUsd > 0
-    ? realizedPlUsd / plannedRiskUsd
+  const entryQuantity = inferEntryQuantityForReview(trade, latestExit.quantity_closed);
+  const closedQuantityRatio = entryQuantity > 0
+    ? latestExit.quantity_closed / entryQuantity
+    : 1;
+  const closedPositionCostUsd = positionCostUsd * closedQuantityRatio;
+  const closedPlannedRiskUsd = plannedRiskUsd !== null
+    ? plannedRiskUsd * closedQuantityRatio
     : null;
-  const realizedReturnPct = positionCostUsd > 0 ? (realizedPlUsd / positionCostUsd) * 100 : null;
+  const soldForUsd = optionExitPrice * latestExit.quantity_closed * 100;
+  const realizedPlUsd = soldForUsd - closedPositionCostUsd - feesUsd - slippageUsd;
+  const realizedRMultiple = closedPlannedRiskUsd !== null && closedPlannedRiskUsd > 0
+    ? realizedPlUsd / closedPlannedRiskUsd
+    : null;
+  const realizedReturnPct = closedPositionCostUsd > 0 ? (realizedPlUsd / closedPositionCostUsd) * 100 : null;
 
   return {
     soldForUsd,

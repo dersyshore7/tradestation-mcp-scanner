@@ -31,6 +31,7 @@ import {
 } from "./policyModel.js";
 import {
   buildEntryRewardFeatureInput,
+  buildEntryRewardFeatureInputFromScan,
   buildEntryRewardFeatureSnapshot,
   recommendEntryPolicy,
   summarizeEntryRewardModel,
@@ -57,7 +58,6 @@ import {
   type TradeStationPositionSnapshot,
 } from "./tradestation.js";
 import {
-  loadLatestPaperTraderRunWithRaw,
   listRecentPaperTraderRuns,
   recordPaperTraderRun,
   type PaperTraderRunRecord,
@@ -380,7 +380,6 @@ type PaperTraderRunResult = {
       | "outside_market_hours"
       | "skipped_after_guard"
       | "no_trade_today"
-      | "scan_in_progress"
       | "trade_card_blocked"
       | "zero_contract_trade"
       | "preview_only"
@@ -676,10 +675,10 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
-function readAutomatedScanStateFromLatestRun(
+export function readAutomatedScanStateFromPaperTraderRun(
   run: PaperTraderRunRecord | null,
 ): AutomatedEntryScanState | null {
-  if (!run || run.outcome !== "scan_in_progress") {
+  if (!run) {
     return null;
   }
   const createdAtMs = Date.parse(run.created_at);
@@ -709,8 +708,16 @@ async function loadResumableAutomatedScanState(
   dryRun: boolean,
 ): Promise<AutomatedEntryScanState | null> {
   try {
-    const latestRun = await loadLatestPaperTraderRunWithRaw({ dryRun });
-    return readAutomatedScanStateFromLatestRun(latestRun);
+    const recentRuns = await listRecentPaperTraderRuns(12, {
+      includeRawResult: true,
+    });
+    for (const run of recentRuns.runs.filter((item) => item.dry_run === dryRun)) {
+      const state = readAutomatedScanStateFromPaperTraderRun(run);
+      if (state) {
+        return state;
+      }
+    }
+    return null;
   } catch (error) {
     console.warn(
       "paper trader could not load resumable automated scan state",
@@ -2768,12 +2775,21 @@ async function maybeEnterNewPaperTrade(params: {
     paperLearningPreferences,
     state: resumableScanState,
     onCandidate: async (candidate) => {
+      const features = buildEntryRewardFeatureInputFromScan({
+        scan: candidate.scan,
+        entryTimestamp: new Date(),
+      });
+      const entryPolicy = features
+        ? recommendEntryPolicy(entryRewardModel, features)
+        : null;
       await recordEntryCandidateAudit({
         scanRunId,
         dryRun,
         symbol: candidate.symbol,
         decision: candidate.decision,
         decisionReason: candidate.reason,
+        features,
+        entryPolicy,
         scan: candidate.scan,
       });
     },
@@ -2789,17 +2805,6 @@ async function maybeEnterNewPaperTrade(params: {
       .flatMap((chunk) => chunk.reason.match(/Paper learning[^.]+\./g) ?? [])
       .slice(0, 8),
   };
-  if (!automatedScan.completed) {
-    return {
-      attempted: true,
-      outcome: "scan_in_progress",
-      symbol: automatedScan.confirmedCandidates[0]?.scan.ticker ?? null,
-      reason: `Automated scan is in progress: scanned ${automatedScan.scannedSymbolCount}/${automatedScan.totalSymbolCount} symbols across ${automatedScan.chunkCount} chunk(s), with ${automatedScan.confirmedCandidates.length} confirmed candidate(s) stored so far. The next paper-trader run will resume from this point.`,
-      evaluatedCandidates,
-      scanSummary: entryScanSummary,
-      automatedScanState: automatedScan.state,
-    };
-  }
   let selectedScan: Awaited<ReturnType<typeof runScan>> | null = null;
   let selectedTradeCard: TradeConstructionResult | null = null;
   let selectedEntryReasoning: PaperTraderEntryReasoning | null = null;
@@ -2909,13 +2914,17 @@ async function maybeEnterNewPaperTrade(params: {
 
   if (!selectedScan || !selectedTradeCard || !selectedEntryReasoning || !selectedEntryPolicy || !selectedEntryFeatures) {
     const scanSummary = `Scanned ${automatedScan.scannedSymbolCount}/${automatedScan.totalSymbolCount} symbols across ${automatedScan.chunkCount} chunk(s), ranked ${automatedScan.finalistCount} finalist row(s), confirmed ${automatedScan.confirmedCandidates.length} trade-card-ready candidate(s).`;
+    const resumeNote = automatedScan.completed
+      ? ""
+      : " Partial scan state was saved so the next paper-trader cycle can continue the universe.";
     return {
       attempted: true,
       outcome: "no_trade_today",
       symbol: policySkippedSymbols.at(-1) ?? null,
-      reason: `${scanSummary} No eligible entry survived final automation policy/risk checks: ${policySkipReasons.join(" ") || "no confirmed candidate survived the full scan."}`,
+      reason: `${scanSummary}${resumeNote} No eligible entry survived final automation policy/risk checks: ${policySkipReasons.join(" ") || "no confirmed candidate was available in the scanned slice."}`,
       evaluatedCandidates,
       scanSummary: entryScanSummary,
+      automatedScanState: automatedScan.completed ? null : automatedScan.state,
     };
   }
 

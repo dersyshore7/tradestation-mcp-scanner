@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --import tsx --test src/automation/mlLearning.test.ts",
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
@@ -19,7 +19,8 @@
     "scanner:single-review-debug": "tsx src/app/debugSingleSymbolReview.ts",
     "trade:construction-debug": "tsx src/app/debugTradeConstruction.ts",
     "paper-trader:run": "tsx src/automation/runPaperTrader.ts",
-    "policy:train": "tsx src/automation/trainPolicy.ts"
+    "policy:train": "tsx src/automation/trainPolicy.ts",
+    "ml:test": "node --import tsx --test src/automation/mlLearning.test.ts"
   },
   "keywords": [],
   "author": "",
