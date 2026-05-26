@@ -3633,8 +3633,17 @@
         return /\b(full|broad|all\s+tiers|entire\s+universe|new scan|scan for this week)\b/i.test(customPrompt);
       }
 
-      function waitForNextManualScanChunk() {
-        return new Promise((resolve) => window.setTimeout(resolve, 300));
+      function waitForNextManualScanChunk(data) {
+        const suggestedDelay = Number(data?.progress?.nextPollDelayMs);
+        const resumeAfterMs = typeof data?.state?.resumeAfter === "string"
+          ? new Date(data.state.resumeAfter).getTime() - Date.now()
+          : 0;
+        const delayMs = Math.max(
+          300,
+          Number.isFinite(suggestedDelay) ? suggestedDelay : 0,
+          Number.isFinite(resumeAfterMs) ? resumeAfterMs : 0,
+        );
+        return new Promise((resolve) => window.setTimeout(resolve, delayMs));
       }
 
       function saveManualScanState(state) {
@@ -3728,7 +3737,7 @@
           resultArea.textContent = typeof data?.progress?.text === "string"
             ? data.progress.text
             : "Manual scan is still running...";
-          await waitForNextManualScanChunk();
+          await waitForNextManualScanChunk(data);
         }
       }
 

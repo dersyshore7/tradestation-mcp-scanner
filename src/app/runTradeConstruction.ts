@@ -12,6 +12,7 @@ import {
   readExpirations,
   readStrikes,
   runSingleSymbolTradeStationAnalysis,
+  summarizeDirectOptionQuoteAttempts,
 } from "./runScan.js";
 
 const TARGET_ALLOCATION_PCT = 0.3;
@@ -593,7 +594,7 @@ async function buildTradeInputs(
     diagnostics.optionQuoteStatuses = attempts.map((attempt) => attempt.status);
 
     if (!optionQuote) {
-      diagnostics.failureReason = `No usable ${direction === "bullish" ? "call" : "put"} option quote found for ${symbol} ${targetExpiration.date}.`;
+      diagnostics.failureReason = `No usable ${direction === "bullish" ? "call" : "put"} option quote found for ${symbol} ${targetExpiration.date}. Attempts: ${summarizeDirectOptionQuoteAttempts(attempts)}.`;
       throw new Error(diagnostics.failureReason);
     }
 

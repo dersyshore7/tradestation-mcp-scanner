@@ -10,7 +10,10 @@ import {
   type ScanConfidence,
   type ScanDirection,
 } from "../scanner/scoring.js";
-import { createTradeStationGetFetcher } from "../tradestation/client.js";
+import {
+  createTradeStationGetFetcher,
+  readTradeStationResponseFailureDetails,
+} from "../tradestation/client.js";
 import {
   CHART_ANCHORED_TWO_TO_ONE_FAILURE,
   evaluateChartAnchoredAsymmetryFromBars,
@@ -111,6 +114,9 @@ type Stage2SymbolDiagnostic = {
   symbol: string;
   underlyingQuoteRequestTarget: string | null;
   underlyingQuoteStatus: number | null;
+  underlyingQuoteQuotaExceeded: boolean;
+  underlyingQuoteErrorMessage: string | null;
+  underlyingQuoteRetryAfterMs: number | null;
   underlyingPriceFieldCandidates: {
     field: string;
     rawValue: string | number | null;
@@ -121,8 +127,14 @@ type Stage2SymbolDiagnostic = {
   underlyingPriceFallback: string | null;
   expirationsFound: boolean;
   expirationsStatus: number | null;
+  expirationsQuotaExceeded: boolean;
+  expirationsErrorMessage: string | null;
+  expirationsRetryAfterMs: number | null;
   strikesRequestTarget: string | null;
   strikesStatus: number | null;
+  strikesQuotaExceeded: boolean;
+  strikesErrorMessage: string | null;
+  strikesRetryAfterMs: number | null;
   rawStrikeCount: number | null;
   normalizedStrikeCount: number | null;
   selectedExpiration: string | null;
@@ -156,6 +168,9 @@ export type DirectOptionQuoteAttempt = {
   optionSymbol: string;
   requestTarget: string;
   status: number;
+  quotaExceeded: boolean;
+  errorMessage: string | null;
+  retryAfterMs: number | null;
   rawQuotePayloadSample: Record<string, unknown> | null;
   parsedBid: number | null;
   parsedAsk: number | null;
@@ -191,9 +206,9 @@ type ChartCandidate = OptionsCandidate & {
   chartDiagnostics: Stage3Diagnostics;
 };
 
-type MultiTimeframeView = "1D" | "1W" | "1M" | "3M" | "1Y";
+export type MultiTimeframeView = "1D" | "1W" | "1M" | "3M" | "1Y";
 
-type MultiTimeframeBars = Record<MultiTimeframeView, Record<string, unknown>[]>;
+export type MultiTimeframeBars = Record<MultiTimeframeView, Record<string, unknown>[]>;
 
 type ChartReviewResult = {
   pass: boolean;
@@ -317,11 +332,15 @@ type Stage2RequestFailure = {
   endpoint: "underlying_quote" | "expirations" | "strikes" | "option_quote";
   status: number;
   requestTarget: string | null;
+  quotaExceeded: boolean;
+  errorMessage: string | null;
+  retryAfterMs: number | null;
 };
 
 type MarketDataHealth = {
   degraded: boolean;
   severe: boolean;
+  quotaLimited: boolean;
   summary: string;
   stage1QuoteFailureRate: number;
   stage1PassRate: number;
@@ -792,8 +811,19 @@ function getStage3BarLoadFailures(
   });
 }
 
-function isDegradedHttpStatus(status: number | null | undefined): status is number {
-  return status === 429 || (typeof status === "number" && status >= 500);
+function isDegradedHttpStatus(
+  status: number | null | undefined,
+  quotaExceeded = false,
+): status is number {
+  return quotaExceeded || status === 429 || (typeof status === "number" && status >= 500);
+}
+
+function isStage3BarQuotaLimited(failure: Stage3BarLoadFailure): boolean {
+  return failure.failedViews.some((view) =>
+    view.status === 429 ||
+    (view.status === 403 && (view.loadIssue?.toLowerCase().includes("quota exceeded") ?? false)) ||
+    (view.loadIssue?.toLowerCase().includes("quota exceeded") ?? false)
+  );
 }
 
 function getStage2RequestFailures(
@@ -802,35 +832,44 @@ function getStage2RequestFailures(
   return diagnostics.flatMap((diagnostic) => {
     const failures: Stage2RequestFailure[] = [];
 
-    if (isDegradedHttpStatus(diagnostic.underlyingQuoteStatus)) {
+    if (isDegradedHttpStatus(diagnostic.underlyingQuoteStatus, diagnostic.underlyingQuoteQuotaExceeded)) {
       failures.push({
         symbol: diagnostic.symbol,
         endpoint: "underlying_quote",
         status: diagnostic.underlyingQuoteStatus,
         requestTarget: diagnostic.underlyingQuoteRequestTarget,
+        quotaExceeded: diagnostic.underlyingQuoteQuotaExceeded,
+        errorMessage: diagnostic.underlyingQuoteErrorMessage,
+        retryAfterMs: diagnostic.underlyingQuoteRetryAfterMs,
       });
     }
 
-    if (isDegradedHttpStatus(diagnostic.expirationsStatus)) {
+    if (isDegradedHttpStatus(diagnostic.expirationsStatus, diagnostic.expirationsQuotaExceeded)) {
       failures.push({
         symbol: diagnostic.symbol,
         endpoint: "expirations",
         status: diagnostic.expirationsStatus,
         requestTarget: `/marketdata/options/expirations/${encodeURIComponent(diagnostic.symbol)}`,
+        quotaExceeded: diagnostic.expirationsQuotaExceeded,
+        errorMessage: diagnostic.expirationsErrorMessage,
+        retryAfterMs: diagnostic.expirationsRetryAfterMs,
       });
     }
 
-    if (isDegradedHttpStatus(diagnostic.strikesStatus)) {
+    if (isDegradedHttpStatus(diagnostic.strikesStatus, diagnostic.strikesQuotaExceeded)) {
       failures.push({
         symbol: diagnostic.symbol,
         endpoint: "strikes",
         status: diagnostic.strikesStatus,
         requestTarget: diagnostic.strikesRequestTarget,
+        quotaExceeded: diagnostic.strikesQuotaExceeded,
+        errorMessage: diagnostic.strikesErrorMessage,
+        retryAfterMs: diagnostic.strikesRetryAfterMs,
       });
     }
 
     for (const attempt of diagnostic.optionQuoteAttempts) {
-      if (!isDegradedHttpStatus(attempt.status)) {
+      if (!isDegradedHttpStatus(attempt.status, attempt.quotaExceeded)) {
         continue;
       }
 
@@ -839,6 +878,9 @@ function getStage2RequestFailures(
         endpoint: "option_quote",
         status: attempt.status,
         requestTarget: attempt.requestTarget,
+        quotaExceeded: attempt.quotaExceeded,
+        errorMessage: attempt.errorMessage,
+        retryAfterMs: attempt.retryAfterMs,
       });
     }
 
@@ -875,6 +917,9 @@ function buildMarketDataHealth(params: {
     stage1QuoteFailureRate >= 0.5 &&
     stage1PassRate < 0.5;
   const stage2RequestDegraded = stage2RequestFailures.length > 0;
+  const quotaLimited =
+    stage2RequestFailures.some((item) => item.quotaExceeded) ||
+    stage3BarLoadFailures.some(isStage3BarQuotaLimited);
   const stage3LoadBlocked =
     stage3EvaluationsCount > 0 &&
     stage3BarLoadFailures.length === stage3EvaluationsCount;
@@ -884,6 +929,7 @@ function buildMarketDataHealth(params: {
     stage3BarLoadFailures.length > 0;
   const severe =
     quoteCoverageDegraded ||
+    quotaLimited ||
     stage2RequestFailures.some((item) => item.status === 429) ||
     stage3LoadBlocked;
   const summaryParts: string[] = [];
@@ -895,13 +941,15 @@ function buildMarketDataHealth(params: {
   }
 
   if (stage2RequestFailures.length > 0) {
-    const rateLimited = stage2RequestFailures.filter((item) => item.status === 429);
+    const rateLimited = stage2RequestFailures.filter((item) => item.status === 429 || item.quotaExceeded);
     const sample = stage2RequestFailures
       .slice(0, 5)
-      .map((item) => `${item.symbol} ${item.endpoint} HTTP ${item.status}`)
+      .map((item) =>
+        `${item.symbol} ${item.endpoint} HTTP ${item.status}${item.quotaExceeded ? " quota exceeded" : ""}${item.errorMessage ? ` ${item.errorMessage}` : ""}`
+      )
       .join(", ");
     summaryParts.push(
-      `Stage 2 option-data requests were degraded: ${stage2RequestFailures.length} transient request failures${rateLimited.length > 0 ? `, including ${rateLimited.length} rate-limit responses` : ""}${sample ? ` (${sample})` : ""}.`,
+      `Stage 2 option-data requests were degraded: ${stage2RequestFailures.length} transient request failures${rateLimited.length > 0 ? `, including ${rateLimited.length} quota/rate-limit responses` : ""}${sample ? ` (${sample})` : ""}.`,
     );
   }
 
@@ -915,6 +963,7 @@ function buildMarketDataHealth(params: {
   return {
     degraded,
     severe,
+    quotaLimited,
     summary:
       summaryParts.length > 0
         ? summaryParts.join(" ")
@@ -2488,15 +2537,29 @@ type MultiTimeframeBarsLoadResult = {
   timeframeDiagnostics: Record<MultiTimeframeView, Stage3TimeframeDiagnostic>;
 };
 
-const MULTI_TIMEFRAME_BAR_CONFIG: Record<
-  MultiTimeframeView,
-  { interval: number; unit: "Daily" | "Weekly"; barsBack: number }
+export function buildMultiTimeframeBarsFromLoadedBars(params: {
+  dailyBars: Record<string, unknown>[];
+  weeklyBars: Record<string, unknown>[];
+}): MultiTimeframeBars {
+  return {
+    "1D": params.dailyBars.slice(-DAILY_MULTI_TIMEFRAME_VIEW_BARS_BACK["1D"]),
+    "1W": params.dailyBars.slice(-DAILY_MULTI_TIMEFRAME_VIEW_BARS_BACK["1W"]),
+    "1M": params.dailyBars.slice(-DAILY_MULTI_TIMEFRAME_VIEW_BARS_BACK["1M"]),
+    "3M": params.dailyBars.slice(-DAILY_MULTI_TIMEFRAME_VIEW_BARS_BACK["3M"]),
+    "1Y": params.weeklyBars.slice(-WEEKLY_MULTI_TIMEFRAME_BARS_BACK),
+  };
+}
+
+const DAILY_MULTI_TIMEFRAME_BARS_BACK = 160;
+const WEEKLY_MULTI_TIMEFRAME_BARS_BACK = 60;
+const DAILY_MULTI_TIMEFRAME_VIEW_BARS_BACK: Record<
+  Exclude<MultiTimeframeView, "1Y">,
+  number
 > = {
-  "1D": { interval: 1, unit: "Daily", barsBack: 20 },
-  "1W": { interval: 1, unit: "Daily", barsBack: 35 },
-  "1M": { interval: 1, unit: "Daily", barsBack: 80 },
-  "3M": { interval: 1, unit: "Daily", barsBack: 160 },
-  "1Y": { interval: 1, unit: "Weekly", barsBack: 60 },
+  "1D": 20,
+  "1W": 35,
+  "1M": 80,
+  "3M": DAILY_MULTI_TIMEFRAME_BARS_BACK,
 };
 
 function pickTicker(
@@ -2560,6 +2623,12 @@ function incrementSummary(summary: StageFailureSummary, reason: string): void {
 }
 
 function categorizeStage2Failure(reason: string): string {
+  if (reason.toLowerCase().includes("quota exceeded")) {
+    return "quota_limited";
+  }
+  if (reason.includes("No usable direct option quote")) {
+    return "quote_unusable";
+  }
   if (reason.includes("OI threshold")) {
     return "oi";
   }
@@ -3282,12 +3351,13 @@ async function loadTimeframeBarsWithRetry(
     try {
       const response = await get(requestTarget);
       if (!response.ok) {
+        const failureDetails = await readTradeStationResponseFailureDetails(response);
         diagnostic = buildStage3TimeframeDiagnostic({
           requestTarget,
           status: response.status,
           bars,
           attempts: attempt,
-          loadIssue: `HTTP ${response.status}`,
+          loadIssue: `HTTP ${response.status}${failureDetails.quotaExceeded ? " quota exceeded" : ""}${failureDetails.errorMessage ? `: ${failureDetails.errorMessage}` : ""}`,
         });
       } else {
         try {
@@ -3353,33 +3423,48 @@ async function loadMultiTimeframeBars(
   get: (path: string) => Promise<Response>,
   symbol: string,
 ): Promise<MultiTimeframeBarsLoadResult> {
-  const result = {} as MultiTimeframeBars;
   const timeframeDiagnostics = {} as Record<
     MultiTimeframeView,
     Stage3TimeframeDiagnostic
   >;
+  const dailyRequestTarget = `/marketdata/barcharts/${encodeURIComponent(symbol)}?interval=1&unit=Daily&barsback=${DAILY_MULTI_TIMEFRAME_BARS_BACK}`;
+  const weeklyRequestTarget = `/marketdata/barcharts/${encodeURIComponent(symbol)}?interval=1&unit=Weekly&barsback=${WEEKLY_MULTI_TIMEFRAME_BARS_BACK}`;
+  const dailyLoad = await loadTimeframeBarsWithRetry(get, dailyRequestTarget);
+  const weeklyLoad = await loadTimeframeBarsWithRetry(get, weeklyRequestTarget);
+  const result = buildMultiTimeframeBarsFromLoadedBars({
+    dailyBars: dailyLoad.bars,
+    weeklyBars: weeklyLoad.bars,
+  });
   let allViewsLoaded = true;
 
-  const loads = await Promise.all(
-    (Object.entries(MULTI_TIMEFRAME_BAR_CONFIG) as [
-      MultiTimeframeView,
-      { interval: number; unit: "Daily" | "Weekly"; barsBack: number },
-    ][]).map(async ([view, config]) => {
-      const requestTarget = `/marketdata/barcharts/${encodeURIComponent(symbol)}?interval=${config.interval}&unit=${config.unit}&barsback=${config.barsBack}`;
-      const loadResult = await loadTimeframeBarsWithRetry(get, requestTarget);
-      return { view, ...loadResult };
-    }),
-  );
-
-  for (const { view, bars, diagnostic } of loads) {
-    timeframeDiagnostics[view] = diagnostic;
-
+  for (const view of ["1D", "1W", "1M", "3M"] as const) {
+    const bars = result[view];
+    const loadIssue = dailyLoad.diagnostic.loadIssue ??
+      (bars.length >= MIN_STAGE3_BARS_PER_VIEW ? null : `Only ${bars.length} bars parsed`);
+    timeframeDiagnostics[view] = buildStage3TimeframeDiagnostic({
+      requestTarget: dailyRequestTarget,
+      status: dailyLoad.diagnostic.status,
+      bars,
+      attempts: dailyLoad.diagnostic.attempts,
+      loadIssue,
+    });
     if (bars.length < MIN_STAGE3_BARS_PER_VIEW) {
       allViewsLoaded = false;
-      continue;
     }
+  }
 
-    result[view] = bars;
+  const weeklyBars = result["1Y"];
+  const weeklyLoadIssue = weeklyLoad.diagnostic.loadIssue ??
+    (weeklyBars.length >= MIN_STAGE3_BARS_PER_VIEW ? null : `Only ${weeklyBars.length} bars parsed`);
+  timeframeDiagnostics["1Y"] = buildStage3TimeframeDiagnostic({
+    requestTarget: weeklyRequestTarget,
+    status: weeklyLoad.diagnostic.status,
+    bars: weeklyBars,
+    attempts: weeklyLoad.diagnostic.attempts,
+    loadIssue: weeklyLoadIssue,
+  });
+  if (weeklyBars.length < MIN_STAGE3_BARS_PER_VIEW) {
+    allViewsLoaded = false;
   }
 
   return {
@@ -4953,10 +5038,14 @@ export async function fetchFirstUsableDirectOptionQuote(
     const requestTarget = `/marketdata/quotes/${encodeURIComponent(optionSymbol)}`;
     const optionQuoteResponse = await get(requestTarget);
     if (!optionQuoteResponse.ok) {
+      const failureDetails = await readTradeStationResponseFailureDetails(optionQuoteResponse);
       attempts.push({
         optionSymbol,
         requestTarget,
         status: optionQuoteResponse.status,
+        quotaExceeded: failureDetails.quotaExceeded,
+        errorMessage: failureDetails.errorMessage,
+        retryAfterMs: failureDetails.retryAfterMs,
         rawQuotePayloadSample: null,
         parsedBid: null,
         parsedAsk: null,
@@ -5019,6 +5108,9 @@ export async function fetchFirstUsableDirectOptionQuote(
         optionSymbol,
         requestTarget,
         status: optionQuoteResponse.status,
+        quotaExceeded: false,
+        errorMessage: null,
+        retryAfterMs: null,
         rawQuotePayloadSample,
         parsedBid: bid,
         parsedAsk: ask,
@@ -5045,6 +5137,9 @@ export async function fetchFirstUsableDirectOptionQuote(
       optionSymbol,
       requestTarget,
       status: optionQuoteResponse.status,
+      quotaExceeded: false,
+      errorMessage: null,
+      retryAfterMs: null,
       rawQuotePayloadSample,
       parsedBid: bid,
       parsedAsk: ask,
@@ -5057,6 +5152,28 @@ export async function fetchFirstUsableDirectOptionQuote(
   }
 
   return { quote: null, attempts };
+}
+
+export function summarizeDirectOptionQuoteAttempts(
+  attempts: DirectOptionQuoteAttempt[],
+): string {
+  if (attempts.length === 0) {
+    return "no direct option quote requests were attempted";
+  }
+
+  return attempts
+    .slice(0, 6)
+    .map((attempt) => {
+      const parsedFields = [
+        attempt.parsedBid !== null ? `bid=${attempt.parsedBid}` : "bid=n/a",
+        attempt.parsedAsk !== null ? `ask=${attempt.parsedAsk}` : "ask=n/a",
+        attempt.parsedOpenInterest !== null ? `OI=${attempt.parsedOpenInterest}` : "OI=n/a",
+      ].join(", ");
+      const quotaText = attempt.quotaExceeded ? " quota exceeded" : "";
+      const errorText = attempt.errorMessage ? ` (${attempt.errorMessage})` : "";
+      return `${attempt.optionSymbol} HTTP ${attempt.status}${quotaText}${errorText}: ${attempt.outcome} ${parsedFields}`;
+    })
+    .join("; ");
 }
 
 async function evaluateStage2Strike(
@@ -5076,7 +5193,7 @@ async function evaluateStage2Strike(
       strike,
       quote: null,
       attempts,
-      reason: "No usable direct option quote found for strike.",
+      reason: `No usable direct option quote found for strike. Attempts: ${summarizeDirectOptionQuoteAttempts(attempts)}.`,
       spreadPercent: null,
     };
   }
@@ -5128,14 +5245,23 @@ async function runStage2OptionsTradability(
       symbol: candidate.symbol,
       underlyingQuoteRequestTarget: null,
       underlyingQuoteStatus: null,
+      underlyingQuoteQuotaExceeded: false,
+      underlyingQuoteErrorMessage: null,
+      underlyingQuoteRetryAfterMs: null,
       underlyingPriceFieldCandidates: [],
       underlyingPriceFieldUsed: null,
       underlyingPrice: null,
       underlyingPriceFallback: null,
       expirationsFound: false,
       expirationsStatus: null,
+      expirationsQuotaExceeded: false,
+      expirationsErrorMessage: null,
+      expirationsRetryAfterMs: null,
       strikesRequestTarget: null,
       strikesStatus: null,
+      strikesQuotaExceeded: false,
+      strikesErrorMessage: null,
+      strikesRetryAfterMs: null,
       rawStrikeCount: null,
       normalizedStrikeCount: null,
       selectedExpiration: null,
@@ -5196,6 +5322,10 @@ async function runStage2OptionsTradability(
           "No preferred quote field parsed; fell back to Stage 1 lastPrice.";
       }
     } else {
+      const failureDetails = await readTradeStationResponseFailureDetails(underlyingQuoteResponse);
+      diagnostic.underlyingQuoteQuotaExceeded = failureDetails.quotaExceeded;
+      diagnostic.underlyingQuoteErrorMessage = failureDetails.errorMessage;
+      diagnostic.underlyingQuoteRetryAfterMs = failureDetails.retryAfterMs;
       diagnostic.underlyingPriceFallback =
         "Underlying quote request failed; fell back to Stage 1 lastPrice.";
     }
@@ -5218,7 +5348,11 @@ async function runStage2OptionsTradability(
     );
     diagnostic.expirationsStatus = expirationsResponse.status;
     if (!expirationsResponse.ok) {
-      diagnostic.reason = `Expirations request failed (${expirationsResponse.status}).`;
+      const failureDetails = await readTradeStationResponseFailureDetails(expirationsResponse);
+      diagnostic.expirationsQuotaExceeded = failureDetails.quotaExceeded;
+      diagnostic.expirationsErrorMessage = failureDetails.errorMessage;
+      diagnostic.expirationsRetryAfterMs = failureDetails.retryAfterMs;
+      diagnostic.reason = `Expirations request failed (${expirationsResponse.status}${failureDetails.quotaExceeded ? " quota exceeded" : ""}${failureDetails.errorMessage ? `: ${failureDetails.errorMessage}` : ""}).`;
       diagnostics.push(diagnostic);
       continue;
     }
@@ -5254,7 +5388,11 @@ async function runStage2OptionsTradability(
     const strikesResponse = await get(strikesPath);
     diagnostic.strikesStatus = strikesResponse.status;
     if (!strikesResponse.ok) {
-      diagnostic.reason = `Strikes request failed (${strikesResponse.status}).`;
+      const failureDetails = await readTradeStationResponseFailureDetails(strikesResponse);
+      diagnostic.strikesQuotaExceeded = failureDetails.quotaExceeded;
+      diagnostic.strikesErrorMessage = failureDetails.errorMessage;
+      diagnostic.strikesRetryAfterMs = failureDetails.retryAfterMs;
+      diagnostic.reason = `Strikes request failed (${strikesResponse.status}${failureDetails.quotaExceeded ? " quota exceeded" : ""}${failureDetails.errorMessage ? `: ${failureDetails.errorMessage}` : ""}).`;
       diagnostics.push(diagnostic);
       continue;
     }
@@ -5317,7 +5455,7 @@ async function runStage2OptionsTradability(
 
     if (!finalEvaluation || !finalEvaluation.quote) {
       diagnostic.reason =
-        "No usable direct option quote found for selected or nearby strikes.";
+        `No usable direct option quote found for selected or nearby strikes. Attempts: ${summarizeDirectOptionQuoteAttempts(diagnostic.optionQuoteAttempts)}.`;
       diagnostics.push(diagnostic);
       continue;
     }

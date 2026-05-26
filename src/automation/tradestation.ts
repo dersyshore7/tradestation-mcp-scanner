@@ -11,7 +11,8 @@ export type TradeStationTradeAction =
 export type TradeStationDuration = "DAY" | "GTC" | "GTD" | "DYP" | "GCP";
 const DEFAULT_TRADESTATION_ROUTE = "Intelligent";
 const OPTION_STANDARD_INCREMENT_THRESHOLD = 3;
-const OPTION_STANDARD_INCREMENT = 0.05;
+const OPTION_SUB_THREE_INCREMENT = 0.05;
+const OPTION_STANDARD_INCREMENT = 0.1;
 const DEFAULT_PRICE_INCREMENT = 0.01;
 
 export type TradeStationOrderRequest = {
@@ -442,9 +443,10 @@ export function normalizeTradeStationOrderPrice(order: {
   tradeAction: TradeStationTradeAction;
 }): number {
   const increment = isOptionSymbol(order.symbol)
-    && order.price >= OPTION_STANDARD_INCREMENT_THRESHOLD
+    ? order.price >= OPTION_STANDARD_INCREMENT_THRESHOLD
       ? OPTION_STANDARD_INCREMENT
-      : DEFAULT_PRICE_INCREMENT;
+      : OPTION_SUB_THREE_INCREMENT
+    : DEFAULT_PRICE_INCREMENT;
   const direction = isBuyAction(order.tradeAction) ? "up" : "down";
 
   return roundToIncrement(order.price, increment, direction);

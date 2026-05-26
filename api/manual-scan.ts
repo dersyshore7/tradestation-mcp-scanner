@@ -69,6 +69,9 @@ type ManualScanState = {
   chunkSummaries: ManualScanChunkSummary[];
   accumulatedTelemetry: StarterUniverseTelemetry | null;
   latestDataHealth: StarterUniverseTelemetry["dataHealth"] | null;
+  resumeAfter: string | null;
+  quotaPauseCount: number;
+  lastQuotaReason: string | null;
   finalResponse: ManualScanCompletedPayload | null;
 };
 
@@ -99,9 +102,11 @@ type ManualScanProgress = {
   totalSymbolCount: number;
   chunkCount: number;
   bestSymbol: string | null;
+  nextPollDelayMs?: number;
 };
 
 const DEFAULT_CHUNK_SIZE = 8;
+const DEFAULT_MANUAL_SCAN_MAX_QUOTA_PAUSES = 3;
 const STAGE_COUNT_KEYS = [
   "stage1Entered",
   "stage1Passed",
@@ -149,6 +154,22 @@ function readChunkSize(): number {
     return DEFAULT_CHUNK_SIZE;
   }
   return Math.max(3, Math.min(20, Math.floor(parsed)));
+}
+
+function readManualScanMaxQuotaPauses(): number {
+  const parsed = Number(process.env.MANUAL_SCAN_MAX_QUOTA_PAUSES ?? DEFAULT_MANUAL_SCAN_MAX_QUOTA_PAUSES);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_MANUAL_SCAN_MAX_QUOTA_PAUSES;
+  }
+  return Math.max(0, Math.min(10, Math.floor(parsed)));
+}
+
+function readQuotaBackoffMs(): number {
+  const parsed = Number(process.env.TRADESTATION_QUOTA_BACKOFF_MS ?? 15_000);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 15_000;
+  }
+  return parsed;
 }
 
 function totalSymbolCount(): number {
@@ -266,6 +287,15 @@ function buildMergedDataHealth(params: {
     stage1QuoteFailureRate >= 0.5 &&
     stage1PassRate < 0.5;
   const stage2RequestDegraded = stage2RequestFailures.length > 0;
+  const quotaLimited =
+    stage2RequestFailures.some((item) => item.quotaExceeded) ||
+    stage3BarLoadFailures.some((failure) =>
+      failure.failedViews.some((view) =>
+        view.status === 429 ||
+        (view.status === 403 && (view.loadIssue?.toLowerCase().includes("quota exceeded") ?? false)) ||
+        (view.loadIssue?.toLowerCase().includes("quota exceeded") ?? false)
+      )
+    );
   const stage3LoadBlocked =
     stageCounts.stage2Passed > 0 &&
     stage3BarLoadFailures.length === stageCounts.stage2Passed;
@@ -275,6 +305,7 @@ function buildMergedDataHealth(params: {
     stage3BarLoadFailures.length > 0;
   const severe =
     quoteCoverageDegraded ||
+    quotaLimited ||
     stage2RequestFailures.some((item) => item.status === 429) ||
     stage3LoadBlocked;
   const summaryParts: string[] = [];
@@ -285,13 +316,15 @@ function buildMergedDataHealth(params: {
     );
   }
   if (stage2RequestFailures.length > 0) {
-    const rateLimited = stage2RequestFailures.filter((item) => item.status === 429);
+    const rateLimited = stage2RequestFailures.filter((item) => item.status === 429 || item.quotaExceeded);
     const sample = stage2RequestFailures
       .slice(0, 5)
-      .map((item) => `${item.symbol} ${item.endpoint} HTTP ${item.status}`)
+      .map((item) =>
+        `${item.symbol} ${item.endpoint} HTTP ${item.status}${item.quotaExceeded ? " quota exceeded" : ""}${item.errorMessage ? ` ${item.errorMessage}` : ""}`
+      )
       .join(", ");
     summaryParts.push(
-      `Stage 2 option-data requests were degraded: ${stage2RequestFailures.length} transient request failures${rateLimited.length > 0 ? `, including ${rateLimited.length} rate-limit responses` : ""}${sample ? ` (${sample})` : ""}.`,
+      `Stage 2 option-data requests were degraded: ${stage2RequestFailures.length} transient request failures${rateLimited.length > 0 ? `, including ${rateLimited.length} quota/rate-limit responses` : ""}${sample ? ` (${sample})` : ""}.`,
     );
   }
   if (stage3BarLoadFailures.length > 0) {
@@ -305,6 +338,7 @@ function buildMergedDataHealth(params: {
   return {
     degraded,
     severe,
+    quotaLimited,
     summary: summaryParts.join(" ") || "Market data coverage looked usable for this scan.",
     stage1QuoteFailureRate,
     stage1PassRate,
@@ -785,6 +819,11 @@ function readManualScanState(value: unknown): ManualScanState | null {
       : [],
     accumulatedTelemetry: record.accumulatedTelemetry ?? null,
     latestDataHealth: record.latestDataHealth ?? null,
+    resumeAfter: typeof record.resumeAfter === "string" ? record.resumeAfter : null,
+    quotaPauseCount: typeof record.quotaPauseCount === "number" && Number.isFinite(record.quotaPauseCount)
+      ? Math.max(0, Math.floor(record.quotaPauseCount))
+      : 0,
+    lastQuotaReason: typeof record.lastQuotaReason === "string" ? record.lastQuotaReason : null,
     finalResponse: record.finalResponse ?? null,
   };
 }
@@ -804,6 +843,9 @@ function createInitialState(body: unknown): ManualScanState {
     chunkSummaries: [],
     accumulatedTelemetry: null,
     latestDataHealth: null,
+    resumeAfter: null,
+    quotaPauseCount: 0,
+    lastQuotaReason: null,
     finalResponse: null,
   };
 }
@@ -860,6 +902,9 @@ function readSelectedRankingScore(
 
 function buildProgress(state: ManualScanState, text: string): ManualScanProgress {
   const tier = SCAN_UNIVERSE_TIERS[state.tierIndex] ?? null;
+  const nextPollDelayMs = state.resumeAfter
+    ? Math.max(0, new Date(state.resumeAfter).getTime() - Date.now())
+    : 0;
   return {
     text,
     tier: tier?.label ?? null,
@@ -867,6 +912,48 @@ function buildProgress(state: ManualScanState, text: string): ManualScanProgress
     totalSymbolCount: totalSymbolCount(),
     chunkCount: state.chunkCount,
     bestSymbol: state.bestConfirmed?.scan.ticker ?? null,
+    ...(nextPollDelayMs > 0 ? { nextPollDelayMs } : {}),
+  };
+}
+
+function isQuotaLimitedTelemetry(telemetry: StarterUniverseTelemetry | null): boolean {
+  return telemetry?.dataHealth.quotaLimited === true;
+}
+
+function isQuotaLimitedReason(reason: string | null): boolean {
+  return reason?.toLowerCase().includes("quota exceeded") ?? false;
+}
+
+function buildQuotaPauseReason(
+  telemetry: StarterUniverseTelemetry | null,
+  tradeCardBlockReason: string | null,
+): string {
+  if (isQuotaLimitedReason(tradeCardBlockReason)) {
+    return tradeCardBlockReason as string;
+  }
+  return telemetry?.dataHealth.summary ?? "TradeStation quota was exceeded during the scan.";
+}
+
+function buildResumeAfter(): string {
+  return new Date(Date.now() + readQuotaBackoffMs()).toISOString();
+}
+
+function buildQuotaPausedResponse(state: ManualScanState): Record<string, unknown> {
+  const best = state.bestConfirmed?.scan.ticker ?? "none yet";
+  const tier = SCAN_UNIVERSE_TIERS[state.tierIndex] ?? null;
+  const progress = buildProgress(
+    state,
+    `Paused for TradeStation quota recovery while scanning ${tier?.label ?? "the universe"}; best confirmed setup so far: ${best}. ${state.lastQuotaReason ?? ""}`.trim(),
+  );
+
+  return {
+    scan_run_id: state.scanRunId,
+    prompt: state.prompt,
+    status: state.status,
+    progress,
+    state,
+    latestChunk: state.chunkSummaries.at(-1) ?? null,
+    dataHealth: state.latestDataHealth,
   };
 }
 
@@ -1034,31 +1121,91 @@ async function finalizeState(state: ManualScanState): Promise<ManualScanState> {
   };
 }
 
+function completeQuotaStoppedState(
+  state: ManualScanState,
+  telemetry: StarterUniverseTelemetry | null,
+  noTradeReason: string,
+): ManualScanState {
+  const finalizedTelemetry = finalizeManualTelemetry(telemetry, {
+    selectedSymbol: null,
+    winningTier: null,
+    noTradeReason,
+  });
+  const scan: ScanResult = {
+    ticker: null,
+    direction: null,
+    confidence: null,
+    conclusion: "no_trade_today",
+    reason: noTradeReason,
+    telemetry: finalizedTelemetry,
+  };
+  const completedState = normalizeScanPosition({
+    ...state,
+    status: "completed",
+    tierIndex: SCAN_UNIVERSE_TIERS.length,
+    accumulatedTelemetry: finalizedTelemetry,
+    latestDataHealth: finalizedTelemetry.dataHealth,
+    resumeAfter: null,
+  });
+  const presentationSummary = buildWorkflowPresentationSummary({
+    scan,
+    telemetry: finalizedTelemetry,
+    tradeCard: null,
+  });
+  const finalResponse: ManualScanCompletedPayload = {
+    scan_run_id: completedState.scanRunId,
+    prompt: completedState.prompt,
+    status: "completed",
+    progress: buildProgress(completedState, "Manual scan stopped because TradeStation quota remained unavailable."),
+    scan,
+    tradeCard: null,
+    tradeRecommendation: null,
+    telemetry: finalizedTelemetry,
+    presentationSummary,
+    manualScan: {
+      chunkCount: completedState.chunkCount,
+      scannedSymbolCount: completedState.scannedSymbolCount,
+      totalSymbolCount: totalSymbolCount(),
+      bestSymbol: null,
+      chunkSummaries: completedState.chunkSummaries,
+    },
+  };
+
+  return {
+    ...completedState,
+    finalResponse,
+  };
+}
+
 async function advanceState(initialState: ManualScanState): Promise<ManualScanState> {
   const state = normalizeScanPosition(initialState);
   if (state.status === "completed") {
     return state;
   }
-  if (state.tierIndex >= SCAN_UNIVERSE_TIERS.length) {
-    return await finalizeState(state);
+  if (state.resumeAfter && new Date(state.resumeAfter).getTime() > Date.now()) {
+    return state;
+  }
+  const runningState = state.resumeAfter ? { ...state, resumeAfter: null } : state;
+  if (runningState.tierIndex >= SCAN_UNIVERSE_TIERS.length) {
+    return await finalizeState(runningState);
   }
 
-  const tier = SCAN_UNIVERSE_TIERS[state.tierIndex];
+  const tier = SCAN_UNIVERSE_TIERS[runningState.tierIndex];
   if (!tier) {
     return await finalizeState({
-      ...state,
+      ...runningState,
       tierIndex: SCAN_UNIVERSE_TIERS.length,
     });
   }
-  const chunkSize = Math.min(readChunkSize(), tier.symbols.length - state.tierCursor);
-  const from = state.tierCursor;
+  const chunkSize = Math.min(readChunkSize(), tier.symbols.length - runningState.tierCursor);
+  const from = runningState.tierCursor;
   const to = Math.min(tier.symbols.length, from + chunkSize);
   const chunkSymbols = tier.symbols.slice(from, to);
   const startedAt = Date.now();
   const scan = await runScan({
-    prompt: state.prompt,
-    excludedTickers: buildExcludedTickers(state.tierIndex, state.tierCursor),
-    scanTierLimit: state.tierIndex + 1,
+    prompt: runningState.prompt,
+    excludedTickers: buildExcludedTickers(runningState.tierIndex, runningState.tierCursor),
+    scanTierLimit: runningState.tierIndex + 1,
     maxSymbolsPerTier: chunkSize,
   });
   if (!scan.telemetry) {
@@ -1074,6 +1221,34 @@ async function advanceState(initialState: ManualScanState): Promise<ManualScanSt
   } catch (error) {
     tradeCardBlockReason = readErrorMessage(error);
     telemetry = markTradeCardBlock(scan, telemetry, tradeCardBlockReason);
+  }
+
+  if (isQuotaLimitedTelemetry(telemetry) || isQuotaLimitedReason(tradeCardBlockReason)) {
+    const quotaPauseCount = runningState.quotaPauseCount + 1;
+    const quotaReason = buildQuotaPauseReason(telemetry, tradeCardBlockReason);
+    const latestDataHealth = telemetry?.dataHealth ?? runningState.latestDataHealth;
+    if (quotaPauseCount <= readManualScanMaxQuotaPauses()) {
+      return normalizeScanPosition({
+        ...runningState,
+        resumeAfter: buildResumeAfter(),
+        quotaPauseCount,
+        lastQuotaReason: quotaReason,
+        latestDataHealth,
+      });
+    }
+
+    const accumulatedTelemetry = telemetry
+      ? mergeManualTelemetry(runningState.accumulatedTelemetry, telemetry, tier.key)
+      : runningState.accumulatedTelemetry;
+    const noTradeReason = `Manual scan stopped after ${readManualScanMaxQuotaPauses()} TradeStation quota pause(s). ${quotaReason}`;
+    return completeQuotaStoppedState({
+      ...runningState,
+      accumulatedTelemetry,
+      latestDataHealth,
+      quotaPauseCount,
+      lastQuotaReason: quotaReason,
+      finalResponse: null,
+    }, accumulatedTelemetry, noTradeReason);
   }
 
   const chunkSummary: ManualScanChunkSummary = {
@@ -1093,7 +1268,7 @@ async function advanceState(initialState: ManualScanState): Promise<ManualScanSt
   };
   const candidateScore = rankingScore ?? 0;
   const bestConfirmed =
-    tradeCard && (!state.bestConfirmed || candidateScore > state.bestConfirmed.score)
+    tradeCard && (!runningState.bestConfirmed || candidateScore > runningState.bestConfirmed.score)
       ? {
           score: candidateScore,
           scan,
@@ -1101,20 +1276,22 @@ async function advanceState(initialState: ManualScanState): Promise<ManualScanSt
           tradeCard,
           chunkSummary,
         }
-      : state.bestConfirmed;
+      : runningState.bestConfirmed;
   const accumulatedTelemetry = mergeManualTelemetry(
-    state.accumulatedTelemetry,
+    runningState.accumulatedTelemetry,
     telemetry,
     tier.key,
   );
   const nextState = normalizeScanPosition({
-    ...state,
+    ...runningState,
     tierCursor: to,
-    chunkCount: state.chunkCount + 1,
+    chunkCount: runningState.chunkCount + 1,
     bestConfirmed,
-    chunkSummaries: [...state.chunkSummaries, chunkSummary].slice(-80),
+    chunkSummaries: [...runningState.chunkSummaries, chunkSummary].slice(-80),
     accumulatedTelemetry,
     latestDataHealth: accumulatedTelemetry.dataHealth,
+    quotaPauseCount: 0,
+    lastQuotaReason: null,
   });
 
   if (nextState.tierIndex >= SCAN_UNIVERSE_TIERS.length) {
@@ -1125,6 +1302,9 @@ async function advanceState(initialState: ManualScanState): Promise<ManualScanSt
 }
 
 function buildRunningResponse(state: ManualScanState): Record<string, unknown> {
+  if (state.resumeAfter && new Date(state.resumeAfter).getTime() > Date.now()) {
+    return buildQuotaPausedResponse(state);
+  }
   const best = state.bestConfirmed?.scan.ticker ?? "none yet";
   const tier = SCAN_UNIVERSE_TIERS[state.tierIndex] ?? null;
   const progress = buildProgress(
