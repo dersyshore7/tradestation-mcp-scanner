@@ -7,6 +7,7 @@ import {
   closeJournalTrade,
   createJournalTrade,
   listJournalTradeDetails,
+  recordPartialJournalExit,
   updateJournalTrade,
   updateJournalTradeSignalSnapshot,
 } from "../journal/repository.js";
@@ -29,6 +30,11 @@ import {
   recommendPolicyAction,
   trainPolicyModel,
 } from "./policyModel.js";
+import {
+  calculateScaleOutQuantity,
+  decideProfitProtection,
+  type ProfitProtectionState,
+} from "./profitProtection.js";
 import {
   buildEntryRewardFeatureInput,
   buildEntryRewardFeatureInputFromScan,
@@ -113,13 +119,14 @@ type AutomationSnapshot = {
       lastOrderCheckError?: string | null;
       lastPositionQuantity?: number | null;
       managementStyle?: "ai";
-      lastManagementAction?: "hold" | "update_levels" | "exit_now" | "fallback";
+      lastManagementAction?: "hold" | "update_levels" | "exit_now" | "scale_out" | "fallback";
       lastManagementConfidence?: "low" | "medium" | "high";
       lastManagementNote?: string;
       lastManagementThesis?: string;
       lastManagementAt?: string;
       managementHistory?: PaperTraderManagementHistoryEntry[];
       decisionLog?: PaperTraderDecisionLogEntry[];
+      profitProtectionState?: ProfitProtectionState;
       entryReasoning?: PaperTraderEntryReasoning;
       accountValueAtEntry?: number | null;
       maxPositionPct?: number;
@@ -131,7 +138,7 @@ type AutomationSnapshot = {
 
 type PaperTraderManagementHistoryEntry = {
   timestamp: string;
-  action: "hold" | "update_levels" | "exit_now" | "fallback";
+  action: "hold" | "update_levels" | "exit_now" | "scale_out" | "fallback";
   confidence?: "low" | "medium" | "high";
   stopUnderlying?: number | null;
   targetUnderlying?: number | null;
@@ -197,6 +204,10 @@ type PaperTraderTradeHistoryItem = {
   latestExitReason: string | null;
   realizedPlUsd: number | null;
   realizedRMultiple: number | null;
+  profitProtection: ProfitProtectionState | null;
+  peakOptionReturnPct: number | null;
+  peakProgressToTargetPct: number | null;
+  givebackFromPeakPct: number | null;
   decisionLog: PaperTraderDecisionLogEntry[];
   managementHistory: PaperTraderManagementHistoryEntry[];
 };
@@ -354,7 +365,7 @@ type PaperTraderRunResult = {
     updates: {
       tradeId: string;
       symbol: string;
-      action: "ai_hold" | "ai_update_levels" | "ai_exit_now" | "ai_fallback";
+      action: "ai_hold" | "ai_update_levels" | "ai_exit_now" | "ai_scale_out" | "ai_fallback" | "profit_protection_scale_out";
       stopUnderlying: number | null;
       targetUnderlying: number | null;
       note: string;
@@ -362,10 +373,11 @@ type PaperTraderRunResult = {
     exitsTriggered: {
       tradeId: string;
       symbol: string;
-      reason: ExitDecision["reason"];
-      action: "closed" | "would_close" | "skipped";
+      reason: ExitDecision["reason"] | "partial_profit";
+      action: "closed" | "would_close" | "scaled_out" | "would_scale_out" | "skipped";
       orderId: string | null;
       optionExitPrice: number | null;
+      quantity?: number | null;
       note: string;
     }[];
     skipped: {
@@ -847,6 +859,10 @@ function buildPaperTradeHistory(
         latestExitReason: trade.latest_exit?.exit_reason ?? null,
         realizedPlUsd: readNumber(trade.review?.realized_pl_usd ?? null),
         realizedRMultiple: readNumber(trade.review?.realized_r_multiple ?? null),
+        profitProtection: automation?.profitProtectionState ?? null,
+        peakOptionReturnPct: automation?.profitProtectionState?.peakOptionReturnPct ?? null,
+        peakProgressToTargetPct: automation?.profitProtectionState?.peakProgressToTargetPct ?? null,
+        givebackFromPeakPct: automation?.profitProtectionState?.givebackFromPeakPct ?? null,
         decisionLog: readDecisionLog(automation),
         managementHistory: readManagementHistory(automation),
       };
@@ -1472,6 +1488,22 @@ function readActiveManagementLevels(
   };
 }
 
+function chooseMoreProtectiveStop(
+  direction: JournalTradeDetail["direction"],
+  currentStop: number | null,
+  candidateStop: number | null,
+): number | null {
+  if (currentStop === null) {
+    return candidateStop;
+  }
+  if (candidateStop === null) {
+    return currentStop;
+  }
+  return direction === "CALL"
+    ? Math.max(currentStop, candidateStop)
+    : Math.min(currentStop, candidateStop);
+}
+
 function computeProgressToTargetPct(params: {
   direction: JournalTradeDetail["direction"];
   entryUnderlyingPrice: number | null;
@@ -1582,7 +1614,7 @@ function summarizeTrainedPolicyRecommendation(
     return null;
   }
 
-  const actionLines = (["hold", "update_levels", "exit_now"] as const)
+  const actionLines = (["hold", "update_levels", "exit_now", "scale_out"] as const)
     .map((action) => {
       const summary = recommendation.actionSummaries[action];
       if (!summary) {
@@ -2344,6 +2376,19 @@ async function manageOpenPaperTrades(
       optionReturnPct,
       dteAtEntry: trade.dte_at_entry,
     });
+    const liveQuantity = Math.abs(livePosition.quantity ?? automation.quantity ?? 0);
+    const profitProtectionDecision = decideProfitProtection({
+      direction: trade.direction,
+      quantity: liveQuantity,
+      optionReturnPct,
+      progressToTargetPct,
+      currentState: automation.profitProtectionState ?? null,
+      currentStopUnderlying: activeLevels.stopUnderlying,
+      entryUnderlyingPrice: readNumber(trade.underlying_entry_price),
+      currentUnderlyingPrice: underlyingQuote.last,
+      currentOptionMid: optionQuote.mid,
+      nowIso,
+    });
     let effectiveAutomation: PaperTraderAutomationSnapshot = {
       ...automation,
       ...(activeLevels.stopUnderlying !== null
@@ -2354,6 +2399,7 @@ async function manageOpenPaperTrades(
         : {}),
     };
     let aiDecisionNote: string | null = null;
+    let managementAction: PaperTraderManagementHistoryEntry["action"] | null = null;
     let decision = null as ExitDecision | null;
 
     try {
@@ -2397,11 +2443,18 @@ async function manageOpenPaperTrades(
       );
 
       aiDecisionNote = `${aiDecision.thesis} ${aiDecision.note}`;
-      const nextStopUnderlying = aiDecision.updatedStopUnderlying ?? activeLevels.stopUnderlying;
+      const nextStopUnderlying = chooseMoreProtectiveStop(
+        trade.direction,
+        aiDecision.updatedStopUnderlying ?? activeLevels.stopUnderlying,
+        profitProtectionDecision.updatedStopUnderlying,
+      );
       const nextTargetUnderlying = aiDecision.updatedTargetUnderlying ?? activeLevels.targetUnderlying;
       const historyEntry: PaperTraderManagementHistoryEntry = {
         timestamp: nowIso,
-        action: aiDecision.action,
+        action:
+          profitProtectionDecision.action === "scale_out" && aiDecision.action !== "exit_now"
+            ? "scale_out"
+            : aiDecision.action,
         confidence: aiDecision.confidence,
         stopUnderlying: nextStopUnderlying,
         targetUnderlying: nextTargetUnderlying,
@@ -2409,17 +2462,20 @@ async function manageOpenPaperTrades(
         currentOptionMid: optionQuote.mid,
         progressToTargetPct,
         optionReturnPct,
-        note: aiDecision.note,
+        note: profitProtectionDecision.action === "scale_out" && aiDecision.action !== "exit_now"
+          ? `${aiDecision.note} Profit protection overrides management action: ${profitProtectionDecision.reason}`
+          : aiDecision.note,
         thesis: aiDecision.thesis,
       };
+      managementAction = historyEntry.action;
       const decisionLogEntry: PaperTraderDecisionLogEntry = {
         timestamp: nowIso,
         tradeId: trade.id,
         symbol: trade.symbol,
         kind: "management",
-        action: aiDecision.action,
+        action: historyEntry.action,
         confidence: aiDecision.confidence,
-        note: aiDecision.note,
+        note: historyEntry.note,
         thesis: aiDecision.thesis,
         plainEnglishExplanation: aiDecision.plainEnglishExplanation,
         optionSymbol: automation.optionSymbol,
@@ -2434,10 +2490,11 @@ async function manageOpenPaperTrades(
       currentSnapshotUpdates = {
         activeStopUnderlying: nextStopUnderlying,
         activeTargetUnderlying: nextTargetUnderlying,
+        profitProtectionState: profitProtectionDecision.state,
         managementStyle: "ai",
-        lastManagementAction: aiDecision.action,
+        lastManagementAction: historyEntry.action,
         lastManagementConfidence: aiDecision.confidence,
-        lastManagementNote: aiDecision.note,
+        lastManagementNote: historyEntry.note,
         lastManagementThesis: aiDecision.thesis,
         lastManagementAt: nowIso,
         managementHistory: appendManagementHistory(managementHistory, historyEntry),
@@ -2460,25 +2517,28 @@ async function manageOpenPaperTrades(
           ? { activeTargetUnderlying: nextTargetUnderlying }
           : {}),
         managementStyle: "ai",
-        lastManagementAction: aiDecision.action,
+        lastManagementAction: historyEntry.action,
         lastManagementConfidence: aiDecision.confidence,
-        lastManagementNote: aiDecision.note,
+        lastManagementNote: historyEntry.note,
         lastManagementThesis: aiDecision.thesis,
         lastManagementAt: nowIso,
+        profitProtectionState: profitProtectionDecision.state,
       };
 
       updates.push({
         tradeId: trade.id,
         symbol: trade.symbol,
         action:
-          aiDecision.action === "hold"
+          historyEntry.action === "hold"
             ? "ai_hold"
-            : aiDecision.action === "update_levels"
+            : historyEntry.action === "update_levels"
               ? "ai_update_levels"
-              : "ai_exit_now",
+              : historyEntry.action === "scale_out"
+                ? "profit_protection_scale_out"
+                : "ai_exit_now",
         stopUnderlying: nextStopUnderlying,
         targetUnderlying: nextTargetUnderlying,
-        note: aiDecisionNote,
+        note: historyEntry.note,
       });
 
       if (aiDecision.action === "exit_now") {
@@ -2497,6 +2557,271 @@ async function manageOpenPaperTrades(
         targetUnderlying: activeLevels.targetUnderlying,
         note: `AI manager unavailable; falling back to hard exits. ${message}`,
       });
+    }
+
+    if (
+      !decision
+      && liveQuantity <= 1
+      && (profitProtectionDecision.action === "exit_full" || managementAction === "scale_out")
+    ) {
+      decision = {
+        reason: "manual_early_exit",
+        note: `Profit protection chose full exit for a single-contract winner. ${profitProtectionDecision.reason ?? "AI manager requested scale-out, but there is no runner to leave open."}`,
+      };
+    }
+
+    const aiOrRuleScaleOut = !decision && liveQuantity > 1 && (
+      profitProtectionDecision.action === "scale_out"
+      || managementAction === "scale_out"
+    );
+    if (aiOrRuleScaleOut) {
+      const fallbackScale = calculateScaleOutQuantity(liveQuantity);
+      const plannedScaleQuantity = profitProtectionDecision.scaleQuantity > 0
+        ? profitProtectionDecision.scaleQuantity
+        : fallbackScale.scaleQuantity;
+      const plannedRemainingQuantity = profitProtectionDecision.remainingQuantity > 0
+        ? profitProtectionDecision.remainingQuantity
+        : fallbackScale.remainingQuantity;
+      const scaleReason = profitProtectionDecision.reason
+        ?? "AI manager chose scale-out to protect an open winner.";
+      const scaleNote = `${scaleReason} Scaling out ${plannedScaleQuantity} contract(s), leaving ${plannedRemainingQuantity} runner contract(s).`;
+      const protectedSnapshotUpdates = {
+        ...currentSnapshotUpdates,
+        activeStopUnderlying: profitProtectionDecision.updatedStopUnderlying ?? effectiveAutomation.activeStopUnderlying ?? activeLevels.stopUnderlying,
+        profitProtectionState: profitProtectionDecision.state,
+      };
+
+      if (dryRun) {
+        exitsTriggered.push({
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          reason: "partial_profit",
+          action: "would_scale_out",
+          orderId: automation.orderId ?? null,
+          optionExitPrice: optionQuote.mid,
+          quantity: plannedScaleQuantity,
+          note: scaleNote,
+        });
+        continue;
+      }
+
+      let heldQuantity: number;
+      try {
+        heldQuantity = await readHeldOptionQuantity({
+          client,
+          accountId: automation.accountId,
+          optionSymbol: automation.optionSymbol,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        decisionLog = appendDecisionLog(decisionLog, {
+          timestamp: nowIso,
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          kind: "exit",
+          action: "scale_out_position_check_failed",
+          reason: "partial_profit",
+          note: `${scaleNote} Scale-out skipped because the SIM position check failed: ${message}`,
+          optionSymbol: automation.optionSymbol,
+          orderId: automation.orderId ?? null,
+          quantity: plannedScaleQuantity,
+          currentUnderlyingPrice: underlyingQuote.last,
+          currentOptionMid: optionQuote.mid,
+        });
+        await updateJournalTradeSignalSnapshot(
+          trade.id,
+          buildUpdatedSignalSnapshot(trade, { ...protectedSnapshotUpdates, decisionLog }),
+        );
+        exitsTriggered.push({
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          reason: "partial_profit",
+          action: "skipped",
+          orderId: automation.orderId ?? null,
+          optionExitPrice: null,
+          quantity: plannedScaleQuantity,
+          note: `${scaleNote} Scale-out skipped because the SIM position check failed: ${message}`,
+        });
+        continue;
+      }
+
+      const scaleQuantity = Math.min(plannedScaleQuantity, Math.max(0, heldQuantity - 1));
+      const remainingQuantity = heldQuantity - scaleQuantity;
+      if (scaleQuantity < 1 || remainingQuantity < 1) {
+        decisionLog = appendDecisionLog(decisionLog, {
+          timestamp: nowIso,
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          kind: "exit",
+          action: "scale_out_skipped_quantity",
+          reason: "partial_profit",
+          note: `${scaleNote} Scale-out skipped because TradeStation reports ${heldQuantity} held contract(s).`,
+          optionSymbol: automation.optionSymbol,
+          orderId: automation.orderId ?? null,
+          quantity: scaleQuantity,
+          currentUnderlyingPrice: underlyingQuote.last,
+          currentOptionMid: optionQuote.mid,
+        });
+        await updateJournalTradeSignalSnapshot(
+          trade.id,
+          buildUpdatedSignalSnapshot(trade, { ...protectedSnapshotUpdates, decisionLog }),
+        );
+        exitsTriggered.push({
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          reason: "partial_profit",
+          action: "skipped",
+          orderId: automation.orderId ?? null,
+          optionExitPrice: null,
+          quantity: scaleQuantity,
+          note: `${scaleNote} Scale-out skipped because TradeStation reports ${heldQuantity} held contract(s).`,
+        });
+        continue;
+      }
+
+      const orderPlacement = await placeSellToCloseOrders({
+        client,
+        getExecutions: client.getExecutions,
+        accountId: automation.accountId,
+        optionSymbol: automation.optionSymbol,
+        quantity: scaleQuantity,
+      });
+      const orderIds = orderPlacement.orderIds.join(", ");
+      if (orderPlacement.rejectedOrder) {
+        decisionLog = appendDecisionLog(decisionLog, {
+          timestamp: nowIso,
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          kind: "exit",
+          action: "scale_out_rejected",
+          reason: "partial_profit",
+          note: `${scaleNote} ${formatRejectedOrderReason(orderPlacement.rejectedOrder)}`,
+          optionSymbol: automation.optionSymbol,
+          orderId: orderIds || orderPlacement.rejectedOrder.orderId,
+          quantity: scaleQuantity,
+          currentUnderlyingPrice: underlyingQuote.last,
+          currentOptionMid: optionQuote.mid,
+        });
+        await updateJournalTradeSignalSnapshot(
+          trade.id,
+          buildUpdatedSignalSnapshot(trade, { ...protectedSnapshotUpdates, decisionLog }),
+        );
+        exitsTriggered.push({
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          reason: "partial_profit",
+          action: "skipped",
+          orderId: orderIds || orderPlacement.rejectedOrder.orderId,
+          optionExitPrice: null,
+          quantity: scaleQuantity,
+          note: `${scaleNote} ${formatRejectedOrderReason(orderPlacement.rejectedOrder)}`,
+        });
+        continue;
+      }
+
+      let optionExitPrice = orderPlacement.averageFillPrice;
+      if (optionExitPrice === null) {
+        optionExitPrice =
+          optionQuote.mid
+          ?? optionQuote.bid
+          ?? readNumber(trade.option_entry_price);
+      }
+      if (optionExitPrice === null || optionExitPrice <= 0) {
+        decisionLog = appendDecisionLog(decisionLog, {
+          timestamp: nowIso,
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          kind: "exit",
+          action: "scale_out_price_missing",
+          reason: "partial_profit",
+          note: `${scaleNote} Scale-out order was sent, but no usable fill price was available for journaling.`,
+          optionSymbol: automation.optionSymbol,
+          orderId: orderIds || null,
+          quantity: scaleQuantity,
+          currentUnderlyingPrice: underlyingQuote.last,
+          currentOptionMid: optionQuote.mid,
+        });
+        await updateJournalTradeSignalSnapshot(
+          trade.id,
+          buildUpdatedSignalSnapshot(trade, { ...protectedSnapshotUpdates, decisionLog }),
+        );
+        exitsTriggered.push({
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          reason: "partial_profit",
+          action: "skipped",
+          orderId: orderIds || null,
+          optionExitPrice: null,
+          quantity: scaleQuantity,
+          note: `${scaleNote} Scale-out order was sent, but no usable fill price was available for journaling.`,
+        });
+        continue;
+      }
+
+      const scaledState: ProfitProtectionState = {
+        ...profitProtectionDecision.state,
+        scaledOutAt: nowIso,
+        scaledOutQuantity: scaleQuantity,
+      };
+      decisionLog = appendDecisionLog(decisionLog, {
+        timestamp: nowIso,
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        kind: "exit",
+        action: "scaled_out",
+        reason: "partial_profit",
+        note: scaleNote,
+        optionSymbol: automation.optionSymbol,
+        orderId: orderIds || null,
+        quantity: scaleQuantity,
+        positionCostUsd: readNumber(trade.position_cost_usd),
+        currentUnderlyingPrice: underlyingQuote.last,
+        currentOptionMid: optionQuote.mid,
+      });
+
+      await recordPartialJournalExit(trade.id, {
+        option_exit_price: optionExitPrice,
+        exit_reason: "partial_profit",
+        exit_timestamp: nowIso,
+        quantity_closed: scaleQuantity,
+        fees_usd: 0,
+        slippage_usd: 0,
+        exit_notes: `Paper trader profit-protection scale-out. ${scaleNote}`,
+        lessons_learned: null,
+        review_notes: null,
+      });
+      await updateJournalTradeSignalSnapshot(
+        trade.id,
+        buildUpdatedSignalSnapshot(trade, {
+          ...protectedSnapshotUpdates,
+          quantity: remainingQuantity,
+          filledQuantity: remainingQuantity,
+          remainingQuantity: 0,
+          lastPositionQuantity: remainingQuantity,
+          lastOrderCheckAt: nowIso,
+          profitProtectionState: scaledState,
+          decisionLog,
+        }),
+      );
+
+      exitsTriggered.push({
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        reason: "partial_profit",
+        action: "scaled_out",
+        orderId: orderIds || null,
+        optionExitPrice,
+        quantity: scaleQuantity,
+        note: scaleNote,
+      });
+      continue;
+    }
+
+    if (!decision && profitProtectionDecision.action === "exit_full") {
+      decision = {
+        reason: "manual_early_exit",
+        note: `Profit protection chose full exit for a single-contract winner. ${profitProtectionDecision.reason}`,
+      };
     }
 
     if (!decision) {

@@ -1,11 +1,16 @@
 import type { JournalTradeDetail, TradeDirection } from "../journal/types.js";
+import { decideProfitProtection } from "./profitProtection.js";
 
-export type PolicyAction = "hold" | "update_levels" | "exit_now";
+export type PolicyAction = "hold" | "update_levels" | "exit_now" | "scale_out";
 
 type PaperTraderManagementHistoryEntry = {
   action?: unknown;
   progressToTargetPct?: unknown;
   optionReturnPct?: unknown;
+  stopUnderlying?: unknown;
+  currentUnderlyingPrice?: unknown;
+  currentOptionMid?: unknown;
+  timestamp?: unknown;
 };
 
 type PolicyFeatureBuckets = {
@@ -204,6 +209,7 @@ function buildEmptyActionSummaries(): PolicyActionSummary {
     hold: null,
     update_levels: null,
     exit_now: null,
+    scale_out: null,
   };
 }
 
@@ -216,9 +222,27 @@ function summarizeAggregate(aggregate: PolicyAggregate): PolicyBucketSummary {
 }
 
 function readAction(value: unknown): PolicyAction | null {
-  return value === "hold" || value === "update_levels" || value === "exit_now"
+  return value === "hold" || value === "update_levels" || value === "exit_now" || value === "scale_out"
     ? value
     : null;
+}
+
+function readEntryUnderlying(trade: JournalTradeDetail): number | null {
+  return asFiniteNumber(trade.underlying_entry_price);
+}
+
+function isProfitProtectionState(item: PaperTraderManagementHistoryEntry, trade: JournalTradeDetail): boolean {
+  return decideProfitProtection({
+    direction: trade.direction,
+    quantity: Math.max(2, trade.contracts ?? 2),
+    optionReturnPct: asFiniteNumber(item.optionReturnPct),
+    progressToTargetPct: asFiniteNumber(item.progressToTargetPct),
+    currentStopUnderlying: asFiniteNumber(item.stopUnderlying),
+    entryUnderlyingPrice: readEntryUnderlying(trade),
+    currentUnderlyingPrice: asFiniteNumber(item.currentUnderlyingPrice),
+    currentOptionMid: asFiniteNumber(item.currentOptionMid),
+    nowIso: typeof item.timestamp === "string" ? item.timestamp : new Date().toISOString(),
+  }).action !== "none";
 }
 
 function extractPolicyExperiences(trades: JournalTradeDetail[]): PolicyExperience[] {
@@ -262,6 +286,24 @@ function extractPolicyExperiences(trades: JournalTradeDetail[]): PolicyExperienc
           dteAtEntry: trade.dte_at_entry,
         }),
       });
+
+      if (action === "hold" && isProfitProtectionState(item, trade)) {
+        const protectReward = realizedR < 0
+          ? Math.max(0.25, Math.abs(realizedR))
+          : Math.max(0.1, realizedR * recencyWeight);
+        experiences.push({
+          action: "scale_out",
+          rewardR: Number(protectReward.toFixed(3)),
+          buckets: buildFeatureBuckets({
+            direction: trade.direction,
+            setupType: trade.setup_type,
+            confidenceBucket: trade.confidence_bucket,
+            progressToTargetPct: asFiniteNumber(item.progressToTargetPct),
+            optionReturnPct: asFiniteNumber(item.optionReturnPct),
+            dteAtEntry: trade.dte_at_entry,
+          }),
+        });
+      }
     }
   }
 
@@ -316,7 +358,7 @@ export function recommendPolicyAction(
     const actionSummaries = buildEmptyActionSummaries();
     let sampleSize = 0;
 
-    for (const action of ["hold", "update_levels", "exit_now"] as const) {
+    for (const action of ["hold", "update_levels", "exit_now", "scale_out"] as const) {
       const aggregate = bucket[action];
       if (!aggregate) {
         continue;
@@ -326,7 +368,7 @@ export function recommendPolicyAction(
       sampleSize += summary.count;
     }
 
-    const rankedActions = (["hold", "update_levels", "exit_now"] as const)
+    const rankedActions = (["hold", "update_levels", "exit_now", "scale_out"] as const)
       .map((action) => ({
         action,
         summary: actionSummaries[action],

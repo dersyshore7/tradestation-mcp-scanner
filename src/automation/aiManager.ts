@@ -2,7 +2,7 @@ import { createOpenAiClient } from "../openai/client.js";
 import type { TradeDirection } from "../journal/types.js";
 
 export type AiManagementDecision = {
-  action: "hold" | "update_levels" | "exit_now";
+  action: "hold" | "update_levels" | "exit_now" | "scale_out";
   updatedStopUnderlying: number | null;
   updatedTargetUnderlying: number | null;
   confidence: "low" | "medium" | "high";
@@ -39,7 +39,7 @@ export type AiManagementInput = {
   managementHistorySummary: string | null;
   policyFeedbackSummary: string | null;
   trainedPolicySummary: string | null;
-  trainedPolicyRecommendedAction: "hold" | "update_levels" | "exit_now" | null;
+  trainedPolicyRecommendedAction: "hold" | "update_levels" | "exit_now" | "scale_out" | null;
 };
 
 function extractJsonObject(text: string): string {
@@ -96,7 +96,7 @@ function normalizeDecision(payload: unknown): AiManagementDecision {
     ? objectPayload.plainEnglishExplanation.trim()
     : "";
 
-  if (action !== "hold" && action !== "update_levels" && action !== "exit_now") {
+  if (action !== "hold" && action !== "update_levels" && action !== "exit_now" && action !== "scale_out") {
     throw new Error("AI manager returned an invalid action.");
   }
   if (confidence !== "low" && confidence !== "medium" && confidence !== "high") {
@@ -133,6 +133,7 @@ function buildPrompt(input: AiManagementInput): string {
     "You may choose one of these actions:",
     '- "hold": keep the trade open with unchanged management levels.',
     '- "update_levels": tighten the active stop and/or update the active target.',
+    '- "scale_out": take partial profit on a multi-contract winner and tighten protection on the runner.',
     '- "exit_now": close the trade immediately.',
     "Important constraints:",
     "- Do not loosen risk after entry.",
@@ -141,7 +142,7 @@ function buildPrompt(input: AiManagementInput): string {
     "- Prefer hold over unnecessary changes.",
     "- Use exit_now if the thesis is degrading, the trade is extended, or protecting gains is better than holding.",
     "Return JSON with exactly these keys:",
-    '{ "action": "hold|update_levels|exit_now", "updatedStopUnderlying": number|null, "updatedTargetUnderlying": number|null, "confidence": "low|medium|high", "confidencePercent": number, "profitChancePercent": number|null, "thesis": "short explanation", "note": "one concise execution note", "plainEnglishExplanation": "plain-English explanation" }',
+    '{ "action": "hold|update_levels|scale_out|exit_now", "updatedStopUnderlying": number|null, "updatedTargetUnderlying": number|null, "confidence": "low|medium|high", "confidencePercent": number, "profitChancePercent": number|null, "thesis": "short explanation", "note": "one concise execution note", "plainEnglishExplanation": "plain-English explanation" }',
     "confidencePercent is your confidence in the management decision, not a guarantee of market outcome.",
     "profitChancePercent is a rough decision-support estimate that the open option can recover to profit before expiration; use null if the option/current chart data is too incomplete.",
     "plainEnglishExplanation must sound like a skilled trader teaching a newer trader in 4-7 clear sentences. Mention the relevant support/resistance, invalidation/target levels, multi-timeframe alignment, volume/continuation quality when available, and why the action was chosen. Avoid scanner jargon unless you translate it.",
@@ -198,7 +199,7 @@ export function enforceAiManagementGuardrails(
   let updatedStopUnderlying = roundPrice(decision.updatedStopUnderlying);
   let updatedTargetUnderlying = roundPrice(decision.updatedTargetUnderlying);
 
-  if (decision.action === "update_levels") {
+  if (decision.action === "update_levels" || decision.action === "scale_out") {
     if (direction === "CALL") {
       if (
         updatedStopUnderlying !== null
@@ -235,7 +236,7 @@ export function enforceAiManagementGuardrails(
       }
     }
 
-    if (updatedStopUnderlying === null && updatedTargetUnderlying === null) {
+    if (decision.action === "update_levels" && updatedStopUnderlying === null && updatedTargetUnderlying === null) {
       return {
         ...decision,
         action: "hold",

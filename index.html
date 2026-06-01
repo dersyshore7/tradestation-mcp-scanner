@@ -1750,6 +1750,22 @@
           const managementRows = sortByTimestampDesc(trade.managementHistory || []).map((item) =>
             `${item.timestamp}: ${item.action}${item.confidence ? ` (${item.confidence})` : ""} | stop ${renderMaybe(item.stopUnderlying)} | target ${renderMaybe(item.targetUnderlying)} | ${item.note}`,
           );
+          const profitRows = [
+            trade.peakOptionReturnPct !== null && trade.peakOptionReturnPct !== undefined
+              ? `<strong>Peak option return:</strong> ${formatPercent(trade.peakOptionReturnPct / 100, 1)}`
+              : null,
+            trade.peakProgressToTargetPct !== null && trade.peakProgressToTargetPct !== undefined
+              ? `<strong>Peak progress:</strong> ${formatPercent(trade.peakProgressToTargetPct / 100, 1)}`
+              : null,
+            trade.givebackFromPeakPct !== null && trade.givebackFromPeakPct !== undefined
+              ? `<strong>Giveback from peak:</strong> ${formatPercent(trade.givebackFromPeakPct / 100, 1)}`
+              : null,
+            trade.profitProtection?.scaledOutAt
+              ? `<strong>Profit scaled:</strong> ${escapeHtml(renderMaybe(trade.profitProtection.scaledOutQuantity))} contract(s) at ${escapeHtml(renderMaybe(trade.profitProtection.scaledOutAt))}`
+              : trade.profitProtection?.triggeredAt
+                ? `<strong>Profit protection:</strong> triggered at ${escapeHtml(renderMaybe(trade.profitProtection.triggeredAt))}`
+                : null,
+          ].filter(Boolean);
 
           return `
             <details class="timeline-item">
@@ -1772,6 +1788,7 @@
                     `<strong>Active stop/target:</strong> ${escapeHtml(formatMoney(trade.activeStopUnderlying))} / ${escapeHtml(formatMoney(trade.activeTargetUnderlying))}`,
                     `<strong>Latest:</strong> ${escapeHtml(renderMaybe(trade.lastManagementAction))} at ${escapeHtml(renderMaybe(trade.lastManagementAt))}`,
                     `<strong>Note:</strong> ${escapeHtml(renderMaybe(trade.lastManagementNote))}`,
+                    ...profitRows,
                     ...managementRows.map((row) => escapeHtml(row)),
                   ],
                   managementDecisions,

@@ -59,6 +59,11 @@ export type JournalTradeCloseInput = {
   review_notes?: string | null;
 };
 
+export type JournalTradePartialExitInput = JournalTradeCloseInput & {
+  exit_reason: "partial_profit";
+  quantity_closed: number;
+};
+
 export type JournalTradeUpdateInput = {
   account_mode?: AccountMode;
   entry_date?: string;

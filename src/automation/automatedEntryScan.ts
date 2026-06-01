@@ -86,7 +86,8 @@ type AutomatedEntryScanParams = {
 };
 
 const DEFAULT_AUTOMATED_SCAN_CHUNK_SIZE = 20;
-const DEFAULT_AUTOMATED_SCAN_TIME_BUDGET_MS = 270_000;
+const DEFAULT_AUTOMATED_SCAN_TIME_BUDGET_MS = 210_000;
+const MAX_AUTOMATED_SCAN_TIME_BUDGET_MS = 210_000;
 const MAX_STORED_CHUNK_SUMMARIES = 120;
 
 function normalizeSymbols(symbols: readonly string[]): string[] {
@@ -118,7 +119,7 @@ function readTimeBudgetMs(value: number | undefined): number {
   if (typeof requestedValue !== "number" || !Number.isFinite(requestedValue)) {
     return DEFAULT_AUTOMATED_SCAN_TIME_BUDGET_MS;
   }
-  return Math.max(15_000, Math.min(270_000, Math.floor(requestedValue)));
+  return Math.max(15_000, Math.min(MAX_AUTOMATED_SCAN_TIME_BUDGET_MS, Math.floor(requestedValue)));
 }
 
 function totalSymbolCount(): number {

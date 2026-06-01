@@ -890,15 +890,61 @@ function extractEntryRewardExperiences(trades: JournalTradeDetail[]): EntryRewar
     if (realizedR === null) {
       continue;
     }
+    const entryOpportunityR = calculateEntryOpportunityRewardR(trade, realizedR);
 
     experiences.push({
       symbol: trade.symbol,
-      rewardR: Number(realizedR.toFixed(3)),
+      rewardR: Number(entryOpportunityR.toFixed(3)),
       buckets: buildFeatureBuckets(extractTradeEntryFeatures(trade)),
     });
   }
 
   return experiences;
+}
+
+function readPeakOptionReturnPct(trade: JournalTradeDetail): number | null {
+  const snapshot = asRecord(trade.signal_snapshot_json);
+  const automation = asRecord(snapshot?.automation);
+  const paperTrader = asRecord(automation?.paperTrader);
+  const profitProtectionState = asRecord(paperTrader?.profitProtectionState);
+  const storedPeak = asFiniteNumber(profitProtectionState?.peakOptionReturnPct);
+  const managementHistory = Array.isArray(paperTrader?.managementHistory)
+    ? paperTrader.managementHistory
+    : [];
+  const historyPeak = managementHistory
+    .map((item) => asFiniteNumber(asRecord(item)?.optionReturnPct))
+    .filter((value): value is number => value !== null)
+    .reduce<number | null>((peak, value) => peak === null ? value : Math.max(peak, value), null);
+
+  if (storedPeak === null) {
+    return historyPeak;
+  }
+  if (historyPeak === null) {
+    return storedPeak;
+  }
+  return Math.max(storedPeak, historyPeak);
+}
+
+export function calculateEntryOpportunityRewardR(
+  trade: JournalTradeDetail,
+  realizedR: number,
+): number {
+  const peakOptionReturnPct = readPeakOptionReturnPct(trade);
+  if (peakOptionReturnPct === null || peakOptionReturnPct <= 0) {
+    return realizedR;
+  }
+
+  const positionCostUsd = asFiniteNumber(trade.position_cost_usd);
+  const plannedRiskUsd = asFiniteNumber(trade.planned_risk_usd);
+  const favorablePlUsd = positionCostUsd !== null
+    ? positionCostUsd * (peakOptionReturnPct / 100)
+    : null;
+  const favorableR =
+    favorablePlUsd !== null && plannedRiskUsd !== null && plannedRiskUsd > 0
+      ? favorablePlUsd / plannedRiskUsd
+      : peakOptionReturnPct / 100;
+
+  return Math.max(realizedR, favorableR);
 }
 
 export function trainEntryRewardModel(trades: JournalTradeDetail[]): EntryRewardModel {
@@ -1027,7 +1073,7 @@ export function summarizeEntryRewardModel(model: EntryRewardModel): string | nul
     .join("\n");
 
   return [
-    `Entry reward model: ${model.experienceCount} closed paper entry outcome(s), trained on raw realized R including outliers.`,
+    `Entry reward model: ${model.experienceCount} closed paper entry outcome(s), trained on entry opportunity R so profitable setups are not punished for later management giveback.`,
     `Feature audit: ${model.featureCoverage.map((item) => `${item.feature} unknown ${(item.unknownPct * 100).toFixed(0)}%`).join(", ")}.`,
     top ? `Best contexts:\n${top}` : null,
     weak ? `Weak contexts:\n${weak}` : null,

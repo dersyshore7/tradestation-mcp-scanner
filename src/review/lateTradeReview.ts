@@ -29,7 +29,7 @@ export type LateTradeReviewInput = {
 
 export type LateTradeReviewResult = {
   decision: {
-    action: "hold" | "update_levels" | "exit_now";
+    action: "hold" | "update_levels" | "exit_now" | "scale_out";
     updatedStopUnderlying: number | null;
     updatedTargetUnderlying: number | null;
     confidence: "low" | "medium" | "high";

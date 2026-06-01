@@ -15,6 +15,7 @@ import type {
   JournalTradeDetail,
   JournalTradeExitRecord,
   JournalTradeListItem,
+  JournalTradePartialExitInput,
   JournalTradeReviewRecord,
   JournalTradeUpdateInput,
   TradeStatus,
@@ -366,6 +367,89 @@ export function calculateCloseReviewValues(
   };
 }
 
+function inferEntryCostPerContract(
+  trade: Pick<JournalTradeRecord, "contracts" | "position_cost_usd" | "option_entry_price">,
+): number {
+  const optionEntryPrice = toNumber(trade.option_entry_price);
+  if (optionEntryPrice !== null && optionEntryPrice > 0) {
+    return optionEntryPrice * 100;
+  }
+
+  const positionCostUsd = toNumber(trade.position_cost_usd) ?? 0;
+  if (typeof trade.contracts === "number" && trade.contracts > 0 && positionCostUsd > 0) {
+    return positionCostUsd / trade.contracts;
+  }
+
+  return 0;
+}
+
+export function calculateAggregateCloseReviewValues(
+  trade: Pick<JournalTradeRecord, "contracts" | "position_cost_usd" | "option_entry_price" | "planned_risk_usd">,
+  exits: Pick<JournalTradeExitRecord, "option_exit_price" | "quantity_closed" | "fees_usd" | "slippage_usd">[],
+): {
+  soldForUsd: number;
+  realizedPlUsd: number;
+  realizedRMultiple: number | null;
+  realizedReturnPct: number | null;
+} {
+  const entryCostPerContract = inferEntryCostPerContract(trade);
+  const plannedRiskUsd = toNumber(trade.planned_risk_usd);
+  const totalClosedQuantity = exits.reduce((sum, exit) => sum + exit.quantity_closed, 0);
+  const soldForUsd = exits.reduce(
+    (sum, exit) => sum + ((toNumber(exit.option_exit_price) ?? 0) * exit.quantity_closed * 100),
+    0,
+  );
+  const totalFeesUsd = exits.reduce(
+    (sum, exit) => sum + (toNumber(exit.fees_usd) ?? 0) + (toNumber(exit.slippage_usd) ?? 0),
+    0,
+  );
+  const closedPositionCostUsd = entryCostPerContract * totalClosedQuantity;
+  const originalQuantity = totalClosedQuantity;
+  const closedRiskUsd =
+    plannedRiskUsd !== null && plannedRiskUsd > 0 && originalQuantity > 0
+      ? plannedRiskUsd * (totalClosedQuantity / originalQuantity)
+      : null;
+  const realizedPlUsd = soldForUsd - closedPositionCostUsd - totalFeesUsd;
+  const realizedRMultiple = closedRiskUsd !== null && closedRiskUsd > 0
+    ? realizedPlUsd / closedRiskUsd
+    : null;
+  const realizedReturnPct = closedPositionCostUsd > 0
+    ? (realizedPlUsd / closedPositionCostUsd) * 100
+    : null;
+
+  return {
+    soldForUsd,
+    realizedPlUsd,
+    realizedRMultiple,
+    realizedReturnPct,
+  };
+}
+
+export function calculateRemainingPositionAfterPartialExit(
+  trade: Pick<JournalTradeRecord, "contracts" | "position_cost_usd" | "option_entry_price">,
+  quantityClosed: number,
+): {
+  remainingContracts: number;
+  remainingPositionCostUsd: number;
+} {
+  const currentContracts = trade.contracts ?? 0;
+  if (quantityClosed <= 0 || currentContracts <= 0 || quantityClosed >= currentContracts) {
+    throw new Error("Partial exit quantity must leave at least one open contract.");
+  }
+
+  const remainingContracts = currentContracts - quantityClosed;
+  const optionEntryPrice = toNumber(trade.option_entry_price);
+  const currentPositionCostUsd = toNumber(trade.position_cost_usd) ?? 0;
+  const remainingPositionCostUsd = optionEntryPrice !== null && optionEntryPrice > 0
+    ? remainingContracts * optionEntryPrice * 100
+    : currentPositionCostUsd * (remainingContracts / currentContracts);
+
+  return {
+    remainingContracts,
+    remainingPositionCostUsd: Number(remainingPositionCostUsd.toFixed(2)),
+  };
+}
+
 function hasExitFieldUpdates(input: JournalTradeUpdateInput): boolean {
   return input.option_exit_price !== undefined
     || input.quantity_closed !== undefined
@@ -531,7 +615,10 @@ export async function updateJournalTrade(id: string, input: JournalTradeUpdateIn
       },
     });
 
-    const reviewValues = calculateCloseReviewValues(updatedTrade, updatedExit);
+    const exitsForReview = trade.exits.map((exit) =>
+      exit.id === updatedExit.id ? updatedExit : exit
+    );
+    const reviewValues = calculateAggregateCloseReviewValues(updatedTrade, exitsForReview);
     await supabaseUpsertAndSelectOne<JournalTradeReviewRecord>({
       table: "journal_reviews",
       onConflict: "trade_id",
@@ -577,14 +664,7 @@ export async function closeJournalTrade(id: string, input: JournalTradeCloseInpu
 
   const feesUsd = input.fees_usd ?? 0;
   const slippageUsd = input.slippage_usd ?? 0;
-  const reviewValues = calculateCloseReviewValues(trade, {
-    option_exit_price: String(optionExitPrice),
-    quantity_closed: quantityClosed,
-    fees_usd: String(feesUsd),
-    slippage_usd: String(slippageUsd),
-  });
-
-  await supabaseInsertAndSelectOne<JournalTradeExitRecord>({
+  const finalExit = await supabaseInsertAndSelectOne<JournalTradeExitRecord>({
     table: "journal_exits",
     values: {
       trade_id: id,
@@ -597,6 +677,10 @@ export async function closeJournalTrade(id: string, input: JournalTradeCloseInpu
       exit_notes: input.exit_notes ?? null,
     },
   });
+  const reviewValues = calculateAggregateCloseReviewValues(trade, [
+    ...trade.exits,
+    finalExit,
+  ]);
 
   await supabaseUpsertAndSelectOne<JournalTradeReviewRecord>({
     table: "journal_reviews",
@@ -624,6 +708,62 @@ export async function closeJournalTrade(id: string, input: JournalTradeCloseInpu
   const refreshedTrade = await getJournalTradeById(id);
   if (!refreshedTrade) {
     throw new Error("Closed trade could not be reloaded.");
+  }
+
+  return refreshedTrade;
+}
+
+export async function recordPartialJournalExit(
+  id: string,
+  input: JournalTradePartialExitInput,
+): Promise<JournalTradeDetail> {
+  const trade = await getJournalTradeById(id);
+  if (!trade) {
+    throw new Error("Journal trade not found.");
+  }
+  if (trade.status !== "open") {
+    throw new Error("Only open trades can record partial exits.");
+  }
+
+  const quantityClosed = inferQuantityClosed(trade, input.quantity_closed);
+  const remainingPosition = calculateRemainingPositionAfterPartialExit(trade, quantityClosed);
+  const optionExitPrice = input.option_exit_price ?? (
+    input.sold_for_usd !== null && input.sold_for_usd !== undefined
+      ? input.sold_for_usd / (quantityClosed * 100)
+      : null
+  );
+  if (optionExitPrice === null || optionExitPrice <= 0) {
+    throw new Error("option_exit_price is required to record a partial exit.");
+  }
+
+  const feesUsd = input.fees_usd ?? 0;
+  const slippageUsd = input.slippage_usd ?? 0;
+  await supabaseInsertAndSelectOne<JournalTradeExitRecord>({
+    table: "journal_exits",
+    values: {
+      trade_id: id,
+      exit_time: input.exit_timestamp,
+      option_exit_price: optionExitPrice,
+      quantity_closed: quantityClosed,
+      exit_reason: "partial_profit",
+      fees_usd: feesUsd,
+      slippage_usd: slippageUsd,
+      exit_notes: input.exit_notes ?? null,
+    },
+  });
+
+  await supabaseUpdateAndSelectOne<JournalTradeRecord>({
+    table: "journal_trades",
+    filters: [`id=eq.${id}`],
+    values: {
+      contracts: remainingPosition.remainingContracts,
+      position_cost_usd: remainingPosition.remainingPositionCostUsd,
+    },
+  });
+
+  const refreshedTrade = await getJournalTradeById(id);
+  if (!refreshedTrade) {
+    throw new Error("Partially exited trade could not be reloaded.");
   }
 
   return refreshedTrade;
