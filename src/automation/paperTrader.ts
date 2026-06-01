@@ -56,6 +56,7 @@ import {
   extractAverageFillPrice,
   extractPositionSnapshots,
   findPositionSnapshot,
+  isTradeStationOrderRejected,
   normalizeTradeStationOrderPrice,
   summarizeExecutions,
   type AutomationTradeStationClient,
@@ -70,6 +71,7 @@ import {
 } from "./paperTraderHistory.js";
 
 const MAX_TRADESTATION_CONTRACTS_PER_ORDER = 2000;
+const TRADESTATION_PDT_OPENING_EQUITY_MIN_USD = 25_000.01;
 // Paper entries are daily/weekly continuation trades, not penny-distance scalps.
 const MIN_AUTOMATED_ENTRY_TARGET_ROOM_PCT = 0.0075;
 const MIN_AUTOMATED_ENTRY_RISK_ROOM_PCT = 0.0025;
@@ -259,9 +261,11 @@ export type PaperTraderStatus = {
   staleOpenJournalTrades: number | null;
   sizing: {
     accountValueUsd: number | null;
+    cashBalanceUsd: number | null;
     unrealizedPlUsd: number | null;
     equitiesBuyingPowerUsd: number | null;
     optionsBuyingPowerUsd: number | null;
+    dayTradeExcessUsd: number | null;
     maxPositionCostUsd: number | null;
     openPositionCount: number | null;
     openContractCount: number | null;
@@ -1146,9 +1150,11 @@ async function loadPaperTraderSizingSnapshot(
   if (!config.accountId) {
     return {
       accountValueUsd: null,
+      cashBalanceUsd: null,
       unrealizedPlUsd: null,
       equitiesBuyingPowerUsd: null,
       optionsBuyingPowerUsd: null,
+      dayTradeExcessUsd: null,
       maxPositionCostUsd: null,
       openPositionCount: null,
       openContractCount: null,
@@ -1170,13 +1176,16 @@ async function loadPaperTraderSizingSnapshot(
     }
     const positionSizing = buildPositionSizingSnapshot(positionsPayload);
     const accountValueUsd = extractAccountValue(balancesPayload);
+    const cashBalanceUsd = extractCashBalance(balancesPayload);
     const unrealizedPlUsd = extractUnrealizedPl(balancesPayload)
       ?? extractPositionsUnrealizedPl(positionsPayload);
     return {
       accountValueUsd,
+      cashBalanceUsd,
       unrealizedPlUsd,
       equitiesBuyingPowerUsd: extractEquitiesBuyingPower(balancesPayload),
       optionsBuyingPowerUsd: extractOptionsBuyingPower(balancesPayload),
+      dayTradeExcessUsd: extractDayTradeExcess(balancesPayload),
       maxPositionCostUsd:
         accountValueUsd !== null
           ? Number((accountValueUsd * config.maxPositionPct).toFixed(2))
@@ -1189,9 +1198,11 @@ async function loadPaperTraderSizingSnapshot(
   } catch (error) {
     return {
       accountValueUsd: null,
+      cashBalanceUsd: null,
       unrealizedPlUsd: null,
       equitiesBuyingPowerUsd: null,
       optionsBuyingPowerUsd: null,
+      dayTradeExcessUsd: null,
       maxPositionCostUsd: null,
       openPositionCount: null,
       openContractCount: null,
@@ -1303,6 +1314,15 @@ function extractUnrealizedPl(payload: unknown): number | null {
   ]);
 }
 
+function extractCashBalance(payload: unknown): number | null {
+  return findFirstNumberByKeys(payload, [
+    "CashBalance",
+    "CashAvailable",
+    "AvailableCash",
+    "Cash",
+  ]);
+}
+
 function extractPositionsUnrealizedPl(payload: unknown): number | null {
   return sumNumbersByKeys(payload, [
     "UnrealizedProfitLoss",
@@ -1323,12 +1343,20 @@ function extractEquitiesBuyingPower(payload: unknown): number | null {
 }
 
 function extractOptionsBuyingPower(payload: unknown): number | null {
-  return findFirstNumberByKeys(payload, [
+  const optionSpecificBuyingPower = findFirstNumberByKeys(payload, [
     "OptionsBuyingPower",
     "OptionBuyingPower",
     "OptionBP",
     "OptionsBP",
-    "BuyingPower",
+  ]);
+
+  return optionSpecificBuyingPower ?? findFirstNumberByKeys(payload, ["BuyingPower"]);
+}
+
+function extractDayTradeExcess(payload: unknown): number | null {
+  return findFirstNumberByKeys(payload, [
+    "DayTradeExcess",
+    "DayTradingExcess",
   ]);
 }
 
@@ -1341,6 +1369,33 @@ function extractEntryBuyingPower(payload: unknown): number | null {
   ].filter((value): value is number => value !== null && value >= 0);
 
   return candidates.length > 0 ? Math.min(...candidates) : null;
+}
+
+function formatUsdForReason(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
+
+function buildDayTradeOpeningBlockReason(params: {
+  accountValueUsd: number;
+  cashBalanceUsd: number | null;
+  optionsBuyingPowerUsd: number | null;
+}): string | null {
+  if (params.accountValueUsd < TRADESTATION_PDT_OPENING_EQUITY_MIN_USD) {
+    return `TradeStation balance check skipped the entry because SIM account value is ${formatUsdForReason(params.accountValueUsd)}, below the ${formatUsdForReason(TRADESTATION_PDT_OPENING_EQUITY_MIN_USD)} PDT opening threshold.`;
+  }
+
+  const openingBuyingPowerUsd = params.optionsBuyingPowerUsd ?? params.cashBalanceUsd;
+  const openingBuyingPowerLabel = params.optionsBuyingPowerUsd !== null
+    ? "option buying power"
+    : "cash balance";
+  if (
+    openingBuyingPowerUsd !== null
+    && openingBuyingPowerUsd < TRADESTATION_PDT_OPENING_EQUITY_MIN_USD
+  ) {
+    return `TradeStation balance check skipped the entry because ${openingBuyingPowerLabel} is ${formatUsdForReason(openingBuyingPowerUsd)}, below the ${formatUsdForReason(TRADESTATION_PDT_OPENING_EQUITY_MIN_USD)} PDT opening threshold even though SIM net worth is ${formatUsdForReason(params.accountValueUsd)}.`;
+  }
+
+  return null;
 }
 
 function computePositionCap(params: {
@@ -1735,8 +1790,11 @@ async function getAverageFillPriceIfAvailable(params: {
   }
 }
 
-function isRejectedOrderResult(order: { status: string | null }): boolean {
-  return order.status?.toLowerCase().includes("reject") ?? false;
+function isRejectedOrderResult(order: {
+  status: string | null;
+  rejectReason?: string | null;
+}): boolean {
+  return isTradeStationOrderRejected(order);
 }
 
 function formatRejectedOrderReason(order: {
@@ -3349,10 +3407,14 @@ async function maybeEnterNewPaperTrade(params: {
       tradeAction: automation.entryTradeAction,
     });
     let accountValueUsd: number | null = null;
+    let cashBalanceUsd: number | null = null;
+    let optionsBuyingPowerUsd: number | null = null;
     let entryBuyingPowerUsd: number | null = null;
     try {
       const balancesPayload = await client.getBalances(config.accountId as string);
       accountValueUsd = extractAccountValue(balancesPayload);
+      cashBalanceUsd = extractCashBalance(balancesPayload);
+      optionsBuyingPowerUsd = extractOptionsBuyingPower(balancesPayload);
       entryBuyingPowerUsd = extractEntryBuyingPower(balancesPayload);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -3399,6 +3461,36 @@ async function maybeEnterNewPaperTrade(params: {
         outcome: "trade_card_blocked",
         symbol: scan.ticker,
         reason,
+        tradeCard,
+        reasoning: entryReasoning,
+        evaluatedCandidates,
+        scanSummary: entryScanSummary,
+      };
+    }
+
+    const dayTradeOpeningBlockReason = buildDayTradeOpeningBlockReason({
+      accountValueUsd,
+      cashBalanceUsd,
+      optionsBuyingPowerUsd,
+    });
+    if (dayTradeOpeningBlockReason) {
+      await recordEntryCandidateAudit({
+        scanRunId,
+        dryRun,
+        symbol: scan.ticker,
+        decision: "day_trade_opening_blocked",
+        decisionReason: dayTradeOpeningBlockReason,
+        features: entryFeatures,
+        entryPolicy: entryPolicyRecommendation,
+        selected: true,
+        scan,
+        tradeCard,
+      });
+      return {
+        attempted: true,
+        outcome: "trade_card_blocked",
+        symbol: scan.ticker,
+        reason: dayTradeOpeningBlockReason,
         tradeCard,
         reasoning: entryReasoning,
         evaluatedCandidates,

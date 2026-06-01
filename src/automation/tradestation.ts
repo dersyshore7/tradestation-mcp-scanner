@@ -229,6 +229,18 @@ export function extractOrderRejectReason(payload: unknown): string | null {
   return null;
 }
 
+export function isTradeStationOrderRejected(order: {
+  status: string | null;
+  rejectReason?: string | null;
+}): boolean {
+  const status = order.status?.trim().toLowerCase() ?? "";
+  if (status.includes("reject") || status === "rej") {
+    return true;
+  }
+
+  return typeof order.rejectReason === "string" && order.rejectReason.trim().length > 0;
+}
+
 export function extractAverageFillPrice(payload: unknown): number | null {
   for (const candidate of collectObjects(payload)) {
     const price = readNumber(candidate, [

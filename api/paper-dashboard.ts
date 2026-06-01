@@ -48,9 +48,11 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
     ? simAccountResult.value
     : {
         accountValueUsd: null,
+        cashBalanceUsd: null,
         unrealizedPlUsd: null,
         equitiesBuyingPowerUsd: null,
         optionsBuyingPowerUsd: null,
+        dayTradeExcessUsd: null,
         maxPositionCostUsd: null,
         openPositionCount: null,
         openContractCount: null,

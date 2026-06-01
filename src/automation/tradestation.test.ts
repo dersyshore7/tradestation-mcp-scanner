@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeTradeStationOrderPrice } from "./tradestation.js";
+import {
+  isTradeStationOrderRejected,
+  normalizeTradeStationOrderPrice,
+} from "./tradestation.js";
 
 test("normalizes option buy limits to TradeStation nickel and dime increments", () => {
   assert.equal(
@@ -57,4 +60,17 @@ test("keeps non-option prices on penny increments", () => {
     }),
     298.98,
   );
+});
+
+test("recognizes compact TradeStation rejection statuses", () => {
+  assert.equal(isTradeStationOrderRejected({ status: "REJ", rejectReason: null }), true);
+  assert.equal(isTradeStationOrderRejected({ status: "Rejected", rejectReason: null }), true);
+  assert.equal(
+    isTradeStationOrderRejected({
+      status: "REJ",
+      rejectReason: "Day trading margin rules.",
+    }),
+    true,
+  );
+  assert.equal(isTradeStationOrderRejected({ status: "OK", rejectReason: null }), false);
 });

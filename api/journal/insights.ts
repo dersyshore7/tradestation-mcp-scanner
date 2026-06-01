@@ -59,9 +59,11 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
         ? await getPaperTraderSizingSnapshot()
         : {
             accountValueUsd: null,
+            cashBalanceUsd: null,
             unrealizedPlUsd: null,
             equitiesBuyingPowerUsd: null,
             optionsBuyingPowerUsd: null,
+            dayTradeExcessUsd: null,
             maxPositionCostUsd: null,
             error: "Unauthorized to load TradeStation SIM account snapshot.",
           }

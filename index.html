@@ -2225,6 +2225,10 @@
               <div class="stat-label">SIM Net Worth</div>
               <div class="stat-value">${escapeHtml(formatMoney(sizing?.accountValueUsd))}</div>
             </div>
+            <div class="stat-card">
+              <div class="stat-label">Cash Balance</div>
+              <div class="stat-value">${escapeHtml(formatMoney(sizing?.cashBalanceUsd))}</div>
+            </div>
             <div class="stat-card ${escapeHtml(numberToneClass(sizing?.unrealizedPlUsd))}">
               <div class="stat-label">SIM Unrealized P/L</div>
               <div class="stat-value ${escapeHtml(numberToneClass(sizing?.unrealizedPlUsd))}">${escapeHtml(formatMoney(sizing?.unrealizedPlUsd))}</div>
@@ -2236,6 +2240,10 @@
             <div class="stat-card">
               <div class="stat-label">Options Buying Power</div>
               <div class="stat-value">${escapeHtml(formatMoney(sizing?.optionsBuyingPowerUsd))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Day Trade Excess</div>
+              <div class="stat-value">${escapeHtml(formatMoney(sizing?.dayTradeExcessUsd))}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Equities Buying Power</div>
@@ -3437,6 +3445,10 @@
                   <div class="stat-label">SIM Net Worth</div>
                   <div class="stat-value ${escapeHtml(simNetWorthTone)}">${escapeHtml(formatMoney(simAccount.accountValueUsd))}</div>
                 </div>
+                <div class="stat-card">
+                  <div class="stat-label">Cash Balance</div>
+                  <div class="stat-value">${escapeHtml(formatMoney(simAccount.cashBalanceUsd))}</div>
+                </div>
                 <div class="stat-card ${escapeHtml(simUnrealizedTone)}">
                   <div class="stat-label">SIM Unrealized P/L</div>
                   <div class="stat-value ${escapeHtml(simUnrealizedTone)}">${escapeHtml(formatMoney(simAccount.unrealizedPlUsd))}</div>
@@ -3444,6 +3456,10 @@
                 <div class="stat-card">
                   <div class="stat-label">Options Buying Power</div>
                   <div class="stat-value">${escapeHtml(formatMoney(simAccount.optionsBuyingPowerUsd))}</div>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-label">Day Trade Excess</div>
+                  <div class="stat-value">${escapeHtml(formatMoney(simAccount.dayTradeExcessUsd))}</div>
                 </div>
                 <div class="stat-card">
                   <div class="stat-label">Max Position</div>
