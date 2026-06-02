@@ -510,8 +510,11 @@ export async function createAutomationTradeStationClient(baseUrl: string): Promi
   fetchQuote: (symbol: string) => Promise<TradeStationQuoteSnapshot>;
   confirmOrder: (order: TradeStationOrderRequest) => Promise<TradeStationOrderResult>;
   placeOrder: (order: TradeStationOrderRequest) => Promise<TradeStationOrderResult>;
+  getAccounts: () => Promise<unknown>;
   getExecutions: (accountId: string, orderId: string) => Promise<unknown>;
   getBalances: (accountId: string) => Promise<unknown>;
+  getBeginningOfDayBalances: (accountId: string) => Promise<unknown>;
+  getOrders: (accountId: string) => Promise<unknown>;
   getPositions: (accountId: string) => Promise<unknown>;
 }> {
   const request = await createTradeStationFetcher({
@@ -565,6 +568,9 @@ export async function createAutomationTradeStationClient(baseUrl: string): Promi
         raw: payload,
       };
     },
+    async getAccounts(): Promise<unknown> {
+      return await requestJson("/brokerage/accounts");
+    },
     async getExecutions(accountId: string, orderId: string): Promise<unknown> {
       return await requestJson(
         `/brokerage/accounts/${encodeURIComponent(accountId)}/orders/${encodeURIComponent(orderId)}/executions`,
@@ -573,6 +579,16 @@ export async function createAutomationTradeStationClient(baseUrl: string): Promi
     async getBalances(accountId: string): Promise<unknown> {
       return await requestJson(
         `/brokerage/accounts/${encodeURIComponent(accountId)}/balances`,
+      );
+    },
+    async getBeginningOfDayBalances(accountId: string): Promise<unknown> {
+      return await requestJson(
+        `/brokerage/accounts/${encodeURIComponent(accountId)}/bodbalances`,
+      );
+    },
+    async getOrders(accountId: string): Promise<unknown> {
+      return await requestJson(
+        `/brokerage/accounts/${encodeURIComponent(accountId)}/orders?pageSize=100`,
       );
     },
     async getPositions(accountId: string): Promise<unknown> {
