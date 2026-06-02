@@ -762,7 +762,7 @@
         <div class="panel-header">
           <div>
             <h2>Automation Activity</h2>
-            <p class="section-description">Latest cron and manual paper-trader cycles from compact run history.</p>
+            <p class="section-description">Latest cron and manual paper-trader cycles from compact run history, shown in Central time.</p>
           </div>
           <div class="actions">
             <button id="refreshPaperAutomationActivityButton" class="secondary">Refresh Activity</button>
@@ -1314,6 +1314,30 @@
         return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
       }
 
+      function formatCentralTimestamp(value) {
+        const rawValue = renderMaybe(value, "");
+        if (!rawValue) {
+          return "n/a";
+        }
+
+        const date = new Date(rawValue);
+        if (Number.isNaN(date.getTime())) {
+          return rawValue;
+        }
+
+        return new Intl.DateTimeFormat("en-US", {
+          timeZone: "America/Chicago",
+          month: "short",
+          day: "2-digit",
+          year: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: true,
+          timeZoneName: "short",
+        }).format(date);
+      }
+
       function normalizeTimeInputValue(value) {
         if (typeof value !== "string" || value.length === 0) {
           return "";
@@ -1465,7 +1489,7 @@
       function renderDecisionRecord(item) {
         return `
           <details class="journal-trade decision-record">
-            <summary>${escapeHtml(renderMaybe(item.timestamp))} | ${escapeHtml(renderMaybe(item.symbol))} | ${escapeHtml(renderMaybe(item.action))}${item.confidence ? ` (${escapeHtml(item.confidence)})` : ""}</summary>
+            <summary>${escapeHtml(formatCentralTimestamp(item.timestamp))} | ${escapeHtml(renderMaybe(item.symbol))} | ${escapeHtml(renderMaybe(item.action))}${item.confidence ? ` (${escapeHtml(item.confidence)})` : ""}</summary>
             ${renderDecisionDetails(item)}
           </details>
         `;
@@ -1523,7 +1547,7 @@
 
           return `
             <details class="timeline-item">
-              <summary>${escapeHtml(renderMaybe(run.created_at))} | ${escapeHtml(run.dry_run ? "Dry" : "Live SIM")} | ${escapeHtml(renderMaybe(run.outcome))}</summary>
+              <summary>${escapeHtml(formatCentralTimestamp(run.created_at))} | ${escapeHtml(run.dry_run ? "Dry" : "Live SIM")} | ${escapeHtml(renderMaybe(run.outcome))}</summary>
               <div class="row"><strong>Symbol:</strong> ${escapeHtml(renderMaybe(run.symbol))} | <strong>Orders checked:</strong> ${escapeHtml(renderMaybe(checked, "0"))} | <strong>Managed:</strong> ${escapeHtml(renderMaybe(managed, "0"))}</div>
               <div class="row"><strong>Reason:</strong> ${escapeHtml(renderMaybe(run.reason))}</div>
               <div class="phase-grid">
@@ -1678,7 +1702,7 @@
                   const entrySummary = describeAutomationEntry(entry, run.reason || raw.dryRunReason);
                   return `
                     <details class="timeline-item">
-                      <summary>${escapeHtml(renderMaybe(run.created_at))} | ${escapeHtml(run.dry_run ? "Dry" : "Live SIM")} | ${escapeHtml(entryLabel)}</summary>
+                      <summary>${escapeHtml(formatCentralTimestamp(run.created_at))} | ${escapeHtml(run.dry_run ? "Dry" : "Live SIM")} | ${escapeHtml(entryLabel)}</summary>
                       <div class="row"><strong>Existing trade management:</strong> ${escapeHtml(existingTradeSummary)}</div>
                       <div class="row"><strong>New entry scan:</strong> ${escapeHtml(entrySummary)}</div>
                       <div class="row"><strong>History note:</strong> These are actions from that cycle. A symbol shown here may no longer be open in TradeStation after an exit order fills.</div>
@@ -1719,7 +1743,7 @@
               : "";
           return `
             <details class="timeline-item">
-              <summary>${escapeHtml(renderMaybe(item.created_at))} | ${escapeHtml(renderMaybe(item.symbol))} | ${escapeHtml(renderMaybe(item.decision))}</summary>
+              <summary>${escapeHtml(formatCentralTimestamp(item.created_at))} | ${escapeHtml(renderMaybe(item.symbol))} | ${escapeHtml(renderMaybe(item.decision))}</summary>
               ${metrics ? `<div class="row">${escapeHtml(metrics)}</div>` : ""}
               ${policy ? `<div class="row"><strong>Entry policy:</strong> ${escapeHtml(policy)}</div>` : ""}
               <div class="row"><strong>Reason:</strong> ${escapeHtml(renderMaybe(item.decision_reason))}</div>
@@ -1748,7 +1772,7 @@
           const managementDecisions = decisionLog.filter((item) => item?.kind === "management");
           const exitDecisions = decisionLog.filter((item) => item?.kind === "exit");
           const managementRows = sortByTimestampDesc(trade.managementHistory || []).map((item) =>
-            `${item.timestamp}: ${item.action}${item.confidence ? ` (${item.confidence})` : ""} | stop ${renderMaybe(item.stopUnderlying)} | target ${renderMaybe(item.targetUnderlying)} | ${item.note}`,
+            `${formatCentralTimestamp(item.timestamp)}: ${item.action}${item.confidence ? ` (${item.confidence})` : ""} | stop ${renderMaybe(item.stopUnderlying)} | target ${renderMaybe(item.targetUnderlying)} | ${item.note}`,
           );
           const profitRows = [
             trade.peakOptionReturnPct !== null && trade.peakOptionReturnPct !== undefined
