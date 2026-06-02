@@ -1487,31 +1487,51 @@ function extractBeginningDayTrades(payload: unknown, accountId: string): number 
   return readNumber(detail?.DayTrades as string | number | null | undefined);
 }
 
-function countFilledOpeningOrdersToday(payload: unknown, todayChicagoDate: string): number {
+function readOrdersNextToken(payload: unknown): string | null {
+  return readStringFromRecord(asRecord(payload), ["NextToken", "nextToken"]);
+}
+
+async function countFilledOpeningOrdersTodayFromTradeStation(params: {
+  client: AutomationTradeStationClient;
+  accountId: string;
+  todayChicagoDate: string;
+}): Promise<number> {
   const orderIds = new Set<string>();
-  const orders = objectArrayFromPayload(payload, ["Orders"]);
+  let nextToken: string | null = null;
 
-  for (const order of orders) {
-    const openedAt = readStringFromRecord(order, ["OpenedDateTime", "OpenedAt", "CreatedAt"]);
-    if (!openedAt || toChicagoDateString(openedAt) !== todayChicagoDate) {
-      continue;
-    }
-
-    const status = `${readStringFromRecord(order, ["Status"]) ?? ""} ${readStringFromRecord(order, ["StatusDescription"]) ?? ""}`.toLowerCase();
-    if (!(status.includes("fll") || status.includes("filled"))) {
-      continue;
-    }
-
-    const legs = objectArrayFromPayload(order.Legs, ["Legs"]);
-    const isOpeningOrder = legs.some((leg) =>
-      (readStringFromRecord(leg, ["OpenOrClose"]) ?? "").toLowerCase() === "open"
+  for (let page = 0; page < 6; page += 1) {
+    const ordersPayload = await params.client.getOrders(
+      params.accountId,
+      nextToken ?? undefined,
     );
-    if (!isOpeningOrder) {
-      continue;
+    const orders = objectArrayFromPayload(ordersPayload, ["Orders"]);
+    for (const order of orders) {
+      const openedAt = readStringFromRecord(order, ["OpenedDateTime", "OpenedAt", "CreatedAt"]);
+      if (!openedAt || toChicagoDateString(openedAt) !== params.todayChicagoDate) {
+        continue;
+      }
+
+      const status = `${readStringFromRecord(order, ["Status"]) ?? ""} ${readStringFromRecord(order, ["StatusDescription"]) ?? ""}`.toLowerCase();
+      if (!(status.includes("fll") || status.includes("filled"))) {
+        continue;
+      }
+
+      const legs = objectArrayFromPayload(order.Legs, ["Legs"]);
+      const isOpeningOrder = legs.some((leg) =>
+        (readStringFromRecord(leg, ["OpenOrClose"]) ?? "").toLowerCase() === "open"
+      );
+      if (!isOpeningOrder) {
+        continue;
+      }
+
+      const orderId = readStringFromRecord(order, ["OrderID", "OrderId", "orderId"]) ?? openedAt;
+      orderIds.add(orderId);
     }
 
-    const orderId = readStringFromRecord(order, ["OrderID", "OrderId", "orderId"]) ?? openedAt;
-    orderIds.add(orderId);
+    nextToken = readOrdersNextToken(ordersPayload);
+    if (!nextToken) {
+      break;
+    }
   }
 
   return orderIds.size;
@@ -1538,11 +1558,11 @@ async function buildNonPatternDayTraderOpeningLimitBlockReason(params: {
     0,
     NON_PDT_DAILY_OPENING_TRANSACTION_LIMIT - beginningDayTrades,
   );
-  const ordersPayload = await params.client.getOrders(params.accountId);
-  const usedOpeningsToday = countFilledOpeningOrdersToday(
-    ordersPayload,
-    formatChicagoParts(params.now ?? new Date()).date,
-  );
+  const usedOpeningsToday = await countFilledOpeningOrdersTodayFromTradeStation({
+    client: params.client,
+    accountId: params.accountId,
+    todayChicagoDate: formatChicagoParts(params.now ?? new Date()).date,
+  });
 
   if (usedOpeningsToday < allowedOpenings) {
     return null;

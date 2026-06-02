@@ -514,7 +514,7 @@ export async function createAutomationTradeStationClient(baseUrl: string): Promi
   getExecutions: (accountId: string, orderId: string) => Promise<unknown>;
   getBalances: (accountId: string) => Promise<unknown>;
   getBeginningOfDayBalances: (accountId: string) => Promise<unknown>;
-  getOrders: (accountId: string) => Promise<unknown>;
+  getOrders: (accountId: string, nextToken?: string) => Promise<unknown>;
   getPositions: (accountId: string) => Promise<unknown>;
 }> {
   const request = await createTradeStationFetcher({
@@ -586,9 +586,13 @@ export async function createAutomationTradeStationClient(baseUrl: string): Promi
         `/brokerage/accounts/${encodeURIComponent(accountId)}/bodbalances`,
       );
     },
-    async getOrders(accountId: string): Promise<unknown> {
+    async getOrders(accountId: string, nextToken?: string): Promise<unknown> {
+      const query = new URLSearchParams({ pageSize: "25" });
+      if (nextToken) {
+        query.set("nextToken", nextToken);
+      }
       return await requestJson(
-        `/brokerage/accounts/${encodeURIComponent(accountId)}/orders?pageSize=100`,
+        `/brokerage/accounts/${encodeURIComponent(accountId)}/orders?${query.toString()}`,
       );
     },
     async getPositions(accountId: string): Promise<unknown> {
