@@ -69,6 +69,10 @@ import {
   recordPaperTraderRun,
   type PaperTraderRunRecord,
 } from "./paperTraderHistory.js";
+import {
+  buildPaperLearningTradeSet,
+  filterRecordsForPaperLearning,
+} from "./paperLearningCutoff.js";
 
 const MAX_TRADESTATION_CONTRACTS_PER_ORDER = 2000;
 const TRADESTATION_PDT_OPENING_EQUITY_MIN_USD = 25_000.01;
@@ -285,6 +289,8 @@ export type PaperTraderStatus = {
   configurationIssues: string[];
   dataWarnings: string[];
   learning: {
+    learningStartAt: string;
+    excludedLearningTrades: number;
     closedPaperTrades: number;
     managementExperiences: number;
     entryExperiences: number;
@@ -2045,9 +2051,11 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
   const config = readPaperTraderConfig();
   const loadedTrades = await loadJournalTradesForPaperTraderStatus();
   const trades = loadedTrades.trades;
+  const paperLearning = buildPaperLearningTradeSet(trades);
+  const learningTrades = paperLearning.trades;
   const configurationIssues = buildPaperTraderConfigurationIssues(config);
-  const policyModel = trainPolicyModel(trades);
-  const entryRewardModel = trainEntryRewardModel(trades);
+  const policyModel = trainPolicyModel(learningTrades);
+  const entryRewardModel = trainEntryRewardModel(learningTrades);
   const runHistory = await loadPaperTraderRunHistory();
   const entryCandidateHistory = await loadPaperEntryCandidateHistory(200);
   const sizing = await loadPaperTraderSizingSnapshot(config);
@@ -2060,8 +2068,11 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
       ? null
       : Math.max(0, openJournalTrades.length - liveSimPositions);
   const entryPolicyEffectiveness = buildEntryPolicyEffectivenessSummary(
-    trades,
-    entryCandidateHistory.entryCandidateHistory,
+    learningTrades,
+    filterRecordsForPaperLearning(
+      entryCandidateHistory.entryCandidateHistory,
+      paperLearning.window,
+    ),
   );
 
   return {
@@ -2081,6 +2092,8 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
     configurationIssues,
     dataWarnings: loadedTrades.warning ? [loadedTrades.warning] : [],
     learning: {
+      learningStartAt: paperLearning.learningStartAt,
+      excludedLearningTrades: paperLearning.excludedLearningTrades,
       closedPaperTrades: policyModel.closedTradeCount,
       managementExperiences: policyModel.experienceCount,
       entryExperiences: entryRewardModel.experienceCount,
@@ -2537,7 +2550,8 @@ async function manageOpenPaperTrades(
   const openPaperTrades = allTrades.filter(
     (trade) => trade.account_mode === "paper" && trade.status === "open",
   );
-  const trainedPolicyModel = trainPolicyModel(allTrades);
+  const learningTrades = filterRecordsForPaperLearning(allTrades);
+  const trainedPolicyModel = trainPolicyModel(learningTrades);
   const client = await createAutomationTradeStationClient(config.automationBaseUrl);
   const nowIso = new Date().toISOString();
   const todayChicago = formatChicagoParts(new Date()).date;
@@ -2670,7 +2684,7 @@ async function manageOpenPaperTrades(
           lastManagementNote: automation.lastManagementNote ?? null,
           lastManagementThesis: automation.lastManagementThesis ?? null,
           managementHistorySummary: summarizeCurrentManagementHistory(managementHistory),
-          policyFeedbackSummary: buildPolicyFeedbackSummary(allTrades, trade),
+          policyFeedbackSummary: buildPolicyFeedbackSummary(learningTrades, trade),
           trainedPolicySummary: summarizeTrainedPolicyRecommendation(trainedPolicyRecommendation),
           trainedPolicyRecommendedAction: trainedPolicyRecommendation.recommendedAction,
         }),
@@ -3316,7 +3330,8 @@ async function maybeEnterNewPaperTrade(params: {
     prompt,
   } = params;
 
-  const entryRewardModel = trainEntryRewardModel(allTrades);
+  const learningTrades = filterRecordsForPaperLearning(allTrades);
+  const entryRewardModel = trainEntryRewardModel(learningTrades);
   const resumableScanState = await loadResumableAutomatedScanState(dryRun);
   const scanRunId = resumableScanState?.scanRunId ?? buildScanRunId();
   const paperLearningPreferences =

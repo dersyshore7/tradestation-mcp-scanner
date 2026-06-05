@@ -12,8 +12,14 @@ import {
   calculateEntryOpportunityRewardR,
   buildEntryRewardFeatureInputFromScan,
   buildEntryRewardFeatureSnapshot,
+  recommendEntryPolicy,
   trainEntryRewardModel,
 } from "./entryRewardModel.js";
+import {
+  buildPaperLearningTradeSet,
+  DEFAULT_PAPER_LEARNING_START_AT,
+} from "./paperLearningCutoff.js";
+import { buildPaperLearningPreferences } from "./paperLearningPreferences.js";
 import { recommendPolicyAction, trainPolicyModel } from "./policyModel.js";
 import { calculateScaleOutQuantity, decideProfitProtection } from "./profitProtection.js";
 import { readAutomatedScanStateFromPaperTraderRun } from "./paperTrader.js";
@@ -212,6 +218,112 @@ test("entry reward training uses opportunity R and chart-context buckets", () =>
   assert.ok(totalRewards.includes(1234));
   assert.ok(Object.keys(model.buckets).some((key) => key.includes("continuation=fail_downgrader")));
   assert.ok(Object.keys(model.buckets).some((key) => key.includes("htf_2r=fail_blocker")));
+});
+
+function buildLearningTrade(params: {
+  id: string;
+  createdAt: string;
+  realizedR: number;
+  symbol?: string;
+}): JournalTradeDetail {
+  const features = buildEntryRewardFeatureInputFromScan({
+    scan: buildScan(),
+    entryTimestamp: new Date("2026-05-20T15:00:00.000Z"),
+  });
+  assert.ok(features);
+
+  return {
+    id: params.id,
+    created_at: params.createdAt,
+    updated_at: params.createdAt,
+    account_mode: "paper",
+    status: "closed",
+    symbol: params.symbol ?? "AAPL",
+    direction: "CALL",
+    setup_type: "bullish_continuation",
+    confidence_bucket: "85-92",
+    dte_at_entry: 19,
+    contracts: 2,
+    position_cost_usd: "1000",
+    option_entry_price: "5",
+    planned_risk_usd: "500",
+    underlying_entry_price: "100",
+    entry_date: params.createdAt.slice(0, 10),
+    entry_time: "10:00:00",
+    review: {
+      realized_r_multiple: String(params.realizedR),
+    },
+    signal_snapshot_json: {
+      entryFeatures: buildEntryRewardFeatureSnapshot(features),
+      automation: {
+        paperTrader: {
+          managementHistory: [
+            {
+              timestamp: params.createdAt,
+              action: "hold",
+              progressToTargetPct: 35,
+              optionReturnPct: 5,
+              stopUnderlying: 95,
+              currentUnderlyingPrice: 101,
+              currentOptionMid: 5.25,
+            },
+          ],
+        },
+      },
+    },
+  } as unknown as JournalTradeDetail;
+}
+
+test("paper learning cutoff excludes the first 14 days from entry and management training", () => {
+  const beforeCutoff = buildLearningTrade({
+    id: "before-cutoff",
+    createdAt: "2026-05-13T18:22:34.660Z",
+    realizedR: -5,
+  });
+  const atCutoff = buildLearningTrade({
+    id: "at-cutoff",
+    createdAt: DEFAULT_PAPER_LEARNING_START_AT,
+    realizedR: 0.25,
+  });
+
+  const learning = buildPaperLearningTradeSet([beforeCutoff, atCutoff]);
+  const entryModel = trainEntryRewardModel(learning.trades);
+  const policyModel = trainPolicyModel(learning.trades);
+
+  assert.equal(learning.excludedLearningTrades, 1);
+  assert.deepEqual(learning.trades.map((trade) => trade.id), ["at-cutoff"]);
+  assert.equal(entryModel.closedTradeCount, 1);
+  assert.equal(entryModel.experienceCount, 1);
+  assert.ok(Object.values(entryModel.buckets).every((bucket) => bucket.positiveCount === 1));
+  assert.equal(policyModel.closedTradeCount, 1);
+  assert.equal(policyModel.experienceCount, 1);
+  assert.ok(Object.values(policyModel.buckets).every((bucket) => bucket.hold?.positiveCount === 1));
+});
+
+test("any positive R counts as a win without creating a strong scanner boost", () => {
+  const trades = Array.from({ length: 8 }, (_, index) =>
+    buildLearningTrade({
+      id: `small-win-${index}`,
+      createdAt: `2026-05-${20 + index}T15:00:00.000Z`,
+      realizedR: 0.1,
+      symbol: `T${index}`,
+    })
+  );
+  const features = buildEntryRewardFeatureInputFromScan({
+    scan: buildScan(),
+    entryTimestamp: new Date("2026-05-20T15:00:00.000Z"),
+  });
+  assert.ok(features);
+
+  const model = trainEntryRewardModel(trades);
+  const recommendation = recommendEntryPolicy(model, features);
+  const preferences = buildPaperLearningPreferences(model);
+
+  assert.equal(recommendation.sampleSize, 8);
+  assert.equal(recommendation.averageRewardR, 0.1);
+  assert.equal(recommendation.winRate, 1);
+  assert.equal(recommendation.decision, "allow");
+  assert.deepEqual(preferences, []);
 });
 
 function buildBkrGivebackTrade(): JournalTradeDetail {

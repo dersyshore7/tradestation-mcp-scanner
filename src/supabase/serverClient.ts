@@ -29,6 +29,11 @@ type SupabaseDeleteQuery = {
   filters: string[];
 };
 
+type SupabaseRpcQuery = {
+  functionName: string;
+  args: Record<string, unknown>;
+};
+
 type SupabaseRestResponse = {
   response: Response;
   text: string;
@@ -255,4 +260,22 @@ export async function supabaseSelect<T>(query: SupabaseSelectQuery): Promise<T[]
     return data ? [data as T] : [];
   }
   return data as T[];
+}
+
+export async function supabaseRpc<T>(query: SupabaseRpcQuery): Promise<T> {
+  const params = new URLSearchParams();
+  const { response, text } = await fetchSupabaseRest(
+    buildRestUrl(`rpc/${query.functionName}`, params),
+    {
+      method: "POST",
+      headers: buildBaseHeaders(),
+      body: JSON.stringify(query.args),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(`Supabase RPC failed (${response.status}): ${text}`);
+  }
+
+  return (text.length > 0 ? JSON.parse(text) : null) as T;
 }

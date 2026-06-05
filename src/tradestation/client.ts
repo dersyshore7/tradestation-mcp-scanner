@@ -1,9 +1,20 @@
+import { createHash } from "node:crypto";
+import {
+  supabaseRpc,
+  supabaseSelect,
+  supabaseUpsertAndSelectOne,
+} from "../supabase/serverClient.js";
+
 const TRADESTATION_API_KEY_ENV_NAME = "TRADESTATION_API_KEY";
 const TRADESTATION_API_SECRET_ENV_NAME = "TRADESTATION_API_SECRET";
 const TRADESTATION_REDIRECT_URI_ENV_NAME = "TRADESTATION_REDIRECT_URI";
 const TRADESTATION_REFRESH_TOKEN_ENV_NAME = "TRADESTATION_REFRESH_TOKEN";
 const TRADESTATION_BASE_URL_ENV_NAME = "TRADESTATION_BASE_URL";
 const TRADESTATION_AUTH_STATE_ENV_NAME = "TRADESTATION_AUTH_STATE";
+const TRADESTATION_ACCESS_TOKEN_REFRESH_MARGIN_MS_ENV_NAME =
+  "TRADESTATION_ACCESS_TOKEN_REFRESH_MARGIN_MS";
+const TRADESTATION_TOKEN_CACHE_LOCK_MS_ENV_NAME = "TRADESTATION_TOKEN_CACHE_LOCK_MS";
+const TRADESTATION_TOKEN_CACHE_KEY_ENV_NAME = "TRADESTATION_TOKEN_CACHE_KEY";
 const DEFAULT_TRADESTATION_BASE_URL = "https://api.tradestation.com/v3";
 const TRADESTATION_SIGNIN_BASE_URL = "https://signin.tradestation.com";
 const TRADESTATION_GET_RETRY_ATTEMPTS = 3;
@@ -14,6 +25,12 @@ const TRADESTATION_QUOTA_BACKOFF_MS_ENV_NAME = "TRADESTATION_QUOTA_BACKOFF_MS";
 const DEFAULT_TRADESTATION_SCAN_MIN_INTERVAL_MS = 350;
 const DEFAULT_TRADESTATION_SCAN_CACHE_TTL_MS = 120_000;
 const DEFAULT_TRADESTATION_QUOTA_BACKOFF_MS = 15_000;
+const DEFAULT_TRADESTATION_ACCESS_TOKEN_EXPIRES_IN_SECONDS = 20 * 60;
+const DEFAULT_TRADESTATION_ACCESS_TOKEN_REFRESH_MARGIN_MS = 120_000;
+const DEFAULT_TRADESTATION_TOKEN_CACHE_LOCK_MS = 30_000;
+const TRADESTATION_TOKEN_LOCK_POLL_MS = 500;
+const TRADESTATION_TOKEN_CACHE_TABLE = "tradestation_token_cache";
+const TRADESTATION_TOKEN_LOCK_RPC = "try_lock_tradestation_token_cache";
 
 type TradeStationTokenResponse = {
   access_token?: string;
@@ -41,10 +58,25 @@ type CachedTradeStationResponse = CapturedTradeStationResponse & {
   expiresAt: number;
 };
 
+type CachedTradeStationAccessToken = {
+  accessToken: string;
+  expiresAt: number;
+};
+
+type TradeStationTokenCacheRecord = {
+  cache_key: string;
+  access_token: string | null;
+  expires_at: string | null;
+  refresh_locked_until: string | null;
+  updated_at: string;
+};
+
 const marketDataResponseCache = new Map<string, CachedTradeStationResponse>();
 let tradeStationGetQueue = Promise.resolve();
 let lastTradeStationGetStartedAt = 0;
 let tradeStationQuotaBlockedUntil = 0;
+let cachedTradeStationAccessToken: CachedTradeStationAccessToken | null = null;
+let pendingTradeStationAccessToken: Promise<string> | null = null;
 
 function getRequiredEnvVar(name: string): string {
   const value = process.env[name];
@@ -64,8 +96,67 @@ function readNonNegativeNumberEnv(name: string, fallback: number): number {
   return parsed;
 }
 
+function hasSupabaseTokenCacheConfig(): boolean {
+  return Boolean(
+    process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()
+    && process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()
+  );
+}
+
+function readAccessTokenRefreshMarginMs(): number {
+  return readNonNegativeNumberEnv(
+    TRADESTATION_ACCESS_TOKEN_REFRESH_MARGIN_MS_ENV_NAME,
+    DEFAULT_TRADESTATION_ACCESS_TOKEN_REFRESH_MARGIN_MS,
+  );
+}
+
+function readTokenCacheLockMs(): number {
+  return readNonNegativeNumberEnv(
+    TRADESTATION_TOKEN_CACHE_LOCK_MS_ENV_NAME,
+    DEFAULT_TRADESTATION_TOKEN_CACHE_LOCK_MS,
+  );
+}
+
+function readTradeStationTokenCacheKey(): string {
+  const configured = process.env[TRADESTATION_TOKEN_CACHE_KEY_ENV_NAME]?.trim();
+  if (configured) {
+    return configured;
+  }
+
+  const apiKeyHash = createHash("sha256")
+    .update(getRequiredEnvVar(TRADESTATION_API_KEY_ENV_NAME))
+    .digest("hex")
+    .slice(0, 16);
+  return `tradestation:${apiKeyHash}`;
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isUsableAccessToken(
+  token: CachedTradeStationAccessToken | null,
+  ignoredAccessToken?: string,
+): token is CachedTradeStationAccessToken {
+  if (!token || token.accessToken === ignoredAccessToken) {
+    return false;
+  }
+
+  return token.expiresAt - Date.now() > readAccessTokenRefreshMarginMs();
+}
+
+function buildAccessTokenCacheEntry(
+  tokenPayload: TradeStationTokenResponse,
+): CachedTradeStationAccessToken {
+  const expiresInSeconds =
+    typeof tokenPayload.expires_in === "number" && Number.isFinite(tokenPayload.expires_in)
+      ? Math.max(0, tokenPayload.expires_in)
+      : DEFAULT_TRADESTATION_ACCESS_TOKEN_EXPIRES_IN_SECONDS;
+
+  return {
+    accessToken: tokenPayload.access_token as string,
+    expiresAt: Date.now() + expiresInSeconds * 1000,
+  };
 }
 
 function normalizePath(path: string): string {
@@ -201,11 +292,124 @@ function readCachedMarketData(cacheKey: string): Response | null {
   return toResponse(cached);
 }
 
+async function readSharedTradeStationAccessToken(
+  cacheKey: string,
+  ignoredAccessToken?: string,
+): Promise<CachedTradeStationAccessToken | null> {
+  if (!hasSupabaseTokenCacheConfig()) {
+    return null;
+  }
+
+  try {
+    const records = await supabaseSelect<TradeStationTokenCacheRecord>({
+      table: TRADESTATION_TOKEN_CACHE_TABLE,
+      select: "cache_key,access_token,expires_at,refresh_locked_until,updated_at",
+      filters: [`cache_key=eq.${cacheKey}`],
+      limit: 1,
+    });
+    const record = records[0];
+    if (!record?.access_token || !record.expires_at) {
+      return null;
+    }
+
+    const expiresAt = Date.parse(record.expires_at);
+    if (!Number.isFinite(expiresAt)) {
+      return null;
+    }
+
+    const token = {
+      accessToken: record.access_token,
+      expiresAt,
+    };
+    if (!isUsableAccessToken(token, ignoredAccessToken)) {
+      return null;
+    }
+
+    cachedTradeStationAccessToken = token;
+    return token;
+  } catch (error) {
+    console.warn("TradeStation shared token cache read failed; using local cache only.", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+async function writeSharedTradeStationAccessToken(
+  cacheKey: string,
+  token: CachedTradeStationAccessToken,
+): Promise<void> {
+  if (!hasSupabaseTokenCacheConfig()) {
+    return;
+  }
+
+  try {
+    await supabaseUpsertAndSelectOne<TradeStationTokenCacheRecord>({
+      table: TRADESTATION_TOKEN_CACHE_TABLE,
+      onConflict: "cache_key",
+      values: {
+        cache_key: cacheKey,
+        access_token: token.accessToken,
+        expires_at: new Date(token.expiresAt).toISOString(),
+        refresh_locked_until: null,
+        updated_at: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.warn("TradeStation shared token cache write failed; using local cache only.", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function tryLockSharedTradeStationTokenCache(cacheKey: string): Promise<boolean> {
+  if (!hasSupabaseTokenCacheConfig()) {
+    return true;
+  }
+
+  try {
+    return await supabaseRpc<boolean>({
+      functionName: TRADESTATION_TOKEN_LOCK_RPC,
+      args: {
+        p_cache_key: cacheKey,
+        p_lock_ms: Math.floor(readTokenCacheLockMs()),
+      },
+    });
+  } catch (error) {
+    console.warn("TradeStation shared token cache lock failed; refreshing locally.", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return true;
+  }
+}
+
+async function waitForSharedTradeStationAccessToken(
+  cacheKey: string,
+  ignoredAccessToken?: string,
+): Promise<CachedTradeStationAccessToken | null> {
+  if (!hasSupabaseTokenCacheConfig()) {
+    return null;
+  }
+
+  const deadline = Date.now() + readTokenCacheLockMs();
+  while (Date.now() < deadline) {
+    await delay(Math.min(TRADESTATION_TOKEN_LOCK_POLL_MS, Math.max(0, deadline - Date.now())));
+    const token = await readSharedTradeStationAccessToken(cacheKey, ignoredAccessToken);
+    if (token) {
+      return token;
+    }
+  }
+
+  return null;
+}
+
 export function __resetTradeStationRequestGovernorForTests(): void {
   marketDataResponseCache.clear();
   tradeStationGetQueue = Promise.resolve();
   lastTradeStationGetStartedAt = 0;
   tradeStationQuotaBlockedUntil = 0;
+  cachedTradeStationAccessToken = null;
+  pendingTradeStationAccessToken = null;
 }
 
 export function readTradeStationBaseUrl(baseUrlOverride?: string): string {
@@ -297,11 +501,75 @@ export async function refreshTradeStationAccessToken(
   );
 }
 
-export async function requestTradeStationAccessToken(): Promise<string> {
+async function refreshAndCacheTradeStationAccessToken(
+  cacheKey: string,
+): Promise<CachedTradeStationAccessToken> {
   const refreshToken = getRequiredEnvVar(TRADESTATION_REFRESH_TOKEN_ENV_NAME);
   const tokenPayload = await refreshTradeStationAccessToken(refreshToken);
+  const token = buildAccessTokenCacheEntry(tokenPayload);
+  cachedTradeStationAccessToken = token;
+  await writeSharedTradeStationAccessToken(cacheKey, token);
+  return token;
+}
 
-  return tokenPayload.access_token as string;
+async function refreshTradeStationAccessTokenWithSharedLock(
+  cacheKey: string,
+  ignoredAccessToken?: string,
+): Promise<CachedTradeStationAccessToken> {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const locked = await tryLockSharedTradeStationTokenCache(cacheKey);
+    if (locked) {
+      return await refreshAndCacheTradeStationAccessToken(cacheKey);
+    }
+
+    const sharedToken = await waitForSharedTradeStationAccessToken(cacheKey, ignoredAccessToken);
+    if (sharedToken) {
+      return sharedToken;
+    }
+  }
+
+  return await refreshAndCacheTradeStationAccessToken(cacheKey);
+}
+
+export async function requestTradeStationAccessToken(options?: {
+  forceRefresh?: boolean;
+  ignoredAccessToken?: string;
+}): Promise<string> {
+  const cacheKey = readTradeStationTokenCacheKey();
+
+  if (!options?.forceRefresh && isUsableAccessToken(
+    cachedTradeStationAccessToken,
+    options?.ignoredAccessToken,
+  )) {
+    return cachedTradeStationAccessToken.accessToken;
+  }
+
+  if (!options?.forceRefresh) {
+    const sharedToken = await readSharedTradeStationAccessToken(
+      cacheKey,
+      options?.ignoredAccessToken,
+    );
+    if (sharedToken) {
+      return sharedToken.accessToken;
+    }
+  }
+
+  pendingTradeStationAccessToken ??= refreshTradeStationAccessTokenWithSharedLock(
+    cacheKey,
+    options?.ignoredAccessToken,
+  ).then((token) => token.accessToken);
+
+  try {
+    return await pendingTradeStationAccessToken;
+  } finally {
+    pendingTradeStationAccessToken = null;
+  }
+}
+
+function clearCachedTradeStationAccessToken(accessToken: string): void {
+  if (cachedTradeStationAccessToken?.accessToken === accessToken) {
+    cachedTradeStationAccessToken = null;
+  }
 }
 
 export async function createTradeStationFetcher(options?: {
@@ -310,21 +578,34 @@ export async function createTradeStationFetcher(options?: {
   (path: string, init?: RequestInit) => Promise<Response>
 > {
   const baseUrl = readTradeStationBaseUrl(options?.baseUrl);
-  const accessToken = await requestTradeStationAccessToken();
 
   return async (path: string, init?: RequestInit) => {
     const dedupedPath = buildDedupedPath(baseUrl, path);
+    const accessToken = await requestTradeStationAccessToken();
 
-    return fetch(`${baseUrl}${dedupedPath}`, {
-      ...init,
-      method: init?.method ?? "GET",
-      headers: {
-        authorization: `Bearer ${accessToken}`,
-        accept: "application/json",
-        ...(init?.body ? { "content-type": "application/json" } : {}),
-        ...init?.headers,
-      },
+    const fetchWithAccessToken = (bearerToken: string) =>
+      fetch(`${baseUrl}${dedupedPath}`, {
+        ...init,
+        method: init?.method ?? "GET",
+        headers: {
+          authorization: `Bearer ${bearerToken}`,
+          accept: "application/json",
+          ...(init?.body ? { "content-type": "application/json" } : {}),
+          ...init?.headers,
+        },
+      });
+
+    const response = await fetchWithAccessToken(accessToken);
+    if (response.status !== 401) {
+      return response;
+    }
+
+    clearCachedTradeStationAccessToken(accessToken);
+    const refreshedAccessToken = await requestTradeStationAccessToken({
+      forceRefresh: true,
+      ignoredAccessToken: accessToken,
     });
+    return await fetchWithAccessToken(refreshedAccessToken);
   };
 }
 

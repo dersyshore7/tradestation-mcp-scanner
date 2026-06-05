@@ -2298,7 +2298,7 @@
             ${sizing?.error ? `<div class="row"><strong>Sizing read:</strong> ${escapeHtml(sizing.error)}</div>` : ""}
             <div class="row"><strong>Daily loss guard:</strong> Unlimited for paper trading, so the system can keep collecting loss examples and improve its policy memory.</div>
             <div class="row"><strong>Manual order check:</strong> The Check Orders button still uses read-only monitor mode for diagnostics.</div>
-            <div class="row"><strong>Learning set:</strong> ${escapeHtml(renderMaybe(learning?.closedPaperTrades, "0"))} closed paper trades, ${escapeHtml(renderMaybe(learning?.learnedContexts, "0"))} management contexts, ${escapeHtml(renderMaybe(learning?.entryLearnedContexts, "0"))} entry contexts</div>
+            <div class="row"><strong>Learning set:</strong> ${escapeHtml(renderMaybe(learning?.closedPaperTrades, "0"))} closed paper trades since ${escapeHtml(formatCentralTimestamp(learning?.learningStartAt))}, ${escapeHtml(renderMaybe(learning?.learnedContexts, "0"))} management contexts, ${escapeHtml(renderMaybe(learning?.entryLearnedContexts, "0"))} entry contexts${Number.isFinite(Number(learning?.excludedLearningTrades)) ? `; ${escapeHtml(renderMaybe(learning?.excludedLearningTrades, "0"))} earlier trade(s) kept in history but excluded from learning` : ""}</div>
             <div class="row"><strong>Entry policy:</strong></div>
             <pre>${escapeHtml(learning?.entryPolicySummary || "No closed paper-entry outcomes yet; new entries use the scanner/trade-card rules and become training data after close.")}</pre>
           </div>

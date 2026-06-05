@@ -1,5 +1,6 @@
 import { listJournalTradeDetails } from "../journal/repository.js";
 import { summarizeEntryRewardModel, trainEntryRewardModel } from "./entryRewardModel.js";
+import { buildPaperLearningTradeSet } from "./paperLearningCutoff.js";
 import { recommendPolicyAction, trainPolicyModel } from "./policyModel.js";
 
 async function main(): Promise<void> {
@@ -9,8 +10,9 @@ async function main(): Promise<void> {
     status: "closed",
     includeSignalSnapshot: includeSnapshots,
   });
-  const model = trainPolicyModel(trades);
-  const entryModel = trainEntryRewardModel(trades);
+  const learning = buildPaperLearningTradeSet(trades);
+  const model = trainPolicyModel(learning.trades);
+  const entryModel = trainEntryRewardModel(learning.trades);
 
   const sampleRecommendations = [
     recommendPolicyAction(model, {
@@ -33,6 +35,9 @@ async function main(): Promise<void> {
 
   console.log(JSON.stringify({
     generatedAt: model.generatedAt,
+    learningStartAt: learning.learningStartAt,
+    loadedTradeCount: trades.length,
+    excludedLearningTrades: learning.excludedLearningTrades,
     closedTradeCount: model.closedTradeCount,
     experienceCount: model.experienceCount,
     learnedContextCount: Object.keys(model.buckets).length,
