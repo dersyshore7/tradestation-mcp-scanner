@@ -34,6 +34,26 @@ export type TradeStationOrderResult = {
   raw: unknown;
 };
 
+export type TradeStationBuyingPowerQuantityAdjustment = {
+  originalQuantity: number;
+  quantity: number;
+  limitingBuyingPower: "Day Trade" | "Overnight";
+  limitingCurrentBuyingPowerUsd: number;
+  limitingRequiredBuyingPowerUsd: number;
+  requiredDayTradeBuyingPowerUsd: number | null;
+  requiredOvernightBuyingPowerUsd: number | null;
+  currentDayTradeBuyingPowerUsd: number | null;
+  currentOvernightBuyingPowerUsd: number | null;
+};
+
+export type TradeStationReplaceOrderRequest = {
+  symbol: string;
+  quantity: number;
+  orderType: Extract<TradeStationOrderType, "Limit" | "Market" | "Stop" | "StopLimit">;
+  limitPrice?: number;
+  stopPrice?: number;
+};
+
 export type TradeStationQuoteSnapshot = {
   symbol: string;
   last: number | null;
@@ -137,6 +157,121 @@ function readString(source: JsonObject | null, keys: string[]): string | null {
   }
 
   return null;
+}
+
+function readUsdBeforePattern(message: string, tailPattern: string): number | null {
+  const match = message.match(
+    new RegExp("\\$\\s*([0-9][0-9,]*(?:\\.\\d+)?)\\s+" + tailPattern, "i"),
+  );
+  const raw = match?.[1];
+  if (!raw) {
+    return null;
+  }
+
+  const parsed = Number(raw.replace(/,/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function calculateBuyingPowerAdjustedOrderQuantity(params: {
+  rejectReason: string | null | undefined;
+  originalQuantity: number;
+}): TradeStationBuyingPowerQuantityAdjustment | null {
+  const message = params.rejectReason?.trim();
+  const originalQuantity = Math.floor(params.originalQuantity);
+  if (!message || originalQuantity <= 1) {
+    return null;
+  }
+
+  const normalized = message.toLowerCase();
+  if (
+    !normalized.includes("requires") ||
+    !normalized.includes("buying power") ||
+    !normalized.includes("exceeds")
+  ) {
+    return null;
+  }
+
+  const requiredDayTradeBuyingPowerUsd = readUsdBeforePattern(
+    message,
+    "of\\s+Day\\s+Trade\\s+Buying\\s+Power",
+  );
+  const requiredOvernightBuyingPowerUsd = readUsdBeforePattern(
+    message,
+    "of\\s+Overnight\\s+Buying\\s+Power",
+  );
+  const currentDayTradeBuyingPowerUsd = readUsdBeforePattern(
+    message,
+    "for\\s+Day\\s+Trade",
+  );
+  const currentOvernightBuyingPowerUsd = readUsdBeforePattern(
+    message,
+    "for\\s+Overnight",
+  );
+  const constraints = [
+    {
+      label: "Day Trade" as const,
+      required: requiredDayTradeBuyingPowerUsd,
+      current: currentDayTradeBuyingPowerUsd,
+    },
+    {
+      label: "Overnight" as const,
+      required: requiredOvernightBuyingPowerUsd,
+      current: currentOvernightBuyingPowerUsd,
+    },
+  ].filter((constraint): constraint is {
+    label: "Day Trade" | "Overnight";
+    required: number;
+    current: number;
+  } =>
+    constraint.required !== null &&
+    constraint.required > 0 &&
+    constraint.current !== null &&
+    constraint.current >= 0
+  );
+
+  if (constraints.length === 0) {
+    return null;
+  }
+
+  const limiting = constraints.reduce((lowest, candidate) =>
+    candidate.current / candidate.required < lowest.current / lowest.required
+      ? candidate
+      : lowest
+  );
+  if (limiting.current >= limiting.required) {
+    return null;
+  }
+
+  const quantity = Math.floor(
+    (originalQuantity * limiting.current) / limiting.required,
+  );
+  if (quantity < 1 || quantity >= originalQuantity) {
+    return null;
+  }
+
+  return {
+    originalQuantity,
+    quantity,
+    limitingBuyingPower: limiting.label,
+    limitingCurrentBuyingPowerUsd: Number(limiting.current.toFixed(2)),
+    limitingRequiredBuyingPowerUsd: Number(limiting.required.toFixed(2)),
+    requiredDayTradeBuyingPowerUsd:
+      requiredDayTradeBuyingPowerUsd !== null
+        ? Number(requiredDayTradeBuyingPowerUsd.toFixed(2))
+        : null,
+    requiredOvernightBuyingPowerUsd:
+      requiredOvernightBuyingPowerUsd !== null
+        ? Number(requiredOvernightBuyingPowerUsd.toFixed(2))
+        : null,
+    currentDayTradeBuyingPowerUsd:
+      currentDayTradeBuyingPowerUsd !== null
+        ? Number(currentDayTradeBuyingPowerUsd.toFixed(2))
+        : null,
+    currentOvernightBuyingPowerUsd:
+      currentOvernightBuyingPowerUsd !== null
+        ? Number(currentOvernightBuyingPowerUsd.toFixed(2))
+        : null,
+  };
 }
 
 function collectObjects(value: unknown, depth = 0): JsonObject[] {
@@ -526,10 +661,52 @@ function buildOrderPayload(order: TradeStationOrderRequest): JsonObject {
   return payload;
 }
 
+function buildReplaceOrderPayload(order: TradeStationReplaceOrderRequest): JsonObject {
+  if (!Number.isInteger(order.quantity) || order.quantity <= 0) {
+    throw new Error("quantity must be an integer > 0.");
+  }
+
+  const payload: JsonObject = {
+    Symbol: order.symbol,
+    Quantity: String(order.quantity),
+    OrderType: order.orderType,
+  };
+
+  if (order.orderType === "Limit" || order.orderType === "StopLimit") {
+    if (typeof order.limitPrice !== "number" || order.limitPrice <= 0) {
+      throw new Error("limitPrice is required for Limit and StopLimit replacement orders.");
+    }
+    payload.LimitPrice = normalizeTradeStationOrderPrice({
+      symbol: order.symbol,
+      price: order.limitPrice,
+      tradeAction: "BUYTOOPEN",
+    }).toFixed(2);
+  }
+
+  if (order.orderType === "Stop" || order.orderType === "StopLimit") {
+    if (typeof order.stopPrice !== "number" || order.stopPrice <= 0) {
+      throw new Error("stopPrice is required for Stop and StopLimit replacement orders.");
+    }
+    payload.StopPrice = normalizeTradeStationOrderPrice({
+      symbol: order.symbol,
+      price: order.stopPrice,
+      tradeAction: "BUYTOOPEN",
+    }).toFixed(2);
+  }
+
+  return payload;
+}
+
+export function buildReplaceOrderPayloadForTest(order: TradeStationReplaceOrderRequest): JsonObject {
+  return buildReplaceOrderPayload(order);
+}
+
 export async function createAutomationTradeStationClient(baseUrl: string): Promise<{
   fetchQuote: (symbol: string) => Promise<TradeStationQuoteSnapshot>;
   confirmOrder: (order: TradeStationOrderRequest) => Promise<TradeStationOrderResult>;
   placeOrder: (order: TradeStationOrderRequest) => Promise<TradeStationOrderResult>;
+  replaceOrder: (orderId: string, order: TradeStationReplaceOrderRequest) => Promise<TradeStationOrderResult>;
+  cancelOrder: (orderId: string) => Promise<TradeStationOrderResult>;
   getAccounts: () => Promise<unknown>;
   getExecutions: (accountId: string, orderId: string) => Promise<unknown>;
   getBalances: (accountId: string) => Promise<unknown>;
@@ -578,6 +755,33 @@ export async function createAutomationTradeStationClient(baseUrl: string): Promi
       const payload = await requestJson("/orderexecution/orders", {
         method: "POST",
         body: JSON.stringify(buildOrderPayload(order)),
+      });
+
+      return {
+        orderId: extractOrderId(payload),
+        status: extractOrderStatus(payload),
+        rejectReason: extractOrderRejectReason(payload),
+        averageFillPrice: extractAverageFillPrice(payload),
+        raw: payload,
+      };
+    },
+    async replaceOrder(orderId: string, order: TradeStationReplaceOrderRequest): Promise<TradeStationOrderResult> {
+      const payload = await requestJson(`/orderexecution/orders/${encodeURIComponent(orderId)}`, {
+        method: "PUT",
+        body: JSON.stringify(buildReplaceOrderPayload(order)),
+      });
+
+      return {
+        orderId: extractOrderId(payload),
+        status: extractOrderStatus(payload),
+        rejectReason: extractOrderRejectReason(payload),
+        averageFillPrice: extractAverageFillPrice(payload),
+        raw: payload,
+      };
+    },
+    async cancelOrder(orderId: string): Promise<TradeStationOrderResult> {
+      const payload = await requestJson(`/orderexecution/orders/${encodeURIComponent(orderId)}`, {
+        method: "DELETE",
       });
 
       return {

@@ -1,6 +1,7 @@
 import { DEFAULT_SCAN_PROMPT } from "../config/defaultScanPrompt.js";
 
 const AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV = "AUTO_TRADER_ALLOW_ORDER_PLACEMENT";
+const AUTO_TRADER_MANAGE_ENTRY_ORDERS_ENV = "AUTO_TRADER_MANAGE_ENTRY_ORDERS";
 const AUTO_TRADER_MAX_POSITION_PCT_ENV = "AUTO_TRADER_MAX_POSITION_PCT";
 const AUTO_TRADER_SCAN_PROMPT_ENV = "AUTO_TRADER_SCAN_PROMPT";
 const AUTO_TRADER_API_SECRET_ENV = "AUTO_TRADER_API_SECRET";
@@ -10,6 +11,7 @@ const TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV = "TRADESTATION_AUTOMATION_ACCOUNT_
 export type PaperTraderConfig = {
   enabled: boolean;
   allowOrderPlacement: boolean;
+  manageEntryOrders: boolean;
   maxOpenTrades: number | null;
   maxDailyLossUsd: number | null;
   maxPositionPct: number;
@@ -78,6 +80,7 @@ export function readPaperTraderConfig(): PaperTraderConfig {
   return {
     enabled: true,
     allowOrderPlacement: readBooleanEnv(AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV, false),
+    manageEntryOrders: readBooleanEnv(AUTO_TRADER_MANAGE_ENTRY_ORDERS_ENV, false),
     maxOpenTrades: null,
     maxDailyLossUsd: null,
     maxPositionPct: readPositiveRatioEnv(AUTO_TRADER_MAX_POSITION_PCT_ENV, 0.3),

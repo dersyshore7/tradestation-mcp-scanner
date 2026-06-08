@@ -52,6 +52,7 @@ import {
   type PaperEntryCandidateRecord,
 } from "./entryCandidateHistory.js";
 import {
+  calculateBuyingPowerAdjustedOrderQuantity,
   createAutomationTradeStationClient,
   extractAverageFillPrice,
   extractPositionSnapshots,
@@ -60,6 +61,7 @@ import {
   normalizeTradeStationOrderPrice,
   summarizeExecutions,
   type AutomationTradeStationClient,
+  type TradeStationBuyingPowerQuantityAdjustment,
   type TradeStationOrderRequest,
   type TradeStationOrderResult,
   type TradeStationPositionSnapshot,
@@ -73,6 +75,13 @@ import {
   buildPaperLearningTradeSet,
   filterRecordsForPaperLearning,
 } from "./paperLearningCutoff.js";
+import {
+  buildEntryOrderWaitDecision,
+  decideAiEntryOrderAction,
+  evaluateEntryOrderManagementDecision,
+  type AiEntryOrderDecision,
+  type EntryOrderManagementContext,
+} from "./entryOrderManager.js";
 
 const MAX_TRADESTATION_CONTRACTS_PER_ORDER = 2000;
 const TRADESTATION_PDT_OPENING_EQUITY_MIN_USD = 25_000.01;
@@ -113,6 +122,10 @@ type AutomationSnapshot = {
       entryOrderType?: "Limit";
       entryTradeAction?: "BUYTOOPEN";
       entryLimitPrice?: number;
+      entryOriginalLimitPrice?: number;
+      entryWorkingLimitPrice?: number;
+      entryRepriceAttempts?: number;
+      entryLastRepriceAt?: string | null;
       entryAverageFillPrice?: number | null;
       entryFillStatus?: "unfilled" | "partial" | "filled" | "unknown";
       intendedStopUnderlying?: number;
@@ -132,6 +145,7 @@ type AutomationSnapshot = {
       lastManagementThesis?: string;
       lastManagementAt?: string;
       managementHistory?: PaperTraderManagementHistoryEntry[];
+      entryOrderManagementHistory?: PaperTraderEntryOrderManagementHistoryEntry[];
       decisionLog?: PaperTraderDecisionLogEntry[];
       profitProtectionState?: ProfitProtectionState;
       entryReasoning?: PaperTraderEntryReasoning;
@@ -158,11 +172,27 @@ type PaperTraderManagementHistoryEntry = {
   rewardR?: number | null;
 };
 
+type PaperTraderEntryOrderManagementHistoryEntry = {
+  timestamp: string;
+  action: "wait" | "replace_limit" | "cancel_remaining" | "would_replace_limit" | "would_cancel_remaining" | "blocked";
+  confidence?: "low" | "medium" | "high";
+  oldLimitPrice: number | null;
+  newLimitPrice: number | null;
+  filledQuantity: number | null;
+  remainingQuantity: number | null;
+  orderId: string | null;
+  replacementOrderId?: string | null;
+  cancelOrderId?: string | null;
+  note: string;
+  thesis?: string | null;
+  estimatedRewardRiskR?: number | null;
+};
+
 type PaperTraderDecisionLogEntry = {
   timestamp: string;
   tradeId?: string | null;
   symbol: string | null;
-  kind: "entry" | "management" | "exit" | "order_check";
+  kind: "entry" | "entry_order_management" | "management" | "exit" | "order_check";
   action: string;
   outcome?: string | null;
   confidence?: "low" | "medium" | "high" | null;
@@ -260,6 +290,7 @@ export type PaperTraderStatus = {
   maxOpenTrades: number | null;
   maxDailyLossUsd: number | null;
   maxPositionPct: number;
+  entryOrderManagementEnabled: boolean;
   requiresSecret: boolean;
   openPaperTrades: number;
   liveSimPositions: number | null;
@@ -339,6 +370,7 @@ type PaperTraderRunResult = {
     maxOpenTrades: number | null;
     maxDailyLossUsd: number | null;
     maxPositionPct: number;
+    entryOrderManagementEnabled: boolean;
   };
   guards: {
     openPaperTrades: number;
@@ -364,6 +396,30 @@ type PaperTraderRunResult = {
       averageFillPrice: number | null;
       note: string;
       archived?: boolean;
+    }[];
+    skipped: {
+      tradeId: string | null;
+      symbol: string;
+      reason: string;
+    }[];
+  };
+  entryOrderManagement: {
+    enabled: boolean;
+    inspected: number;
+    updated: number;
+    replaced: number;
+    canceled: number;
+    recommended: number;
+    updates: {
+      tradeId: string;
+      symbol: string;
+      orderId: string | null;
+      action: string;
+      oldLimitPrice: number | null;
+      newLimitPrice: number | null;
+      filledQuantity: number | null;
+      remainingQuantity: number | null;
+      note: string;
     }[];
     skipped: {
       tradeId: string | null;
@@ -788,6 +844,27 @@ function appendManagementHistory(
   existing: PaperTraderManagementHistoryEntry[],
   entry: PaperTraderManagementHistoryEntry,
 ): PaperTraderManagementHistoryEntry[] {
+  return [...existing, entry].slice(-30);
+}
+
+function readEntryOrderManagementHistory(
+  automation: PaperTraderAutomationSnapshot | null,
+): PaperTraderEntryOrderManagementHistoryEntry[] {
+  return Array.isArray(automation?.entryOrderManagementHistory)
+    ? automation.entryOrderManagementHistory.filter((item): item is PaperTraderEntryOrderManagementHistoryEntry =>
+        !!item
+        && typeof item === "object"
+        && typeof (item as { timestamp?: unknown }).timestamp === "string"
+        && typeof (item as { action?: unknown }).action === "string"
+        && typeof (item as { note?: unknown }).note === "string"
+      )
+    : [];
+}
+
+function appendEntryOrderManagementHistory(
+  existing: PaperTraderEntryOrderManagementHistoryEntry[],
+  entry: PaperTraderEntryOrderManagementHistoryEntry,
+): PaperTraderEntryOrderManagementHistoryEntry[] {
   return [...existing, entry].slice(-30);
 }
 
@@ -1648,7 +1725,9 @@ type OpeningOrderSnapshot = {
   orderedQuantity: number | null;
   filledQuantity: number | null;
   remainingQuantity: number | null;
+  limitPrice: number | null;
   averageFillPrice: number | null;
+  openedAt: string | null;
   description: string;
 };
 
@@ -1673,12 +1752,16 @@ function buildOpeningOrderSnapshot(
     orderedQuantity: readNumberFromRecord(leg, ["QuantityOrdered", "Quantity"]),
     filledQuantity: readNumberFromRecord(leg, ["ExecQuantity", "FilledQuantity"]),
     remainingQuantity: readNumberFromRecord(leg, ["QuantityRemaining"]),
+    limitPrice:
+      readNumberFromRecord(order, ["LimitPrice", "Price"])
+      ?? readNumberFromRecord(leg, ["LimitPrice", "Price"]),
     averageFillPrice: readNumberFromRecord(leg, [
       "AveragePrice",
       "AvgFilledPrice",
       "ExecutionPrice",
       "Price",
     ]),
+    openedAt: readStringFromRecord(order, ["OpenedDateTime", "OpenedAt", "CreatedAt", "TimePlaced"]),
     description: describeLiveOpeningOrder(order),
   };
 }
@@ -2223,6 +2306,90 @@ function formatRejectedOrderReason(order: {
   ].join("");
 }
 
+function buildEmptyEntryOrderManagementResult(
+  enabled: boolean,
+): PaperTraderRunResult["entryOrderManagement"] {
+  return {
+    enabled,
+    inspected: 0,
+    updated: 0,
+    replaced: 0,
+    canceled: 0,
+    recommended: 0,
+    updates: [],
+    skipped: [],
+  };
+}
+
+function readOrderAgeSeconds(openedAt: string | null, nowIso: string): number | null {
+  if (!openedAt) {
+    return null;
+  }
+  const openedMs = Date.parse(openedAt);
+  const nowMs = Date.parse(nowIso);
+  if (!Number.isFinite(openedMs) || !Number.isFinite(nowMs) || nowMs < openedMs) {
+    return null;
+  }
+  return Math.floor((nowMs - openedMs) / 1000);
+}
+
+function readPlannedRewardRiskR(trade: JournalTradeDetail): number | null {
+  const plannedProfitUsd = readNumber(trade.planned_profit_usd);
+  const plannedRiskUsd = readNumber(trade.planned_risk_usd);
+  if (plannedProfitUsd === null || plannedRiskUsd === null || plannedRiskUsd <= 0) {
+    return null;
+  }
+  return Number((plannedProfitUsd / plannedRiskUsd).toFixed(2));
+}
+
+function formatBuyingPowerAdjustmentNote(params: {
+  adjustment: TradeStationBuyingPowerQuantityAdjustment;
+  source: "confirmation" | "placement";
+}): string {
+  const sourceLabel = params.source === "confirmation"
+    ? "order confirmation"
+    : "order placement";
+  return `TradeStation ${sourceLabel} rejected ${params.adjustment.originalQuantity} contracts for buying power, so the paper trader retried ${params.adjustment.quantity} contracts, the closest size inside ${params.adjustment.limitingBuyingPower} buying power (${formatUsdForReason(params.adjustment.limitingCurrentBuyingPowerUsd)} available vs ${formatUsdForReason(params.adjustment.limitingRequiredBuyingPowerUsd)} required).`;
+}
+
+function buildBuyingPowerAdjustedEntryOrder(params: {
+  order: TradeStationOrderRequest;
+  rejectedOrder: TradeStationOrderResult;
+  source: "confirmation" | "placement";
+}): {
+  order: TradeStationOrderRequest;
+  note: string;
+} | null {
+  if (params.order.tradeAction !== "BUYTOOPEN") {
+    return null;
+  }
+
+  const rejectReason = [
+    params.rejectedOrder.rejectReason,
+    params.rejectedOrder.status,
+  ].filter((value): value is string =>
+    typeof value === "string" && value.trim().length > 0
+  ).join(" ");
+  const adjustment = calculateBuyingPowerAdjustedOrderQuantity({
+    rejectReason,
+    originalQuantity: params.order.quantity,
+  });
+  if (!adjustment) {
+    return null;
+  }
+
+  return {
+    order: {
+      ...params.order,
+      quantity: adjustment.quantity,
+    },
+    note: formatBuyingPowerAdjustmentNote({
+      adjustment,
+      source: params.source,
+    }),
+  };
+}
+
 async function finalizePaperTraderRunResult(
   result: PaperTraderRunResultCore,
   tradesForHistory: JournalTradeDetail[],
@@ -2315,6 +2482,7 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
     maxOpenTrades: config.maxOpenTrades,
     maxDailyLossUsd: config.maxDailyLossUsd,
     maxPositionPct: config.maxPositionPct,
+    entryOrderManagementEnabled: config.manageEntryOrders,
     requiresSecret: config.apiSecret !== null,
     openPaperTrades: openJournalTrades.length,
     liveSimPositions,
@@ -2811,6 +2979,322 @@ async function reconcileOpenPaperOrders(
     updates,
     skipped,
   };
+}
+
+async function manageWorkingEntryOrders(
+  config: PaperTraderConfig,
+  dryRun: boolean,
+  allTrades: JournalTradeDetail[],
+  updateOrders: boolean,
+): Promise<PaperTraderRunResult["entryOrderManagement"]> {
+  const result = buildEmptyEntryOrderManagementResult(config.manageEntryOrders);
+  const openPaperTrades = allTrades.filter(
+    (trade) => trade.account_mode === "paper" && trade.status === "open",
+  );
+  if (openPaperTrades.length === 0) {
+    return result;
+  }
+
+  const client = await createAutomationTradeStationClient(config.automationBaseUrl);
+  const nowIso = new Date().toISOString();
+  const shouldMutateOrders = config.manageEntryOrders && updateOrders && !dryRun;
+
+  for (const trade of openPaperTrades) {
+    const automation = readAutomationSnapshot(trade);
+    if (!automation?.accountId || !automation.optionSymbol || !automation.orderId) {
+      continue;
+    }
+
+    let openingOrderSnapshot: OpeningOrderSnapshot | null = null;
+    try {
+      openingOrderSnapshot = await findOpeningOrderSnapshotById({
+        client,
+        accountId: automation.accountId,
+        orderId: automation.orderId,
+        optionSymbol: automation.optionSymbol,
+        underlyingSymbol: trade.symbol,
+      });
+    } catch (error) {
+      result.skipped.push({
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        reason: `Could not inspect working entry order ${automation.orderId}: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      continue;
+    }
+
+    const remainingQuantity = openingOrderSnapshot?.remainingQuantity ?? automation.remainingQuantity ?? 0;
+    if (!openingOrderSnapshot?.isAlive || remainingQuantity <= 0) {
+      continue;
+    }
+
+    result.inspected += 1;
+    if (!config.manageEntryOrders) {
+      result.skipped.push({
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        reason: "Entry order management is disabled by AUTO_TRADER_MANAGE_ENTRY_ORDERS.",
+      });
+      continue;
+    }
+
+    const filledQuantity = Math.max(
+      0,
+      Math.floor(openingOrderSnapshot.filledQuantity ?? automation.filledQuantity ?? 0),
+    );
+    const originalLimitPrice =
+      automation.entryOriginalLimitPrice
+      ?? automation.entryLimitPrice
+      ?? openingOrderSnapshot.limitPrice
+      ?? readNumber(trade.option_entry_price);
+    const workingLimitPrice =
+      openingOrderSnapshot.limitPrice
+      ?? automation.entryWorkingLimitPrice
+      ?? automation.entryLimitPrice
+      ?? originalLimitPrice;
+    if (originalLimitPrice === null || workingLimitPrice === null || originalLimitPrice <= 0 || workingLimitPrice <= 0) {
+      result.skipped.push({
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        reason: `Working entry order ${automation.orderId} is missing a usable original/current limit price.`,
+      });
+      continue;
+    }
+
+    let optionQuote;
+    let underlyingQuote;
+    let accountValueUsd: number | null = null;
+    let entryBuyingPowerUsd: number | null = null;
+    try {
+      [optionQuote, underlyingQuote] = await Promise.all([
+        client.fetchQuote(automation.optionSymbol),
+        client.fetchQuote(trade.symbol),
+      ]);
+      const balancesPayload = await client.getBalances(automation.accountId);
+      accountValueUsd = extractAccountValue(balancesPayload);
+      entryBuyingPowerUsd = extractEntryBuyingPower(balancesPayload);
+    } catch (error) {
+      result.skipped.push({
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        reason: `Could not gather entry-order management context: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      continue;
+    }
+
+    const context: EntryOrderManagementContext = {
+      symbol: trade.symbol,
+      direction: trade.direction,
+      optionSymbol: automation.optionSymbol,
+      orderId: automation.orderId,
+      orderAgeSeconds: readOrderAgeSeconds(openingOrderSnapshot.openedAt, nowIso),
+      filledQuantity,
+      remainingQuantity,
+      originalLimitPrice,
+      workingLimitPrice,
+      averageFillPrice:
+        openingOrderSnapshot.averageFillPrice
+        ?? automation.entryAverageFillPrice
+        ?? readNumber(trade.option_entry_price),
+      optionBid: optionQuote.bid,
+      optionAsk: optionQuote.ask,
+      optionMid: optionQuote.mid,
+      underlyingLast: underlyingQuote.last,
+      intendedStopUnderlying:
+        automation.intendedStopUnderlying
+        ?? readNumber(trade.intended_stop_underlying),
+      intendedTargetUnderlying:
+        automation.intendedTargetUnderlying
+        ?? readNumber(trade.intended_target_underlying),
+      plannedRewardRiskR: readPlannedRewardRiskR(trade),
+      accountValueUsd,
+      entryBuyingPowerUsd,
+      maxPositionPct: config.maxPositionPct,
+      repriceAttempts: automation.entryRepriceAttempts ?? 0,
+      lastRepriceAt: automation.entryLastRepriceAt ?? null,
+      entryThesis:
+        automation.entryReasoning?.whyThisWon
+        ?? automation.entryReasoning?.tradeRationale
+        ?? readTradeRationale(trade),
+      nowIso,
+    };
+
+    let aiDecision: AiEntryOrderDecision;
+    if (context.orderAgeSeconds !== null && context.orderAgeSeconds < 90) {
+      aiDecision = buildEntryOrderWaitDecision(
+        `Opening order ${automation.orderId} is only ${context.orderAgeSeconds}s old, so the bot is waiting before asking AI to reprice it.`,
+      );
+    } else {
+      try {
+        aiDecision = await decideAiEntryOrderAction(context);
+      } catch (error) {
+        aiDecision = buildEntryOrderWaitDecision(
+          `Entry-order AI was unavailable; leaving ${automation.optionSymbol} unchanged. ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    const normalizedNewLimitPrice =
+      aiDecision.action === "replace_limit" && aiDecision.newLimitPrice !== null
+        ? normalizeTradeStationOrderPrice({
+            symbol: automation.optionSymbol,
+            price: aiDecision.newLimitPrice,
+            tradeAction: automation.entryTradeAction ?? "BUYTOOPEN",
+          })
+        : null;
+    const policy = evaluateEntryOrderManagementDecision(context, aiDecision, normalizedNewLimitPrice);
+    const historyBase = {
+      timestamp: nowIso,
+      confidence: aiDecision.confidence,
+      oldLimitPrice: workingLimitPrice,
+      newLimitPrice: policy.limitPrice,
+      filledQuantity,
+      remainingQuantity,
+      orderId: automation.orderId,
+      note: policy.reason,
+      thesis: aiDecision.thesis,
+      estimatedRewardRiskR: policy.estimatedRewardRiskR,
+    };
+    const existingHistory = readEntryOrderManagementHistory(automation);
+    let historyEntry: PaperTraderEntryOrderManagementHistoryEntry = {
+      ...historyBase,
+      action: policy.allowed ? policy.action : "blocked",
+    };
+    let action = policy.allowed ? policy.action : "blocked";
+    let note = policy.allowed
+      ? policy.reason
+      : `${aiDecision.note} Guardrail blocked ${aiDecision.action}: ${policy.reason}`;
+    let orderIdForLog = automation.orderId;
+    let snapshotUpdates: Record<string, unknown> = {
+      entryOriginalLimitPrice: originalLimitPrice,
+      entryWorkingLimitPrice: workingLimitPrice,
+    };
+
+    if (policy.allowed && policy.action === "replace_limit" && policy.limitPrice !== null) {
+      if (!shouldMutateOrders) {
+        action = "would_replace_limit";
+        note = `Would replace remaining ${remainingQuantity}x ${automation.optionSymbol} from ${workingLimitPrice.toFixed(2)} to ${policy.limitPrice.toFixed(2)}. ${policy.reason}`;
+        historyEntry = { ...historyEntry, action: "would_replace_limit", note };
+        result.recommended += 1;
+      } else {
+        const replaceResult = await client.replaceOrder(automation.orderId, {
+          symbol: automation.optionSymbol,
+          quantity: remainingQuantity,
+          orderType: "Limit",
+          limitPrice: policy.limitPrice,
+        });
+        if (isRejectedOrderResult(replaceResult)) {
+          action = "blocked";
+          note = `Replace rejected. ${formatRejectedOrderReason(replaceResult)}`;
+          historyEntry = { ...historyEntry, action: "blocked", note };
+        } else {
+          const replacementOrderId = replaceResult.orderId ?? automation.orderId;
+          action = "replace_limit";
+          orderIdForLog = replacementOrderId;
+          note = `Replaced remaining ${remainingQuantity}x ${automation.optionSymbol} from ${workingLimitPrice.toFixed(2)} to ${policy.limitPrice.toFixed(2)}. ${policy.reason}`;
+          historyEntry = {
+            ...historyEntry,
+            action: "replace_limit",
+            replacementOrderId,
+            note,
+          };
+          snapshotUpdates = {
+            ...snapshotUpdates,
+            orderId: replacementOrderId,
+            entryWorkingLimitPrice: policy.limitPrice,
+            entryRepriceAttempts: (automation.entryRepriceAttempts ?? 0) + 1,
+            entryLastRepriceAt: nowIso,
+            lastOrderStatus: replaceResult.status ?? "replace_sent",
+          };
+          result.replaced += 1;
+        }
+      }
+    } else if (policy.allowed && policy.action === "cancel_remaining") {
+      if (!shouldMutateOrders) {
+        action = "would_cancel_remaining";
+        note = `Would cancel remaining ${remainingQuantity}x ${automation.optionSymbol}. ${policy.reason}`;
+        historyEntry = { ...historyEntry, action: "would_cancel_remaining", note };
+        result.recommended += 1;
+      } else {
+        const cancelResult = await client.cancelOrder(automation.orderId);
+        if (isRejectedOrderResult(cancelResult)) {
+          action = "blocked";
+          note = `Cancel rejected. ${formatRejectedOrderReason(cancelResult)}`;
+          historyEntry = { ...historyEntry, action: "blocked", note };
+        } else {
+          action = "cancel_remaining";
+          orderIdForLog = cancelResult.orderId ?? automation.orderId;
+          note = `Canceled remaining ${remainingQuantity}x ${automation.optionSymbol}. ${policy.reason}`;
+          historyEntry = {
+            ...historyEntry,
+            action: "cancel_remaining",
+            cancelOrderId: cancelResult.orderId ?? automation.orderId,
+            note,
+          };
+          snapshotUpdates = {
+            ...snapshotUpdates,
+            remainingQuantity: 0,
+            lastOrderStatus: cancelResult.status ?? "cancel_sent",
+            lastOrderCheckAt: nowIso,
+          };
+          result.canceled += 1;
+        }
+      }
+    }
+
+    const decisionLog = appendDecisionLog(readDecisionLog(automation), {
+      timestamp: nowIso,
+      tradeId: trade.id,
+      symbol: trade.symbol,
+      kind: "entry_order_management",
+      action,
+      confidence: aiDecision.confidence,
+      reason: policy.allowed ? policy.action : "guardrail_blocked",
+      note,
+      thesis: aiDecision.thesis,
+      plainEnglishExplanation: aiDecision.plainEnglishExplanation,
+      optionSymbol: automation.optionSymbol,
+      orderId: orderIdForLog,
+      quantity: remainingQuantity,
+      currentUnderlyingPrice: underlyingQuote.last,
+      currentOptionMid: optionQuote.mid,
+      entryPolicy: null,
+    });
+    snapshotUpdates = {
+      ...snapshotUpdates,
+      entryOrderManagementHistory: appendEntryOrderManagementHistory(existingHistory, historyEntry),
+      decisionLog,
+    };
+
+    if (shouldMutateOrders || (!dryRun && action === "wait")) {
+      await updateJournalTradeSignalSnapshot(
+        trade.id,
+        buildUpdatedSignalSnapshot(trade, snapshotUpdates),
+      );
+      if (action === "cancel_remaining" && filledQuantity < 1) {
+        await archiveJournalTradeWithoutReview(trade.id, {
+          entry_notes: appendEntryNote(trade.entry_notes, `Entry order management canceled the unfilled opening order. ${note}`),
+        });
+      } else if (action === "cancel_remaining" && numbersDiffer(trade.contracts, filledQuantity)) {
+        await updateJournalTrade(trade.id, { contracts: filledQuantity });
+      }
+      result.updated += 1;
+    }
+
+    result.updates.push({
+      tradeId: trade.id,
+      symbol: trade.symbol,
+      orderId: orderIdForLog,
+      action,
+      oldLimitPrice: workingLimitPrice,
+      newLimitPrice: policy.limitPrice,
+      filledQuantity,
+      remainingQuantity,
+      note,
+    });
+  }
+
+  return result;
 }
 
 async function manageOpenPaperTrades(
@@ -4104,69 +4588,89 @@ async function maybeEnterNewPaperTrade(params: {
       };
     }
 
-    const cappedContracts = positionCap.cappedContracts;
-    const positionScale = cappedContracts / automation.contracts;
-    const cappedPlannedJournalFields = {
-      ...tradeCard.plannedJournalFields,
-      position_cost_usd: positionCap.cappedPositionCostUsd,
-      planned_risk_usd: Number((tradeCard.plannedJournalFields.planned_risk_usd * positionScale).toFixed(2)),
-      planned_profit_usd: Number((tradeCard.plannedJournalFields.planned_profit_usd * positionScale).toFixed(2)),
-      market_regime: entryFeatures.marketRegime,
-    };
+    const initialContracts = positionCap.cappedContracts;
     const capReasons = [
-      cappedContracts < automation.contracts && cappedContracts === MAX_TRADESTATION_CONTRACTS_PER_ORDER
+      initialContracts < automation.contracts && initialContracts === MAX_TRADESTATION_CONTRACTS_PER_ORDER
         ? `TradeStation's ${MAX_TRADESTATION_CONTRACTS_PER_ORDER}-contract per-order cap`
         : null,
-      cappedContracts < automation.contracts && cappedContracts < MAX_TRADESTATION_CONTRACTS_PER_ORDER
+      initialContracts < automation.contracts && initialContracts < MAX_TRADESTATION_CONTRACTS_PER_ORDER
         && positionCap.effectiveMaxPositionCostUsd >= positionCap.maxPositionCostUsd
         ? `${(config.maxPositionPct * 100).toFixed(0)}% account-value cap`
         : null,
-      cappedContracts < automation.contracts && positionCap.entryBuyingPowerUsd !== null
+      initialContracts < automation.contracts && positionCap.entryBuyingPowerUsd !== null
         && positionCap.entryBuyingPowerUsd <= positionCap.maxPositionCostUsd
         ? "available SIM buying power"
         : null,
-    ].filter(Boolean);
-    const capNote = cappedContracts < automation.contracts
-      ? ` Size reduced from ${automation.contracts} to ${cappedContracts} contracts by ${capReasons.join(" and ")}.`
-      : "";
-    const entryOrder: TradeStationOrderRequest = {
+    ].filter((reason): reason is string => reason !== null);
+    const buyingPowerAdjustmentNotes: string[] = [];
+    const buildEntryOrder = (quantity: number): TradeStationOrderRequest => ({
       accountId: config.accountId as string,
       symbol: automation.optionSymbol,
-      quantity: cappedContracts,
+      quantity,
       orderType: automation.entryOrderType,
       tradeAction: automation.entryTradeAction,
       limitPrice: entryLimitPrice,
       duration: "DAY",
+    });
+    const buildSizeNote = (finalContracts: number): string => {
+      const notes = [
+        finalContracts < automation.contracts && capReasons.length > 0
+          ? `Size reduced from ${automation.contracts} to ${finalContracts} contracts by ${capReasons.join(" and ")}.`
+          : null,
+        ...buyingPowerAdjustmentNotes,
+      ].filter((note): note is string => note !== null);
+
+      return notes.length > 0 ? ` ${notes.join(" ")}` : "";
     };
-    const confirmation = await client.confirmOrder(entryOrder);
+    let entryOrder = buildEntryOrder(initialContracts);
+    let confirmation = await client.confirmOrder(entryOrder);
     if (isRejectedOrderResult(confirmation)) {
-      const reason = formatRejectedOrderReason(confirmation);
-      await recordEntryCandidateAudit({
-        scanRunId,
-        dryRun,
-        symbol: scan.ticker,
-        decision: "confirmation_rejected",
-        decisionReason: reason,
-        features: entryFeatures,
-        entryPolicy: entryPolicyRecommendation,
-        selected: true,
-        scan,
-        tradeCard,
+      const adjustedOrder = buildBuyingPowerAdjustedEntryOrder({
+        order: entryOrder,
+        rejectedOrder: confirmation,
+        source: "confirmation",
       });
-      return {
-        attempted: true,
-        outcome: "trade_card_blocked",
-        symbol: scan.ticker,
-        reason,
-        tradeCard,
-        reasoning: entryReasoning,
-        evaluatedCandidates,
-        scanSummary: entryScanSummary,
-      };
+      let retryContext: string | null = null;
+      if (adjustedOrder) {
+        const originalReason = formatRejectedOrderReason(confirmation);
+        confirmation = await client.confirmOrder(adjustedOrder.order);
+        entryOrder = adjustedOrder.order;
+        buyingPowerAdjustmentNotes.push(adjustedOrder.note);
+        retryContext = `${originalReason} ${adjustedOrder.note}`;
+      }
+      if (isRejectedOrderResult(confirmation)) {
+        const reason = [
+          retryContext,
+          formatRejectedOrderReason(confirmation),
+        ].filter((part): part is string => part !== null).join(" Retry result: ");
+        await recordEntryCandidateAudit({
+          scanRunId,
+          dryRun,
+          symbol: scan.ticker,
+          decision: "confirmation_rejected",
+          decisionReason: reason,
+          features: entryFeatures,
+          entryPolicy: entryPolicyRecommendation,
+          selected: true,
+          scan,
+          tradeCard,
+        });
+        return {
+          attempted: true,
+          outcome: "trade_card_blocked",
+          symbol: scan.ticker,
+          reason,
+          tradeCard,
+          reasoning: entryReasoning,
+          evaluatedCandidates,
+          scanSummary: entryScanSummary,
+        };
+      }
     }
 
     if (dryRun) {
-      const reason = `Previewed ${cappedContracts}x ${automation.optionSymbol} at ${entryLimitPrice.toFixed(2)} without sending the order.${capNote} Entry policy: ${entryPolicyRecommendation.summary}`;
+      const sizeNote = buildSizeNote(entryOrder.quantity);
+      const reason = `Previewed ${entryOrder.quantity}x ${automation.optionSymbol} at ${entryLimitPrice.toFixed(2)} without sending the order.${sizeNote} Entry policy: ${entryPolicyRecommendation.summary}`;
       await recordEntryCandidateAudit({
         scanRunId,
         dryRun,
@@ -4191,7 +4695,75 @@ async function maybeEnterNewPaperTrade(params: {
       };
     }
 
-    const orderResult = await client.placeOrder(entryOrder);
+    let orderResult = await client.placeOrder(entryOrder);
+    if (isRejectedOrderResult(orderResult)) {
+      const adjustedOrder = buildBuyingPowerAdjustedEntryOrder({
+        order: entryOrder,
+        rejectedOrder: orderResult,
+        source: "placement",
+      });
+      if (adjustedOrder) {
+        const originalReason = formatRejectedOrderReason(orderResult);
+        const retryConfirmation = await client.confirmOrder(adjustedOrder.order);
+        entryOrder = adjustedOrder.order;
+        confirmation = retryConfirmation;
+        buyingPowerAdjustmentNotes.push(adjustedOrder.note);
+        if (isRejectedOrderResult(retryConfirmation)) {
+          const reason = `${originalReason} ${adjustedOrder.note} Retry confirmation result: ${formatRejectedOrderReason(retryConfirmation)}`;
+          await recordEntryCandidateAudit({
+            scanRunId,
+            dryRun,
+            symbol: scan.ticker,
+            decision: "order_rejected",
+            decisionReason: reason,
+            orderId: orderResult.orderId,
+            features: entryFeatures,
+            entryPolicy: entryPolicyRecommendation,
+            selected: true,
+            scan,
+            tradeCard,
+          });
+          return {
+            attempted: true,
+            outcome: "trade_card_blocked",
+            symbol: scan.ticker,
+            reason,
+            tradeCard,
+            reasoning: entryReasoning,
+            evaluatedCandidates,
+            scanSummary: entryScanSummary,
+          };
+        }
+
+        orderResult = await client.placeOrder(entryOrder);
+        if (isRejectedOrderResult(orderResult)) {
+          const reason = `${originalReason} ${adjustedOrder.note} Retry result: ${formatRejectedOrderReason(orderResult)}`;
+          await recordEntryCandidateAudit({
+            scanRunId,
+            dryRun,
+            symbol: scan.ticker,
+            decision: "order_rejected",
+            decisionReason: reason,
+            orderId: orderResult.orderId,
+            features: entryFeatures,
+            entryPolicy: entryPolicyRecommendation,
+            selected: true,
+            scan,
+            tradeCard,
+          });
+          return {
+            attempted: true,
+            outcome: "trade_card_blocked",
+            symbol: scan.ticker,
+            reason,
+            tradeCard,
+            reasoning: entryReasoning,
+            evaluatedCandidates,
+            scanSummary: entryScanSummary,
+          };
+        }
+      }
+    }
     if (isRejectedOrderResult(orderResult)) {
       const reason = formatRejectedOrderReason(orderResult);
       await recordEntryCandidateAudit({
@@ -4230,6 +4802,17 @@ async function maybeEnterNewPaperTrade(params: {
       ) ?? optionEntryPrice;
     }
 
+    const finalContracts = entryOrder.quantity;
+    const sizeNote = buildSizeNote(finalContracts);
+    const finalPositionCostUsdAtLimit = Number((finalContracts * entryLimitPrice * 100).toFixed(2));
+    const positionScale = finalContracts / automation.contracts;
+    const cappedPlannedJournalFields = {
+      ...tradeCard.plannedJournalFields,
+      position_cost_usd: finalPositionCostUsdAtLimit,
+      planned_risk_usd: Number((tradeCard.plannedJournalFields.planned_risk_usd * positionScale).toFixed(2)),
+      planned_profit_usd: Number((tradeCard.plannedJournalFields.planned_profit_usd * positionScale).toFixed(2)),
+      market_regime: entryFeatures.marketRegime,
+    };
     const now = new Date();
     const chicagoNow = formatChicagoParts(now);
     const presentationSummary = buildWorkflowPresentationSummary({
@@ -4244,17 +4827,17 @@ async function maybeEnterNewPaperTrade(params: {
       kind: "entry",
       action: "entered_paper_trade",
       outcome: "entered_paper_trade",
-      note: `AI selected ${scan.ticker} and entered ${cappedContracts}x ${automation.optionSymbol}.${capNote} Entry policy: ${entryPolicyRecommendation.summary}`,
+      note: `AI selected ${scan.ticker} and entered ${finalContracts}x ${automation.optionSymbol}.${sizeNote} Entry policy: ${entryPolicyRecommendation.summary}`,
       thesis: entryReasoning.whyThisWon ?? entryReasoning.tradeRationale,
       plainEnglishExplanation: entryReasoning.conciseReasoning,
       optionSymbol: automation.optionSymbol,
       orderId: orderResult.orderId,
-      quantity: cappedContracts,
-      positionCostUsd: Number((cappedContracts * optionEntryPrice * 100).toFixed(2)),
+      quantity: finalContracts,
+      positionCostUsd: Number((finalContracts * optionEntryPrice * 100).toFixed(2)),
       accountValueUsd,
       maxPositionCostUsd: positionCap.maxPositionCostUsd,
       positionPct: accountValueUsd > 0
-        ? Number(((cappedContracts * optionEntryPrice * 100) / accountValueUsd).toFixed(4))
+        ? Number(((finalContracts * optionEntryPrice * 100) / accountValueUsd).toFixed(4))
         : positionCap.positionPct,
       stopUnderlying: automation.intendedStopUnderlying,
       targetUnderlying: automation.intendedTargetUnderlying,
@@ -4266,7 +4849,7 @@ async function maybeEnterNewPaperTrade(params: {
       account_mode: "paper",
       entry_date: chicagoNow.date,
       entry_time: chicagoNow.time,
-      contracts: cappedContracts,
+      contracts: finalContracts,
       option_entry_price: optionEntryPrice,
       entry_notes: "Entered automatically by paper trader module.",
       planned_trade: {
@@ -4300,8 +4883,8 @@ async function maybeEnterNewPaperTrade(params: {
           paperTrader: {
             accountId: config.accountId,
             optionSymbol: automation.optionSymbol,
-            quantity: cappedContracts,
-            requestedQuantity: cappedContracts,
+            quantity: finalContracts,
+            requestedQuantity: finalContracts,
             entryOrderType: automation.entryOrderType,
             entryTradeAction: automation.entryTradeAction,
             entryLimitPrice,
@@ -4335,7 +4918,7 @@ async function maybeEnterNewPaperTrade(params: {
       status: "open",
     });
 
-    const enteredReason = `Entered ${cappedContracts}x ${automation.optionSymbol} in the paper account.${capNote} Entry policy: ${entryPolicyRecommendation.summary}`;
+    const enteredReason = `Entered ${finalContracts}x ${automation.optionSymbol} in the paper account.${sizeNote} Entry policy: ${entryPolicyRecommendation.summary}`;
     await recordEntryCandidateAudit({
       scanRunId,
       dryRun,
@@ -4417,7 +5000,7 @@ export async function runPaperTraderCycle(
     allTrades = await loadPaperTraderCycleTrades();
   }
 
-  const openPaperTrades = allTrades.filter(
+  let openPaperTrades = allTrades.filter(
     (trade) => trade.account_mode === "paper" && trade.status === "open",
   );
   const chicagoNow = formatChicagoParts(new Date());
@@ -4427,6 +5010,7 @@ export async function runPaperTraderCycle(
   const includeHistory = options.includeHistory !== false;
 
   if (options.reconcileOnly) {
+    const entryOrderManagement = await manageWorkingEntryOrders(config, true, allTrades, false);
     return await finalizePaperTraderRunResult({
       mode: "paper",
       timestamp: new Date().toISOString(),
@@ -4439,6 +5023,7 @@ export async function runPaperTraderCycle(
         maxOpenTrades: config.maxOpenTrades,
         maxDailyLossUsd: config.maxDailyLossUsd,
         maxPositionPct: config.maxPositionPct,
+        entryOrderManagementEnabled: config.manageEntryOrders,
       },
       guards: {
         openPaperTrades: openPaperTrades.length,
@@ -4448,6 +5033,7 @@ export async function runPaperTraderCycle(
         newEntriesAllowed: false,
       },
       reconciliation,
+      entryOrderManagement,
       management: {
         inspected: 0,
         updates: [],
@@ -4476,6 +5062,7 @@ export async function runPaperTraderCycle(
         maxOpenTrades: config.maxOpenTrades,
         maxDailyLossUsd: config.maxDailyLossUsd,
         maxPositionPct: config.maxPositionPct,
+        entryOrderManagementEnabled: config.manageEntryOrders,
       },
       guards: {
         openPaperTrades: openPaperTrades.length,
@@ -4485,6 +5072,7 @@ export async function runPaperTraderCycle(
         newEntriesAllowed: false,
       },
       reconciliation,
+      entryOrderManagement: buildEmptyEntryOrderManagementResult(config.manageEntryOrders),
       management: {
         inspected: 0,
         updates: [],
@@ -4497,7 +5085,15 @@ export async function runPaperTraderCycle(
         symbol: null,
         reason: `Skipped live paper-trader cycle outside regular US equity market hours (America/Chicago). Current Chicago time: ${chicagoNow.time}.`,
       },
-    }, allTrades, includeHistory);
+	  }, allTrades, includeHistory);
+  }
+
+  const entryOrderManagement = await manageWorkingEntryOrders(config, dryRun, allTrades, !dryRun);
+  if (entryOrderManagement.updated > 0) {
+    allTrades = await loadPaperTraderCycleTrades();
+    openPaperTrades = allTrades.filter(
+      (trade) => trade.account_mode === "paper" && trade.status === "open",
+    );
   }
 
   const management = await manageOpenPaperTrades(config, dryRun, allTrades);
@@ -4538,6 +5134,7 @@ export async function runPaperTraderCycle(
       maxOpenTrades: config.maxOpenTrades,
       maxDailyLossUsd: config.maxDailyLossUsd,
       maxPositionPct: config.maxPositionPct,
+      entryOrderManagementEnabled: config.manageEntryOrders,
     },
     guards: {
       openPaperTrades: remainingOpenPaperTrades.length,
@@ -4547,6 +5144,7 @@ export async function runPaperTraderCycle(
       newEntriesAllowed: true,
     },
     reconciliation,
+    entryOrderManagement,
     management,
     entry,
   }, decisionLogTrades, includeHistory);

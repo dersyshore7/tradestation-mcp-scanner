@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildReplaceOrderPayloadForTest,
+  calculateBuyingPowerAdjustedOrderQuantity,
   extractOrderRejectReason,
   isTradeStationOrderRejected,
   normalizeTradeStationOrderPrice,
@@ -89,4 +91,55 @@ test("does not treat TradeStation sent-order messages as rejections", () => {
   const rejectReason = extractOrderRejectReason(payload);
   assert.equal(rejectReason, null);
   assert.equal(isTradeStationOrderRejected({ status: null, rejectReason }), false);
+});
+
+test("calculates closest lower quantity from TradeStation buying-power rejection", () => {
+  const adjustment = calculateBuyingPowerAdjustedOrderQuantity({
+    originalQuantity: 49,
+    rejectReason:
+      "ECL1000: This order requires $16,524.00 of Day Trade Buying Power and $16,524.00 of Overnight Buying Power. This exceeds your current Buying Power values of $16,359.00 for Day Trade and $16,359.00 for Overnight.",
+  });
+
+  assert.equal(adjustment?.quantity, 48);
+  assert.equal(adjustment?.limitingBuyingPower, "Day Trade");
+  assert.equal(adjustment?.requiredDayTradeBuyingPowerUsd, 16524);
+  assert.equal(adjustment?.currentDayTradeBuyingPowerUsd, 16359);
+});
+
+test("uses the stricter overnight buying-power limit when resizing", () => {
+  const adjustment = calculateBuyingPowerAdjustedOrderQuantity({
+    originalQuantity: 10,
+    rejectReason:
+      "This order requires $10,000.00 of Day Trade Buying Power and $10,000.00 of Overnight Buying Power. This exceeds your current Buying Power values of $9,000.00 for Day Trade and $7,000.00 for Overnight.",
+  });
+
+  assert.equal(adjustment?.quantity, 7);
+  assert.equal(adjustment?.limitingBuyingPower, "Overnight");
+});
+
+test("does not resize buying-power rejections below one contract", () => {
+  const adjustment = calculateBuyingPowerAdjustedOrderQuantity({
+    originalQuantity: 2,
+    rejectReason:
+      "This order requires $1,000.00 of Day Trade Buying Power and $1,000.00 of Overnight Buying Power. This exceeds your current Buying Power values of $400.00 for Day Trade and $400.00 for Overnight.",
+  });
+
+  assert.equal(adjustment, null);
+});
+
+test("builds TradeStation cancel-replace limit payloads", () => {
+  assert.deepEqual(
+    buildReplaceOrderPayloadForTest({
+      symbol: "PLTR 260626P135",
+      quantity: 19,
+      orderType: "Limit",
+      limitPrice: 5.03,
+    }),
+    {
+      Symbol: "PLTR 260626P135",
+      Quantity: "19",
+      OrderType: "Limit",
+      LimitPrice: "5.10",
+    },
+  );
 });
