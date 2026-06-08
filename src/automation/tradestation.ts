@@ -211,6 +211,20 @@ export function extractOrderStatus(payload: unknown): string | null {
   return null;
 }
 
+function isRejectLikeMessage(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  return (
+    normalized.includes("reject") ||
+    normalized.includes("rejection") ||
+    normalized.includes("denied") ||
+    normalized.includes("not accepted") ||
+    normalized.includes("insufficient") ||
+    normalized.includes("invalid") ||
+    normalized.includes("failed") ||
+    normalized.includes("error")
+  );
+}
+
 export function extractOrderRejectReason(payload: unknown): string | null {
   for (const candidate of collectObjects(payload)) {
     const reason = readString(candidate, [
@@ -218,11 +232,17 @@ export function extractOrderRejectReason(payload: unknown): string | null {
       "RejectReasonDescription",
       "RejectionReason",
       "RejectMessage",
-      "Message",
       "Error",
     ]);
     if (reason) {
       return reason;
+    }
+  }
+
+  for (const candidate of collectObjects(payload)) {
+    const message = readString(candidate, ["Message"]);
+    if (message && isRejectLikeMessage(message)) {
+      return message;
     }
   }
 

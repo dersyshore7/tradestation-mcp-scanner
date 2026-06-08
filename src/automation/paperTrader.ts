@@ -366,7 +366,7 @@ type PaperTraderRunResult = {
       archived?: boolean;
     }[];
     skipped: {
-      tradeId: string;
+      tradeId: string | null;
       symbol: string;
       reason: string;
     }[];
@@ -1543,6 +1543,237 @@ async function countFilledOpeningOrdersTodayFromTradeStation(params: {
   return orderIds.size;
 }
 
+function normalizeOrderSymbolForMatch(value: string): string {
+  return value.replace(/\s+/g, "").toUpperCase();
+}
+
+function readNumberFromRecord(record: Record<string, unknown> | null, keys: string[]): number | null {
+  if (!record) {
+    return null;
+  }
+
+  for (const key of keys) {
+    const value = readNumber(record[key] as string | number | null | undefined);
+    if (value !== null) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function isLiveOpeningOrderStatus(order: Record<string, unknown>): boolean {
+  const status = [
+    readStringFromRecord(order, ["Status"]),
+    readStringFromRecord(order, ["StatusDescription"]),
+  ]
+    .filter((value): value is string => value !== null)
+    .join(" ")
+    .toLowerCase();
+
+  if (status.includes("reject") || status.includes("cancel") || status.includes("expired")) {
+    return false;
+  }
+  if (status.includes("alive")) {
+    return true;
+  }
+  if (status.includes("filled") || status.includes("fll")) {
+    return false;
+  }
+
+  return (
+    status.includes("open") ||
+    status.includes("working") ||
+    status.includes("queued") ||
+    status.includes("accepted") ||
+    status.includes("received") ||
+    status.includes("ack") ||
+    status.includes("fpr") ||
+    status.includes("opn")
+  );
+}
+
+function readOpeningOrderLegForSymbol(
+  order: Record<string, unknown>,
+  optionSymbol: string,
+  underlyingSymbol: string,
+): Record<string, unknown> | null {
+  const targetOption = normalizeOrderSymbolForMatch(optionSymbol);
+  const targetUnderlying = underlyingSymbol.toUpperCase();
+  const legs = objectArrayFromPayload(order.Legs, ["Legs"]);
+  return legs.find((leg) => {
+    const legSymbol = readStringFromRecord(leg, ["Symbol", "OptionSymbol"]);
+    const underlying = readStringFromRecord(leg, ["Underlying"]);
+    const symbolMatches =
+      (legSymbol ? normalizeOrderSymbolForMatch(legSymbol) === targetOption : false) ||
+      (underlying ? underlying.toUpperCase() === targetUnderlying : false);
+    if (!symbolMatches) {
+      return false;
+    }
+
+    const openOrClose = (readStringFromRecord(leg, ["OpenOrClose"]) ?? "").toLowerCase();
+    const buyOrSell = (readStringFromRecord(leg, ["BuyOrSell"]) ?? "").toLowerCase();
+    return openOrClose === "open" && buyOrSell === "buy";
+  }) ?? null;
+}
+
+function orderHasOpeningLegForSymbol(
+  order: Record<string, unknown>,
+  optionSymbol: string,
+  underlyingSymbol: string,
+): boolean {
+  return readOpeningOrderLegForSymbol(order, optionSymbol, underlyingSymbol) !== null;
+}
+
+function describeLiveOpeningOrder(order: Record<string, unknown>): string {
+  const orderId = readStringFromRecord(order, ["OrderID", "OrderId", "orderId"]) ?? "unknown order";
+  const status =
+    readStringFromRecord(order, ["StatusDescription"]) ??
+    readStringFromRecord(order, ["Status"]) ??
+    "status unavailable";
+  const leg = objectArrayFromPayload(order.Legs, ["Legs"])[0] ?? null;
+  const ordered = readStringFromRecord(leg, ["QuantityOrdered", "Quantity"]);
+  const executed = readStringFromRecord(leg, ["ExecQuantity", "FilledQuantity"]);
+  const remaining = readStringFromRecord(leg, ["QuantityRemaining"]);
+  const fillText = ordered || executed || remaining
+    ? `, filled ${executed ?? "?"}/${ordered ?? "?"}${remaining ? ` with ${remaining} remaining` : ""}`
+    : "";
+  return `${orderId} (${status}${fillText})`;
+}
+
+type OpeningOrderSnapshot = {
+  orderId: string | null;
+  status: string | null;
+  isAlive: boolean;
+  orderedQuantity: number | null;
+  filledQuantity: number | null;
+  remainingQuantity: number | null;
+  averageFillPrice: number | null;
+  description: string;
+};
+
+function buildOpeningOrderSnapshot(
+  order: Record<string, unknown>,
+  optionSymbol: string,
+  underlyingSymbol: string,
+): OpeningOrderSnapshot | null {
+  const leg = readOpeningOrderLegForSymbol(order, optionSymbol, underlyingSymbol);
+  if (!leg) {
+    return null;
+  }
+
+  const status =
+    readStringFromRecord(order, ["StatusDescription"]) ??
+    readStringFromRecord(order, ["Status"]);
+
+  return {
+    orderId: readStringFromRecord(order, ["OrderID", "OrderId", "orderId"]),
+    status,
+    isAlive: isLiveOpeningOrderStatus(order),
+    orderedQuantity: readNumberFromRecord(leg, ["QuantityOrdered", "Quantity"]),
+    filledQuantity: readNumberFromRecord(leg, ["ExecQuantity", "FilledQuantity"]),
+    remainingQuantity: readNumberFromRecord(leg, ["QuantityRemaining"]),
+    averageFillPrice: readNumberFromRecord(leg, [
+      "AveragePrice",
+      "AvgFilledPrice",
+      "ExecutionPrice",
+      "Price",
+    ]),
+    description: describeLiveOpeningOrder(order),
+  };
+}
+
+export function readOpeningOrderSnapshotForTest(
+  order: Record<string, unknown>,
+  optionSymbol: string,
+  underlyingSymbol: string,
+): OpeningOrderSnapshot | null {
+  return buildOpeningOrderSnapshot(order, optionSymbol, underlyingSymbol);
+}
+
+async function findOpeningOrderSnapshotById(params: {
+  client: AutomationTradeStationClient;
+  accountId: string;
+  orderId: string;
+  optionSymbol: string;
+  underlyingSymbol: string;
+}): Promise<OpeningOrderSnapshot | null> {
+  let nextToken: string | null = null;
+
+  for (let page = 0; page < 6; page += 1) {
+    const ordersPayload = await params.client.getOrders(
+      params.accountId,
+      nextToken ?? undefined,
+    );
+    const orders = objectArrayFromPayload(ordersPayload, ["Orders"]);
+    const matchingOrder = orders.find((order) =>
+      readStringFromRecord(order, ["OrderID", "OrderId", "orderId"]) === params.orderId
+    );
+    if (matchingOrder) {
+      return buildOpeningOrderSnapshot(
+        matchingOrder,
+        params.optionSymbol,
+        params.underlyingSymbol,
+      );
+    }
+
+    nextToken = readOrdersNextToken(ordersPayload);
+    if (!nextToken) {
+      break;
+    }
+  }
+
+  return null;
+}
+
+async function findLiveOpeningOrderSnapshotForSymbol(params: {
+  client: AutomationTradeStationClient;
+  accountId: string;
+  optionSymbol: string;
+  underlyingSymbol: string;
+}): Promise<OpeningOrderSnapshot | null> {
+  let nextToken: string | null = null;
+
+  for (let page = 0; page < 6; page += 1) {
+    const ordersPayload = await params.client.getOrders(
+      params.accountId,
+      nextToken ?? undefined,
+    );
+    const orders = objectArrayFromPayload(ordersPayload, ["Orders"]);
+    for (const order of orders) {
+      const snapshot = buildOpeningOrderSnapshot(
+        order,
+        params.optionSymbol,
+        params.underlyingSymbol,
+      );
+      if (snapshot?.isAlive) {
+        return snapshot;
+      }
+    }
+
+    nextToken = readOrdersNextToken(ordersPayload);
+    if (!nextToken) {
+      break;
+    }
+  }
+
+  return null;
+}
+
+async function buildDuplicateLiveOpeningOrderBlockReason(params: {
+  client: AutomationTradeStationClient;
+  accountId: string;
+  optionSymbol: string;
+  underlyingSymbol: string;
+}): Promise<string | null> {
+  const matchingOrder = await findLiveOpeningOrderSnapshotForSymbol(params);
+  if (matchingOrder) {
+    return `TradeStation already has an alive opening order for ${params.optionSymbol}: ${matchingOrder.description}. Skipped before sending another entry order.`;
+  }
+
+  return null;
+}
+
 async function buildNonPatternDayTraderOpeningLimitBlockReason(params: {
   client: AutomationTradeStationClient;
   accountId: string;
@@ -2193,14 +2424,16 @@ async function adoptUnlinkedLiveSimPositions(params: {
 }): Promise<{
   adopted: number;
   updates: PaperTraderRunResult["reconciliation"]["updates"];
+  skipped: PaperTraderRunResult["reconciliation"]["skipped"];
 }> {
   if (!params.updateJournal) {
-    return { adopted: 0, updates: [] };
+    return { adopted: 0, updates: [], skipped: [] };
   }
 
   const linkedOptionSymbols = optionSymbolsForOpenTrades(params.openPaperTrades);
   const livePositions = extractPositionSnapshots(params.positionsPayload);
   const updates: PaperTraderRunResult["reconciliation"]["updates"] = [];
+  const skipped: PaperTraderRunResult["reconciliation"]["skipped"] = [];
   let adopted = 0;
 
   for (const position of livePositions) {
@@ -2211,6 +2444,21 @@ async function adoptUnlinkedLiveSimPositions(params: {
     const parsed = parseTradeStationOptionSymbol(position.symbol);
     const quantity = Math.abs(position.quantity ?? 0);
     if (!parsed || quantity <= 0) {
+      continue;
+    }
+
+    const liveOpeningOrder = await findLiveOpeningOrderSnapshotForSymbol({
+      client: params.client,
+      accountId: params.accountId,
+      optionSymbol: position.symbol,
+      underlyingSymbol: parsed.underlying,
+    });
+    if (liveOpeningOrder) {
+      skipped.push({
+        tradeId: null,
+        symbol: parsed.underlying,
+        reason: `Skipped adopting live SIM position ${position.symbol} because opening order ${liveOpeningOrder.description} is still alive.`,
+      });
       continue;
     }
 
@@ -2305,7 +2553,7 @@ async function adoptUnlinkedLiveSimPositions(params: {
     });
   }
 
-  return { adopted, updates };
+  return { adopted, updates, skipped };
 }
 
 async function reconcileOpenPaperOrders(
@@ -2335,7 +2583,7 @@ async function reconcileOpenPaperOrders(
         staleArchived: 0,
         adoptedPositions: adoption.adopted,
         updates: adoption.updates,
-        skipped: [],
+        skipped: adoption.skipped,
       };
     }
     return {
@@ -2379,6 +2627,7 @@ async function reconcileOpenPaperOrders(
     const requestedQuantity = readAutomationQuantity(trade, automation);
     let executionFilledQuantity: number | null = null;
     let executionAveragePrice: number | null = null;
+    let openingOrderSnapshot: OpeningOrderSnapshot | null = null;
     let orderCheckError: string | null = null;
 
     if (automation.orderId) {
@@ -2392,6 +2641,21 @@ async function reconcileOpenPaperOrders(
         if (!message.includes("TradeStation request failed (404)")) {
           orderCheckError = message;
         }
+      }
+
+      try {
+        openingOrderSnapshot = await findOpeningOrderSnapshotById({
+          client,
+          accountId: automation.accountId,
+          orderId: automation.orderId,
+          optionSymbol: automation.optionSymbol,
+          underlyingSymbol: trade.symbol,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        orderCheckError = orderCheckError
+          ? `${orderCheckError} Order status check failed: ${message}`
+          : `Order status check failed: ${message}`;
       }
     }
 
@@ -2407,18 +2671,21 @@ async function reconcileOpenPaperOrders(
     const filledQuantity =
       executionFilledQuantity
       ?? positionQuantity
+      ?? openingOrderSnapshot?.filledQuantity
       ?? automation.filledQuantity
       ?? null;
     const averageFillPrice =
       executionAveragePrice
       ?? position?.averagePrice
+      ?? openingOrderSnapshot?.averageFillPrice
       ?? automation.entryAverageFillPrice
       ?? readNumber(trade.option_entry_price)
       ?? null;
     const remainingQuantity =
-      requestedQuantity !== null && filledQuantity !== null
+      openingOrderSnapshot?.remainingQuantity
+      ?? (requestedQuantity !== null && filledQuantity !== null
         ? Math.max(0, requestedQuantity - filledQuantity)
-        : null;
+        : null);
     const fillStatus = computeFillStatus({ filledQuantity, requestedQuantity });
     if (fillStatus === "partial") {
       partialFills += 1;
@@ -2428,7 +2695,8 @@ async function reconcileOpenPaperOrders(
       orderCheckError =
         `No executions or live SIM position were found for ${automation.optionSymbol}; fill status remains unknown until TradeStation returns order evidence.`;
     }
-    const shouldArchiveStaleRow = missingLivePosition;
+    const hasLiveOpeningOrder = openingOrderSnapshot?.isAlive === true;
+    const shouldArchiveStaleRow = missingLivePosition && !hasLiveOpeningOrder;
 
     const shouldLogOrderCheck =
       fillStatus !== automation.entryFillStatus
@@ -2442,7 +2710,9 @@ async function reconcileOpenPaperOrders(
           action: fillStatus,
           note: orderCheckError
             ? `Order check warning: ${orderCheckError}`
-            : `Order check found ${fillStatus} fill status for ${automation.optionSymbol}.`,
+            : openingOrderSnapshot
+              ? `Order check found ${fillStatus} fill status for ${automation.optionSymbol}; opening order ${openingOrderSnapshot.description}.`
+              : `Order check found ${fillStatus} fill status for ${automation.optionSymbol}.`,
           optionSymbol: automation.optionSymbol,
           orderId: automation.orderId ?? null,
           quantity: filledQuantity,
@@ -2455,7 +2725,7 @@ async function reconcileOpenPaperOrders(
       remainingQuantity,
       entryAverageFillPrice: averageFillPrice,
       entryFillStatus: fillStatus,
-      lastOrderStatus: fillStatus,
+      lastOrderStatus: openingOrderSnapshot?.status ?? fillStatus,
       lastOrderCheckAt: new Date().toISOString(),
       lastOrderCheckError: orderCheckError,
       lastPositionQuantity: positionQuantity,
@@ -2528,6 +2798,7 @@ async function reconcileOpenPaperOrders(
     });
     adoptedPositions = adoption.adopted;
     updates.push(...adoption.updates);
+    skipped.push(...adoption.skipped);
     updated += adoption.adopted;
   }
 
@@ -2596,6 +2867,35 @@ async function manageOpenPaperTrades(
         reason: `No live TradeStation SIM position found for ${automation.optionSymbol}; skipped AI management for this stale journal row.`,
       });
       continue;
+    }
+
+    if (automation.orderId) {
+      let openingOrderSnapshot: OpeningOrderSnapshot | null = null;
+      try {
+        openingOrderSnapshot = await findOpeningOrderSnapshotById({
+          client,
+          accountId: automation.accountId,
+          orderId: automation.orderId,
+          optionSymbol: automation.optionSymbol,
+          underlyingSymbol: trade.symbol,
+        });
+      } catch (error) {
+        skipped.push({
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          reason: `Could not verify whether opening order ${automation.orderId} is still working before management: ${error instanceof Error ? error.message : String(error)}`,
+        });
+        continue;
+      }
+
+      if (openingOrderSnapshot?.isAlive && (openingOrderSnapshot.remainingQuantity ?? automation.remainingQuantity ?? 0) > 0) {
+        skipped.push({
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          reason: `Opening order ${openingOrderSnapshot.description} is still working, so AI exits and profit protection are paused for this partial fill.`,
+        });
+        continue;
+      }
     }
 
     inspected += 1;
@@ -3719,6 +4019,45 @@ async function maybeEnterNewPaperTrade(params: {
         outcome: "trade_card_blocked",
         symbol: scan.ticker,
         reason: nonPdtOpeningLimitBlockReason,
+        tradeCard,
+        reasoning: entryReasoning,
+        evaluatedCandidates,
+        scanSummary: entryScanSummary,
+      };
+    }
+
+    let duplicateLiveOrderBlockReason: string | null = null;
+    try {
+      duplicateLiveOrderBlockReason = await buildDuplicateLiveOpeningOrderBlockReason({
+        client,
+        accountId: config.accountId as string,
+        optionSymbol: automation.optionSymbol,
+        underlyingSymbol: tradeCard.ticker,
+      });
+    } catch (error) {
+      console.warn(
+        "duplicate live opening order check failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    if (duplicateLiveOrderBlockReason) {
+      await recordEntryCandidateAudit({
+        scanRunId,
+        dryRun,
+        symbol: scan.ticker,
+        decision: "duplicate_live_order_blocked",
+        decisionReason: duplicateLiveOrderBlockReason,
+        features: entryFeatures,
+        entryPolicy: entryPolicyRecommendation,
+        selected: true,
+        scan,
+        tradeCard,
+      });
+      return {
+        attempted: true,
+        outcome: "trade_card_blocked",
+        symbol: scan.ticker,
+        reason: duplicateLiveOrderBlockReason,
         tradeCard,
         reasoning: entryReasoning,
         evaluatedCandidates,

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  extractOrderRejectReason,
   isTradeStationOrderRejected,
   normalizeTradeStationOrderPrice,
 } from "./tradestation.js";
@@ -73,4 +74,19 @@ test("recognizes compact TradeStation rejection statuses", () => {
     true,
   );
   assert.equal(isTradeStationOrderRejected({ status: "OK", rejectReason: null }), false);
+});
+
+test("does not treat TradeStation sent-order messages as rejections", () => {
+  const payload = {
+    Orders: [
+      {
+        OrderID: "955965524",
+        Message: "Sent order: Buy to Open 39 AMZN 260626P247.5 @ 7.50 Limit",
+      },
+    ],
+  };
+
+  const rejectReason = extractOrderRejectReason(payload);
+  assert.equal(rejectReason, null);
+  assert.equal(isTradeStationOrderRejected({ status: null, rejectReason }), false);
 });

@@ -49,6 +49,12 @@ export type ChartAnchoredTradabilityResult =
   | ChartAnchoredTradabilitySuccess
   | ChartAnchoredTradabilityFailure;
 
+export function readChartAnchoredFailureReason(
+  result: ChartAnchoredTradabilityResult,
+): string | null {
+  return "reason" in result ? result.reason : null;
+}
+
 export function getRiskRewardTier(
   rewardRiskRatio: number | null,
 ): RiskRewardTier | "unknown" {

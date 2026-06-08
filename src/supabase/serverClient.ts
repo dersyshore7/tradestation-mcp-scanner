@@ -7,6 +7,11 @@ type SupabaseSelectQuery = {
   single?: "single" | "maybeSingle";
 };
 
+type SupabaseCountQuery = {
+  table: string;
+  filters?: string[];
+};
+
 type SupabaseInsertQuery = {
   table: string;
   values: Record<string, unknown>;
@@ -260,6 +265,38 @@ export async function supabaseSelect<T>(query: SupabaseSelectQuery): Promise<T[]
     return data ? [data as T] : [];
   }
   return data as T[];
+}
+
+export async function supabaseCount(query: SupabaseCountQuery): Promise<number> {
+  const params = buildQueryParams(query.filters);
+  params.set("select", "id");
+
+  const { response, text } = await fetchSupabaseRest(buildRestUrl(query.table, params), {
+    method: "HEAD",
+    headers: {
+      ...buildBaseHeaders(),
+      Prefer: "count=exact",
+      Range: "0-0",
+      "Range-Unit": "items",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Supabase count failed (${response.status}): ${text}`);
+  }
+
+  const contentRange = response.headers.get("content-range");
+  const countMatch = contentRange?.match(/\/(\d+)$/);
+  if (!countMatch?.[1]) {
+    throw new Error(`Supabase count returned no content-range for table ${query.table}.`);
+  }
+
+  const count = Number(countMatch[1]);
+  if (!Number.isFinite(count)) {
+    throw new Error(`Supabase count returned invalid content-range for table ${query.table}: ${contentRange}`);
+  }
+
+  return count;
 }
 
 export async function supabaseRpc<T>(query: SupabaseRpcQuery): Promise<T> {

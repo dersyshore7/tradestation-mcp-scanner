@@ -2,6 +2,7 @@ import { createTradeStationGetFetcher } from "../tradestation/client.js";
 import { type ScanConfidence, type ScanDirection } from "../scanner/scoring.js";
 import {
   evaluateChartAnchoredTradability,
+  readChartAnchoredFailureReason,
   type ChartAnchoredTradabilityResult,
   type RiskRewardTier,
 } from "./chartAnchoredTradability.js";
@@ -637,10 +638,12 @@ async function buildTradeInputs(
           direction,
           underlyingPrice,
         );
-    if (!chartLevels.pass) {
-      diagnostics.failureReason = chartLevels.reason;
+    const chartLevelsFailureReason = readChartAnchoredFailureReason(chartLevels);
+    if (chartLevels.pass !== true) {
+      const failureReason = chartLevelsFailureReason ?? "Chart-anchored levels did not pass final validation.";
+      diagnostics.failureReason = failureReason;
       throw new TradeCardBlockedAfterConfirmationError(
-        chartLevels.reason,
+        failureReason,
         chartLevels,
       );
     }

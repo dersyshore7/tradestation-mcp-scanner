@@ -22,7 +22,10 @@ import {
 import { buildPaperLearningPreferences } from "./paperLearningPreferences.js";
 import { recommendPolicyAction, trainPolicyModel } from "./policyModel.js";
 import { calculateScaleOutQuantity, decideProfitProtection } from "./profitProtection.js";
-import { readAutomatedScanStateFromPaperTraderRun } from "./paperTrader.js";
+import {
+  readAutomatedScanStateFromPaperTraderRun,
+  readOpeningOrderSnapshotForTest,
+} from "./paperTrader.js";
 import type { AutomatedEntryScanState } from "./automatedEntryScan.js";
 import type { PaperTraderRunRecord } from "./paperTraderHistory.js";
 
@@ -125,6 +128,41 @@ test("resumable scan state is loaded from non-entry runs", () => {
   };
 
   assert.deepEqual(readAutomatedScanStateFromPaperTraderRun(run), state);
+});
+
+test("paper trader recognizes alive partial opening orders", () => {
+  const snapshot = readOpeningOrderSnapshotForTest({
+    OrderID: "956016126",
+    StatusDescription: "Partial Fill (Alive)",
+    Legs: [{
+      Symbol: "PLTR 260626P135",
+      OpenOrClose: "Open",
+      BuyOrSell: "Buy",
+      QuantityOrdered: "52",
+      ExecQuantity: "8",
+      QuantityRemaining: "44",
+      ExecutionPrice: "5.64",
+    }],
+  }, "PLTR 260626P135", "PLTR");
+
+  assert.equal(snapshot?.isAlive, true);
+  assert.equal(snapshot?.orderedQuantity, 52);
+  assert.equal(snapshot?.filledQuantity, 8);
+  assert.equal(snapshot?.remainingQuantity, 44);
+  assert.match(snapshot?.description ?? "", /956016126/);
+
+  const sellToClose = readOpeningOrderSnapshotForTest({
+    OrderID: "956020270",
+    StatusDescription: "Filled",
+    Legs: [{
+      Symbol: "PLTR 260626P135",
+      OpenOrClose: "Close",
+      BuyOrSell: "Sell",
+      ExecQuantity: "1",
+    }],
+  }, "PLTR 260626P135", "PLTR");
+
+  assert.equal(sellToClose, null);
 });
 
 test("close review R math uses proportional cost and risk for partial exits", () => {

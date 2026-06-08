@@ -1619,7 +1619,7 @@
           case "entered_paper_trade":
             return `Placed a new paper entry${symbol ? ` for ${symbol}` : ""}. ${reason}`;
           case "trade_card_blocked":
-            return `Scanner found ${symbol || "a candidate"}, but the final trade-card validation blocked the entry. No new order was sent. ${reason}`;
+            return `Scanner found ${symbol || "a candidate"}, but the entry workflow blocked or failed after validation. ${reason}`;
           case "no_trade_today":
             return `Scan ran, but no setup survived the filters strongly enough to enter. ${reason}`;
           case "outside_market_hours":
@@ -1928,7 +1928,7 @@
           return `
             <div class="comparison-card">
               <h4>${escapeHtml(title)}</h4>
-              <div class="empty-state">${historyUnavailable ? "Journal history unavailable." : "No paper-trade data yet."}</div>
+              <div class="empty-state">${historyUnavailable ? "Journal history unavailable." : "No current-epoch paper-trade data yet."}</div>
             </div>
           `;
         }
@@ -1987,6 +1987,10 @@
         const totals = insights.totals || {};
         const simAccount = insights.sim_account || null;
         const dataWarnings = Array.isArray(insights.dataWarnings) ? insights.dataWarnings : [];
+        const scopeLabel = insights.scopeLabel || "Current learning epoch";
+        const learningStartLabel = formatCentralTimestamp(insights.learningStartAt);
+        const includedTradeCount = asNumber(insights.includedTradeCount);
+        const excludedTradeCount = asNumber(insights.excludedTradeCount);
         const journalDataUnavailable = dataWarnings.some((warning) =>
           String(warning).toLowerCase().includes("unavailable")
           || String(warning).toLowerCase().includes("timed out")
@@ -2019,14 +2023,18 @@
         );
         const liveNotJournaled = [...simPositionUnderlyings].filter((symbol) => !journalOpenUnderlyings.has(symbol));
         const journalNotLive = [...journalOpenUnderlyings].filter((symbol) => !simPositionUnderlyings.has(symbol));
+        const hasArchivedTrades = (excludedTradeCount ?? 0) > 0;
         const syncWarnings = [
           liveNotJournaled.length > 0
-            ? `Live SIM position(s) without an open journal row: ${liveNotJournaled.join(", ")}.`
+            ? hasArchivedTrades
+              ? `Live SIM position(s) outside the current-epoch journal scope are still shown from TradeStation: ${liveNotJournaled.join(", ")}.`
+              : `Live SIM position(s) without an open journal row: ${liveNotJournaled.join(", ")}.`
             : null,
           journalNotLive.length > 0
-            ? `Open journal row(s) not currently present in SIM positions: ${journalNotLive.join(", ")}.`
+            ? `Current-epoch open journal row(s) not currently present in SIM positions: ${journalNotLive.join(", ")}.`
             : null,
         ].filter(Boolean);
+        const syncWarningLabel = hasArchivedTrades ? "Position scope note:" : "Position sync warning:";
 
         paperDashboardArea.innerHTML = `
           ${simAccount?.error
@@ -2046,7 +2054,7 @@
               <div class="stat-value ${escapeHtml(unrealizedTone)}">${escapeHtml(formatMoney(simAccount?.unrealizedPlUsd))}</div>
             </div>
             <div class="stat-card ${escapeHtml(realizedTone)}">
-              <div class="stat-label">Paper Realized P/L</div>
+              <div class="stat-label">Epoch Realized P/L</div>
               <div class="stat-value ${escapeHtml(realizedTone)}">${escapeHtml(journalDataUnavailable ? "unavailable" : formatMoney(totals.total_realized_pl_usd))}</div>
             </div>
             <div class="stat-card">
@@ -2078,11 +2086,11 @@
               <div class="stat-value">${escapeHtml(formatMoney(openSimMarketValue))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Closed Paper Trades</div>
+              <div class="stat-label">Epoch Closed Trades</div>
               <div class="stat-value">${escapeHtml(journalDataUnavailable ? "unavailable" : renderMaybe(totals.closed_trades, "0"))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Open Journal Trades</div>
+              <div class="stat-label">Epoch Open Journal Trades</div>
               <div class="stat-value">${escapeHtml(journalDataUnavailable && openJournalTrades === 0 ? "unavailable" : renderMaybe(openJournalTrades, "0"))}</div>
             </div>
             <div class="stat-card">
@@ -2108,10 +2116,11 @@
           </div>
 
           <div class="empty-state" style="margin-top: 16px;">
-            Open SIM positions, unrealized P/L, and net worth come from read-only TradeStation account data. Realized results and learning analytics come from Supabase journal history, so they can be temporarily unavailable if Supabase times out.
+            <strong>${escapeHtml(scopeLabel)}:</strong> since ${escapeHtml(learningStartLabel)}. ${escapeHtml(renderMaybe(includedTradeCount, "0"))} current-epoch paper trade(s); ${escapeHtml(renderMaybe(excludedTradeCount, "0"))} archived paper trade(s) kept in journal/history and excluded from current dashboard learning metrics.
+            Open SIM positions, unrealized P/L, and net worth come from read-only TradeStation account data. Epoch realized results and learning analytics come from Supabase journal history, so they can be temporarily unavailable if Supabase times out.
           </div>
           ${syncWarnings.length > 0
-            ? `<div class="empty-state" style="margin-top: 12px;"><strong>Position sync warning:</strong>${renderList(syncWarnings)}</div>`
+            ? `<div class="empty-state" style="margin-top: 12px;"><strong>${escapeHtml(syncWarningLabel)}</strong>${renderList(syncWarnings)}</div>`
             : ""}
 
           <div class="section-grid" style="margin-top: 16px;">

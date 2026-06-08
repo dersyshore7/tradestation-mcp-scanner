@@ -21,6 +21,7 @@ import {
   MINIMUM_TRADABLE_RISK_REWARD_RATIO,
   PREFERRED_RISK_REWARD_RATIO,
   getRiskRewardTier,
+  readChartAnchoredFailureReason,
   type RiskRewardTier,
 } from "./chartAnchoredTradability.js";
 import type { FinalizedTradeGeometry } from "./runTradeConstruction.js";
@@ -4372,7 +4373,7 @@ function runStage3ChartReview(
         ? `${describeRoomToTargetDecision(
             roomToTargetDiagnostics,
           )}; actual chart-anchored R:R ${chartAnchoredAsymmetry.rewardRiskRatio.toFixed(2)} using ${chartAnchoredAsymmetry.invalidationReason} -> ${chartAnchoredAsymmetry.targetReason}`
-        : `${chartAnchoredAsymmetry.reason}; directional room=${roomPct === null ? "n/a" : `${roomPct.toFixed(2)}%`}`,
+        : `${readChartAnchoredFailureReason(chartAnchoredAsymmetry) ?? "Chart-anchored asymmetry failed."}; directional room=${roomPct === null ? "n/a" : `${roomPct.toFixed(2)}%`}`,
       impact: getCheckImpactLabel("higher-timeframe-2r-viability", volumeRatio),
     },
   ];
@@ -4463,7 +4464,7 @@ function runStage3ChartReview(
         actualTradablePass: chartAnchoredAsymmetry.pass,
         failureReason: chartAnchoredAsymmetry.pass
           ? null
-          : chartAnchoredAsymmetry.reason,
+          : readChartAnchoredFailureReason(chartAnchoredAsymmetry),
         stage3RoomPct: roomPct,
         asymmetryConsistencyFlag,
         asymmetryConsistencyReason,

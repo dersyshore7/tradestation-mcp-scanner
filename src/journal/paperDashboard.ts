@@ -1,6 +1,9 @@
-import { supabaseSelect } from "../supabase/serverClient.js";
+import { readPaperLearningWindow } from "../automation/paperLearningCutoff.js";
+import { supabaseCount, supabaseSelect } from "../supabase/serverClient.js";
 
 const WEEKDAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const CURRENT_EPOCH_SCOPE_LABEL = "Current learning epoch" as const;
+const PAPER_DASHBOARD_METRIC_LIMIT = 5000;
 
 type NumericValue = number | string | null;
 
@@ -45,37 +48,12 @@ export type PaperDashboardBucket = {
   average_return_pct: number | null;
 };
 
-type PaperDashboardTotalsRow = {
-  total_trades: NumericValue;
-  open_trades: NumericValue;
-  closed_trades: NumericValue;
-  open_position_cost_usd: NumericValue;
-  winners: NumericValue;
-  losers: NumericValue;
-  win_rate: NumericValue;
-  total_realized_pl_usd: NumericValue;
-  average_r_multiple: NumericValue;
-  average_return_pct: NumericValue;
-};
-
-type PaperDashboardBucketRow = {
-  dimension: string;
-  key: string;
-  label: string;
-  trade_count: NumericValue;
-  open_trade_count: NumericValue;
-  closed_trade_count: NumericValue;
-  open_position_cost_usd: NumericValue;
-  winner_count: NumericValue;
-  loser_count: NumericValue;
-  win_rate: NumericValue;
-  realized_pl_usd: NumericValue;
-  average_r_multiple: NumericValue;
-  average_return_pct: NumericValue;
-};
-
 export type PaperDashboard = {
   dataWarnings: string[];
+  learningStartAt: string;
+  includedTradeCount: number;
+  excludedTradeCount: number;
+  scopeLabel: typeof CURRENT_EPOCH_SCOPE_LABEL;
   totals: {
     total_trades: number;
     open_trades: number;
@@ -113,11 +91,6 @@ function asNumber(value: NumericValue | undefined): number | null {
   }
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function asInteger(value: NumericValue | undefined): number {
-  const parsed = asNumber(value);
-  return parsed === null ? 0 : Math.trunc(parsed);
 }
 
 function average(values: number[]): number | null {
@@ -214,11 +187,26 @@ function bestBucketLabel(buckets: PaperDashboardBucket[]): string | null {
     .sort((left, right) => right.realized_pl_usd - left.realized_pl_usd)[0]?.label ?? null;
 }
 
-async function loadPaperDashboardRows(limit: number): Promise<PaperDashboardTrade[]> {
+function buildEpochFilter(learningStartAt: string): string {
+  return `created_at=gte.${learningStartAt}`;
+}
+
+function buildArchiveFilter(learningStartAt: string): string {
+  return `created_at=lt.${learningStartAt}`;
+}
+
+async function countPaperDashboardRows(filters: string[]): Promise<number> {
+  return supabaseCount({
+    table: "journal_trades",
+    filters: ["account_mode=eq.paper", ...filters],
+  });
+}
+
+async function loadPaperDashboardRows(limit: number, filters: string[] = []): Promise<PaperDashboardTrade[]> {
   const tradeRows = await supabaseSelect<PaperDashboardTradeRow>({
     table: "journal_trades",
     select: "id,created_at,entry_date,entry_time,symbol,direction,setup_type,status,position_cost_usd",
-    filters: ["account_mode=eq.paper"],
+    filters: ["account_mode=eq.paper", ...filters],
     order: ["entry_date.desc", "created_at.desc"],
     limit,
   });
@@ -266,95 +254,14 @@ async function loadPaperDashboardRows(limit: number): Promise<PaperDashboardTrad
   });
 }
 
-function toBucket(row: PaperDashboardBucketRow): PaperDashboardBucket {
-  return {
-    key: row.key,
-    label: row.label,
-    trade_count: asInteger(row.trade_count),
-    open_trade_count: asInteger(row.open_trade_count),
-    closed_trade_count: asInteger(row.closed_trade_count),
-    open_position_cost_usd: asNumber(row.open_position_cost_usd) ?? 0,
-    winner_count: asInteger(row.winner_count),
-    loser_count: asInteger(row.loser_count),
-    win_rate: asNumber(row.win_rate),
-    realized_pl_usd: asNumber(row.realized_pl_usd) ?? 0,
-    average_r_multiple: asNumber(row.average_r_multiple),
-    average_return_pct: asNumber(row.average_return_pct),
-  };
-}
-
-function isMissingPaperDashboardView(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes("42P01")
-    || message.toLowerCase().includes("relation")
-    || message.toLowerCase().includes("paper_dashboard_totals")
-    || message.toLowerCase().includes("paper_dashboard_buckets");
-}
-
-function bucketsByDimension(rows: PaperDashboardBucketRow[], dimension: string): PaperDashboardBucket[] {
-  return rows
-    .filter((row) => row.dimension === dimension)
-    .map(toBucket);
-}
-
-async function loadPaperDashboardSummary(): Promise<PaperDashboard> {
-  const [totalsRows, bucketRows] = await Promise.all([
-    supabaseSelect<PaperDashboardTotalsRow>({
-      table: "paper_dashboard_totals",
-      select: "total_trades,open_trades,closed_trades,open_position_cost_usd,winners,losers,win_rate,total_realized_pl_usd,average_r_multiple,average_return_pct",
-      limit: 1,
-    }),
-    supabaseSelect<PaperDashboardBucketRow>({
-      table: "paper_dashboard_buckets",
-      select: "dimension,key,label,trade_count,open_trade_count,closed_trade_count,open_position_cost_usd,winner_count,loser_count,win_rate,realized_pl_usd,average_r_multiple,average_return_pct",
-    }),
-  ]);
-
-  const totals = totalsRows[0] ?? null;
-  const byDay = WEEKDAY_ORDER.map((day) =>
-    bucketsByDimension(bucketRows, "day_of_week").find((bucket) => bucket.label === day),
-  ).filter((bucket): bucket is PaperDashboardBucket => bucket !== undefined);
-  const byEntryHour = bucketsByDimension(bucketRows, "entry_hour")
-    .sort((left, right) => left.key.localeCompare(right.key));
-  const byDirection = bucketsByDimension(bucketRows, "direction")
-    .sort((left, right) => left.label.localeCompare(right.label));
-  const bySetup = bucketsByDimension(bucketRows, "setup_type")
-    .sort((left, right) => right.realized_pl_usd - left.realized_pl_usd);
-  const bySymbol = bucketsByDimension(bucketRows, "symbol")
-    .sort((left, right) => right.realized_pl_usd - left.realized_pl_usd)
-    .slice(0, 12);
-  const byExitReason = bucketsByDimension(bucketRows, "exit_reason")
-    .sort((left, right) => right.realized_pl_usd - left.realized_pl_usd);
-
-  return {
-    dataWarnings: [],
-    totals: {
-      total_trades: asInteger(totals?.total_trades),
-      open_trades: asInteger(totals?.open_trades),
-      closed_trades: asInteger(totals?.closed_trades),
-      open_position_cost_usd: asNumber(totals?.open_position_cost_usd) ?? 0,
-      winners: asInteger(totals?.winners),
-      losers: asInteger(totals?.losers),
-      win_rate: asNumber(totals?.win_rate),
-      total_realized_pl_usd: asNumber(totals?.total_realized_pl_usd) ?? 0,
-      average_r_multiple: asNumber(totals?.average_r_multiple),
-      average_return_pct: asNumber(totals?.average_return_pct),
-      best_day_of_week: bestBucketLabel(byDay),
-      best_entry_time: bestBucketLabel(byEntryHour),
-      best_setup_type: bestBucketLabel(bySetup),
-    },
-    by_day_of_week: byDay,
-    by_entry_hour: byEntryHour,
-    by_direction: byDirection,
-    by_setup_type: bySetup,
-    by_symbol: bySymbol,
-    by_exit_reason: byExitReason,
-  };
-}
-
 export function buildEmptyPaperDashboard(dataWarnings: string[] = []): PaperDashboard {
+  const learningWindow = readPaperLearningWindow();
   return {
     dataWarnings,
+    learningStartAt: learningWindow.learningStartAt,
+    includedTradeCount: 0,
+    excludedTradeCount: 0,
+    scopeLabel: CURRENT_EPOCH_SCOPE_LABEL,
     totals: {
       total_trades: 0,
       open_trades: 0,
@@ -380,15 +287,15 @@ export function buildEmptyPaperDashboard(dataWarnings: string[] = []): PaperDash
 }
 
 export async function getPaperDashboard(limit = 300): Promise<PaperDashboard> {
-  try {
-    return await loadPaperDashboardSummary();
-  } catch (error) {
-    if (!isMissingPaperDashboardView(error)) {
-      throw error;
-    }
-  }
-
-  const trades = await loadPaperDashboardRows(limit);
+  const learningWindow = readPaperLearningWindow();
+  const epochFilter = buildEpochFilter(learningWindow.learningStartAt);
+  const archiveFilter = buildArchiveFilter(learningWindow.learningStartAt);
+  const metricLimit = Math.max(limit, PAPER_DASHBOARD_METRIC_LIMIT);
+  const [trades, includedTradeCount, excludedTradeCount] = await Promise.all([
+    loadPaperDashboardRows(metricLimit, [epochFilter]),
+    countPaperDashboardRows([epochFilter]),
+    countPaperDashboardRows([archiveFilter]),
+  ]);
   const closedTrades = toClosedTrades(trades);
   const openTrades = trades.filter((trade) => trade.status === "open");
   const winners = closedTrades.filter((trade) => trade.review?.winner === true);
@@ -425,9 +332,13 @@ export async function getPaperDashboard(limit = 300): Promise<PaperDashboard> {
   })).sort((left, right) => right.realized_pl_usd - left.realized_pl_usd);
 
   return {
-    dataWarnings: trades.length >= limit
-      ? [`Dashboard is showing the latest ${limit} paper trades.`]
+    dataWarnings: includedTradeCount > trades.length
+      ? [`Dashboard is showing the latest ${trades.length} current-epoch paper trades out of ${includedTradeCount}.`]
       : [],
+    learningStartAt: learningWindow.learningStartAt,
+    includedTradeCount,
+    excludedTradeCount,
+    scopeLabel: CURRENT_EPOCH_SCOPE_LABEL,
     totals: {
       total_trades: trades.length,
       open_trades: openTrades.length,
