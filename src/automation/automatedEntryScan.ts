@@ -1,5 +1,4 @@
 import {
-  extractFinalizedTradeGeometryFromTelemetry,
   runScan,
   type ScanInput,
   type ScanLearningPreference,
@@ -243,10 +242,9 @@ async function recordChunkCandidates(params: {
 
 async function maybeBuildTradeCard(params: {
   scan: ScanResult;
-  telemetry: StarterUniverseTelemetry;
   tradestationBaseUrlOverride: string;
 }): Promise<TradeConstructionResult | null> {
-  const { scan, telemetry, tradestationBaseUrlOverride } = params;
+  const { scan, tradestationBaseUrlOverride } = params;
   if (
     scan.conclusion !== "confirmed" ||
     !scan.ticker ||
@@ -256,16 +254,11 @@ async function maybeBuildTradeCard(params: {
     return null;
   }
 
-  const finalizedTradeGeometry = extractFinalizedTradeGeometryFromTelemetry(
-    telemetry,
-    scan.ticker,
-  );
   return await constructTradeCard({
     prompt: `build trade ${scan.ticker}`,
     confirmedDirection: scan.direction,
     confirmedConfidence: scan.confidence,
     tradestationBaseUrlOverride,
-    ...(finalizedTradeGeometry ? { finalizedTradeGeometry } : {}),
   });
 }
 
@@ -323,7 +316,6 @@ async function advanceOneChunk(
   try {
     tradeCard = await maybeBuildTradeCard({
       scan,
-      telemetry,
       tradestationBaseUrlOverride: params.tradestationBaseUrlOverride,
     });
   } catch (error) {

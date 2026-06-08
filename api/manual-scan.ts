@@ -1,5 +1,4 @@
 import {
-  extractFinalizedTradeGeometryFromTelemetry,
   mergeFinalizedAsymmetryIntoFinalistsReviewedDebug,
   runScan,
   type ScanResult,
@@ -959,7 +958,6 @@ function buildQuotaPausedResponse(state: ManualScanState): Record<string, unknow
 
 async function maybeBuildTradeCard(
   scan: ScanResult,
-  telemetry: StarterUniverseTelemetry | null,
 ): Promise<TradeConstructionResult | null> {
   if (
     scan.conclusion !== "confirmed" ||
@@ -970,15 +968,10 @@ async function maybeBuildTradeCard(
     return null;
   }
 
-  const finalizedTradeGeometry = extractFinalizedTradeGeometryFromTelemetry(
-    telemetry,
-    scan.ticker,
-  );
   return await constructTradeCard({
     prompt: `build trade ${scan.ticker}`,
     confirmedDirection: scan.direction,
     confirmedConfidence: scan.confidence,
-    ...(finalizedTradeGeometry ? { finalizedTradeGeometry } : {}),
   });
 }
 
@@ -1217,7 +1210,7 @@ async function advanceState(initialState: ManualScanState): Promise<ManualScanSt
   let tradeCardBlockReason: string | null = null;
 
   try {
-    tradeCard = await maybeBuildTradeCard(scan, telemetry);
+    tradeCard = await maybeBuildTradeCard(scan);
   } catch (error) {
     tradeCardBlockReason = readErrorMessage(error);
     telemetry = markTradeCardBlock(scan, telemetry, tradeCardBlockReason);
