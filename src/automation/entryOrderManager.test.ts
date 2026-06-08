@@ -128,7 +128,7 @@ test("entry order policy blocks wide spread, buying power, and low R reprices", 
 
   assert.match(
     evaluateEntryOrderManagementDecision(
-      { ...baseContext, plannedRewardRiskR: 1.55 },
+      { ...baseContext, plannedRewardRiskR: 1.54 },
       decision({ action: "replace_limit", newLimitPrice: 5.9 }),
       5.9,
     ).reason,

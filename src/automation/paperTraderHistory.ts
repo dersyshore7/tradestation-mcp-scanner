@@ -48,6 +48,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function buildCompactRunResult(rawResult: Record<string, unknown>): Record<string, unknown> {
   const reconciliation = asRecord(rawResult.reconciliation);
+  const entryOrderManagement = asRecord(rawResult.entryOrderManagement);
   const management = asRecord(rawResult.management);
   const entry = asRecord(rawResult.entry);
 
@@ -68,6 +69,22 @@ function buildCompactRunResult(rawResult: Record<string, unknown>): Record<strin
             : [],
           skipped: Array.isArray(reconciliation.skipped)
             ? reconciliation.skipped.slice(0, 20)
+            : [],
+        }
+      : null,
+    entryOrderManagement: entryOrderManagement
+      ? {
+          enabled: entryOrderManagement.enabled ?? null,
+          inspected: entryOrderManagement.inspected ?? null,
+          updated: entryOrderManagement.updated ?? null,
+          replaced: entryOrderManagement.replaced ?? null,
+          canceled: entryOrderManagement.canceled ?? null,
+          recommended: entryOrderManagement.recommended ?? null,
+          updates: Array.isArray(entryOrderManagement.updates)
+            ? entryOrderManagement.updates.slice(0, 20)
+            : [],
+          skipped: Array.isArray(entryOrderManagement.skipped)
+            ? entryOrderManagement.skipped.slice(0, 20)
             : [],
         }
       : null,

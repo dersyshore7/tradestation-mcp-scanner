@@ -1526,9 +1526,16 @@
         return runs.map((run) => {
           const raw = run.raw_result_json || {};
           const checked = raw.reconciliation?.inspected;
+          const entryManaged = raw.entryOrderManagement?.inspected;
           const managed = raw.management?.inspected;
           const decisionLog = Array.isArray(raw.decisionLog) ? raw.decisionLog : [];
           const entry = raw.entry || {};
+          const entryOrderRows = [
+            ...(Array.isArray(raw.entryOrderManagement?.updates) ? raw.entryOrderManagement.updates : []).map((item) =>
+              `${item.symbol}: ${item.action} | ${renderMaybe(item.oldLimitPrice)} -> ${renderMaybe(item.newLimitPrice)} | filled ${renderMaybe(item.filledQuantity)} | remaining ${renderMaybe(item.remainingQuantity)}${item.note ? ` - ${item.note}` : ""}`,
+            ),
+            ...(Array.isArray(raw.entryOrderManagement?.skipped) ? raw.entryOrderManagement.skipped : []).map((item) => `${item.symbol}: ${item.reason}`),
+          ];
           const reconciliationRows = [
             ...(Array.isArray(raw.reconciliation?.updates) ? raw.reconciliation.updates : []).map((item) =>
               `${item.symbol}: ${item.fillStatus} | filled ${renderMaybe(item.filledQuantity)} / ${renderMaybe(item.requestedQuantity)} | avg ${renderMaybe(item.averageFillPrice)}${item.note ? ` - ${item.note}` : ""}`,
@@ -1548,7 +1555,7 @@
           return `
             <details class="timeline-item">
               <summary>${escapeHtml(formatCentralTimestamp(run.created_at))} | ${escapeHtml(run.dry_run ? "Dry" : "Live SIM")} | ${escapeHtml(renderMaybe(run.outcome))}</summary>
-              <div class="row"><strong>Symbol:</strong> ${escapeHtml(renderMaybe(run.symbol))} | <strong>Orders checked:</strong> ${escapeHtml(renderMaybe(checked, "0"))} | <strong>Managed:</strong> ${escapeHtml(renderMaybe(managed, "0"))}</div>
+              <div class="row"><strong>Symbol:</strong> ${escapeHtml(renderMaybe(run.symbol))} | <strong>Orders checked:</strong> ${escapeHtml(renderMaybe(checked, "0"))} | <strong>Entry orders managed:</strong> ${escapeHtml(renderMaybe(entryManaged, "0"))} | <strong>Managed:</strong> ${escapeHtml(renderMaybe(managed, "0"))}</div>
               <div class="row"><strong>Reason:</strong> ${escapeHtml(renderMaybe(run.reason))}</div>
               <div class="phase-grid">
                 ${renderTradePhaseCard(
@@ -1562,8 +1569,8 @@
                 )}
                 ${renderTradePhaseCard(
                   "Order Checks",
-                  reconciliationRows.map((row) => escapeHtml(row)),
-                  decisionLog.filter((item) => item?.kind === "order_check"),
+                  [...reconciliationRows, ...entryOrderRows].map((row) => escapeHtml(row)),
+                  decisionLog.filter((item) => item?.kind === "order_check" || item?.kind === "entry_order_management"),
                   "No order-check records saved for this run.",
                 )}
                 ${renderTradePhaseCard(
@@ -1667,12 +1674,15 @@
                 ${runs.map((run) => {
                   const raw = run.raw_result_json || {};
                   const reconciliation = raw.reconciliation || {};
+                  const entryOrderManagement = raw.entryOrderManagement || {};
                   const management = raw.management || {};
                   const entry = raw.entry || {};
                   const updates = Array.isArray(management.updates) ? management.updates : [];
                   const exits = Array.isArray(management.exitsTriggered) ? management.exitsTriggered : [];
                   const orderUpdates = Array.isArray(reconciliation.updates) ? reconciliation.updates : [];
                   const orderSkipped = Array.isArray(reconciliation.skipped) ? reconciliation.skipped : [];
+                  const entryOrderUpdates = Array.isArray(entryOrderManagement.updates) ? entryOrderManagement.updates : [];
+                  const entryOrderSkipped = Array.isArray(entryOrderManagement.skipped) ? entryOrderManagement.skipped : [];
                   const managementSkipped = Array.isArray(management.skipped) ? management.skipped : [];
                   const staleArchived = reconciliation.staleArchived || 0;
                   const adoptedPositions = reconciliation.adoptedPositions || 0;
@@ -1680,16 +1690,21 @@
                   const entryLabel = formatAutomationEntryOutcome(entryOutcome, entry.symbol || run.symbol);
                   const existingTradeSummary = [
                     `${orderUpdates.length} order check(s)`,
+                    `${entryOrderUpdates.length} entry-order decision(s)`,
                     `${updates.length} live trade review(s)`,
                     `${exits.length} exit trigger(s)`,
                     `${staleArchived} stale archived`,
                     `${adoptedPositions} live adopted`,
-                    `${orderSkipped.length + managementSkipped.length} skipped row(s)`,
+                    `${orderSkipped.length + entryOrderSkipped.length + managementSkipped.length} skipped row(s)`,
                   ].join(" | ");
                   const orderDetails = orderUpdates.slice(0, 5).map((item) =>
                     `${item.symbol}: ${item.fillStatus || "order check"} | filled ${renderMaybe(item.filledQuantity)} / ${renderMaybe(item.requestedQuantity)}${item.archived ? " | archived stale row" : ""}`,
                   ).concat(
+                    entryOrderUpdates.slice(0, 5).map((item) =>
+                      `${item.symbol}: ${item.action} | ${renderMaybe(item.oldLimitPrice)} -> ${renderMaybe(item.newLimitPrice)} | remaining ${renderMaybe(item.remainingQuantity)}${item.note ? ` - ${item.note}` : ""}`,
+                    ),
                     orderSkipped.slice(0, 5).map((item) => `${item.symbol}: ${item.reason}`),
+                    entryOrderSkipped.slice(0, 5).map((item) => `${item.symbol}: ${item.reason}`),
                   );
                   const managementDetails = updates.slice(0, 5).map((item) =>
                     `${item.symbol}: ${item.action}${item.note ? ` - ${item.note}` : ""}`,
@@ -1768,7 +1783,7 @@
         );
         return items.map((trade) => {
           const decisionLog = Array.isArray(trade.decisionLog) ? trade.decisionLog : [];
-          const entryDecisions = decisionLog.filter((item) => item?.kind === "entry" || item?.kind === "order_check");
+          const entryDecisions = decisionLog.filter((item) => item?.kind === "entry" || item?.kind === "order_check" || item?.kind === "entry_order_management");
           const managementDecisions = decisionLog.filter((item) => item?.kind === "management");
           const exitDecisions = decisionLog.filter((item) => item?.kind === "exit");
           const managementRows = sortByTimestampDesc(trade.managementHistory || []).map((item) =>
@@ -1838,7 +1853,7 @@
         const entryItems = items.filter((item) => item?.kind === "entry");
         const managementItems = items.filter((item) => item?.kind === "management");
         const exitItems = items.filter((item) => item?.kind === "exit");
-        const orderItems = items.filter((item) => item?.kind === "order_check");
+        const orderItems = items.filter((item) => item?.kind === "order_check" || item?.kind === "entry_order_management");
         return `
           <div class="phase-grid">
             ${renderTradePhaseCard("Entry", [], entryItems, "No recent entry decisions.")}
@@ -2219,6 +2234,10 @@
               <div class="stat-value">${escapeHtml(status?.allowOrderPlacement ? "Live SIM" : "Preview Only")}</div>
             </div>
             <div class="stat-card">
+              <div class="stat-label">Entry Order Mgmt</div>
+              <div class="stat-value">${escapeHtml(status?.entryOrderManagementEnabled ? "Enabled" : "Off")}</div>
+            </div>
+            <div class="stat-card">
               <div class="stat-label">Live Run Ready</div>
               <div class="stat-value">${escapeHtml(status?.liveRunReady ? "Ready" : "Not Ready")}</div>
             </div>
@@ -2302,6 +2321,7 @@
             <div class="row"><strong>Configuration checks:</strong> ${configurationIssues.length > 0 ? renderList(configurationIssues) : "<span class=\"muted\">Live SIM configuration is ready.</span>"}</div>
             ${dataWarnings.length > 0 ? `<div class="row"><strong>Data warnings:</strong> ${renderList(dataWarnings)}</div>` : ""}
             <div class="row"><strong>Autonomous cron:</strong> Every 5 minutes on weekdays via <code>/api/paper-trader-run?reconcileOrders=true</code>; can reconcile fills, manage exits, and enter new SIM trades when guards allow.</div>
+            <div class="row"><strong>Entry order management:</strong> ${escapeHtml(status?.entryOrderManagementEnabled ? "Enabled for working SIM buy-to-open limits." : "Off; working entry orders are monitored but not repriced/canceled by AI.")}</div>
             <div class="row"><strong>Entry cadence:</strong> Every full cron cycle can scan for another excellent setup and enter one additional non-duplicate ticker if the trade card passes.</div>
             <div class="row"><strong>Position size guard:</strong> New SIM entries are capped at ${escapeHtml(formatPercent(status?.maxPositionPct, 0))} of the TradeStation SIM account value${sizing?.maxPositionCostUsd === null || sizing?.maxPositionCostUsd === undefined ? "." : ` (${escapeHtml(formatMoney(sizing.maxPositionCostUsd))}).`}</div>
             ${sizing?.error ? `<div class="row"><strong>Sizing read:</strong> ${escapeHtml(sizing.error)}</div>` : ""}
@@ -2342,6 +2362,12 @@
           : [];
         const reconciliationSkipped = Array.isArray(result?.reconciliation?.skipped)
           ? result.reconciliation.skipped
+          : [];
+        const entryOrderUpdates = Array.isArray(result?.entryOrderManagement?.updates)
+          ? result.entryOrderManagement.updates
+          : [];
+        const entryOrderSkipped = Array.isArray(result?.entryOrderManagement?.skipped)
+          ? result.entryOrderManagement.skipped
           : [];
         const reasoning = result?.entry?.reasoning || null;
         const reasoningItems = [
@@ -2390,6 +2416,14 @@
               <div class="stat-value">${escapeHtml(renderMaybe(result?.reconciliation?.inspected, "0"))}</div>
             </div>
             <div class="stat-card">
+              <div class="stat-label">Entry Orders Managed</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(result?.entryOrderManagement?.inspected, "0"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Entry Replaces/Cancels</div>
+              <div class="stat-value">${escapeHtml(`${renderMaybe(result?.entryOrderManagement?.replaced, "0")} / ${renderMaybe(result?.entryOrderManagement?.canceled, "0")}`)}</div>
+            </div>
+            <div class="stat-card">
               <div class="stat-label">Partial Fills</div>
               <div class="stat-value">${escapeHtml(renderMaybe(result?.reconciliation?.partialFills, "0"))}</div>
             </div>
@@ -2405,6 +2439,13 @@
               [
                 ...reconciled.map((item) => `${item.symbol}: ${item.fillStatus} | filled ${renderMaybe(item.filledQuantity)} / ${renderMaybe(item.requestedQuantity)} | avg ${renderMaybe(item.averageFillPrice)}${item.archived ? " | archived stale row" : ""}${item.note ? ` - ${item.note}` : ""}`),
                 ...reconciliationSkipped.map((item) => `${item.symbol}: ${item.reason}`),
+              ],
+            )}
+            ${renderRunSection(
+              "Entry Order Management",
+              [
+                ...entryOrderUpdates.map((item) => `${item.symbol}: ${item.action} | ${renderMaybe(item.oldLimitPrice)} -> ${renderMaybe(item.newLimitPrice)} | filled ${renderMaybe(item.filledQuantity)} | remaining ${renderMaybe(item.remainingQuantity)}${item.note ? ` - ${item.note}` : ""}`),
+                ...entryOrderSkipped.map((item) => `${item.symbol}: ${item.reason}`),
               ],
             )}
             ${renderRunSection(

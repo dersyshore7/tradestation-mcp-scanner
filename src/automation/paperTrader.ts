@@ -1851,7 +1851,7 @@ async function buildDuplicateLiveOpeningOrderBlockReason(params: {
 }): Promise<string | null> {
   const matchingOrder = await findLiveOpeningOrderSnapshotForSymbol(params);
   if (matchingOrder) {
-    return `TradeStation already has an alive opening order for ${params.optionSymbol}: ${matchingOrder.description}. Skipped before sending another entry order.`;
+    return `TradeStation already has an alive opening order for ${params.optionSymbol}: ${matchingOrder.description}. Entry-order management will evaluate the working order separately; skipped before sending another entry order.`;
   }
 
   return null;
@@ -3297,6 +3297,216 @@ async function manageWorkingEntryOrders(
   return result;
 }
 
+async function cancelOpeningRemainderBeforeExit(params: {
+  client: AutomationTradeStationClient;
+  trade: JournalTradeDetail;
+  automation: PaperTraderAutomationSnapshot;
+  openingOrderSnapshot: OpeningOrderSnapshot | null;
+  decisionLog: PaperTraderDecisionLogEntry[];
+  snapshotUpdates: Record<string, unknown>;
+  nowIso: string;
+  exitReason: string;
+  exitNote: string;
+  exitActionPrefix: string;
+  underlyingLast: number | null;
+  optionMid: number | null;
+}): Promise<{
+  ok: boolean;
+  heldQuantity: number | null;
+  decisionLog: PaperTraderDecisionLogEntry[];
+  snapshotUpdates: Record<string, unknown>;
+  note: string | null;
+}> {
+  const liveRemainder =
+    params.openingOrderSnapshot?.isAlive === true
+    && (params.openingOrderSnapshot.remainingQuantity ?? params.automation.remainingQuantity ?? 0) > 0
+      ? params.openingOrderSnapshot
+      : null;
+  const accountId = params.automation.accountId;
+  const optionSymbol = params.automation.optionSymbol;
+  const entryOrderId = params.automation.orderId;
+  if (!liveRemainder || !accountId || !optionSymbol || !entryOrderId) {
+    return {
+      ok: true,
+      heldQuantity: null,
+      decisionLog: params.decisionLog,
+      snapshotUpdates: params.snapshotUpdates,
+      note: null,
+    };
+  }
+
+  const remainingQuantity = liveRemainder.remainingQuantity ?? params.automation.remainingQuantity ?? null;
+  const baseNote =
+    `Canceling remaining opening order ${entryOrderId} before sending a closing order for the held ${optionSymbol} quantity.`;
+  const existingHistory = readEntryOrderManagementHistory(params.automation);
+  const historyBase = {
+    timestamp: params.nowIso,
+    confidence: "medium" as const,
+    oldLimitPrice: liveRemainder.limitPrice ?? params.automation.entryWorkingLimitPrice ?? params.automation.entryLimitPrice ?? null,
+    newLimitPrice: null,
+    filledQuantity: liveRemainder.filledQuantity ?? params.automation.filledQuantity ?? null,
+    remainingQuantity,
+    orderId: entryOrderId,
+    thesis: "Exit or scale-out requires canceling the unfilled entry remainder first.",
+    estimatedRewardRiskR: null,
+  };
+
+  const appendEntryManagementLog = (
+    action: string,
+    note: string,
+    orderId: string | null = entryOrderId,
+    baseLog: PaperTraderDecisionLogEntry[] = params.decisionLog,
+  ): PaperTraderDecisionLogEntry[] => appendDecisionLog(baseLog, {
+    timestamp: params.nowIso,
+    tradeId: params.trade.id,
+    symbol: params.trade.symbol,
+    kind: "entry_order_management",
+    action,
+    confidence: "medium",
+    reason: "exit_precondition",
+    note,
+    thesis: "Exit or scale-out requires canceling the unfilled entry remainder first.",
+    optionSymbol,
+    orderId,
+    quantity: remainingQuantity,
+    currentUnderlyingPrice: params.underlyingLast,
+    currentOptionMid: params.optionMid,
+  });
+
+  let cancelResult;
+  try {
+    cancelResult = await params.client.cancelOrder(entryOrderId);
+  } catch (error) {
+    const note =
+      `${params.exitNote} Closing order skipped because the remaining opening order could not be canceled first: ${error instanceof Error ? error.message : String(error)}`;
+    return {
+      ok: false,
+      heldQuantity: null,
+      decisionLog: appendEntryManagementLog(`${params.exitActionPrefix}_entry_cancel_failed`, note),
+      snapshotUpdates: params.snapshotUpdates,
+      note,
+    };
+  }
+
+  if (isRejectedOrderResult(cancelResult)) {
+    const note =
+      `${params.exitNote} Closing order skipped because the remaining opening order cancel was rejected. ${formatRejectedOrderReason(cancelResult)}`;
+    return {
+      ok: false,
+      heldQuantity: null,
+      decisionLog: appendEntryManagementLog(
+        `${params.exitActionPrefix}_entry_cancel_rejected`,
+        note,
+        cancelResult.orderId ?? entryOrderId,
+      ),
+      snapshotUpdates: {
+        ...params.snapshotUpdates,
+        entryOrderManagementHistory: appendEntryOrderManagementHistory(existingHistory, {
+          ...historyBase,
+          action: "blocked",
+          cancelOrderId: cancelResult.orderId ?? entryOrderId,
+          note,
+        }),
+      },
+      note,
+    };
+  }
+
+  const canceledNote =
+    `${baseNote} TradeStation accepted the cancel request before exit management continued.`;
+  const canceledDecisionLog = appendEntryManagementLog(
+    "cancel_remaining_before_exit",
+    canceledNote,
+    cancelResult.orderId ?? entryOrderId,
+  );
+  const snapshotUpdates = {
+    ...params.snapshotUpdates,
+    remainingQuantity: 0,
+    lastOrderStatus: cancelResult.status ?? "cancel_sent",
+    lastOrderCheckAt: params.nowIso,
+    entryOrderManagementHistory: appendEntryOrderManagementHistory(existingHistory, {
+      ...historyBase,
+      action: "cancel_remaining",
+      cancelOrderId: cancelResult.orderId ?? entryOrderId,
+      note: canceledNote,
+    }),
+    decisionLog: canceledDecisionLog,
+  };
+
+  let refreshedOrder: OpeningOrderSnapshot | null = null;
+  try {
+    refreshedOrder = await findOpeningOrderSnapshotById({
+      client: params.client,
+      accountId,
+      orderId: cancelResult.orderId ?? entryOrderId,
+      optionSymbol,
+      underlyingSymbol: params.trade.symbol,
+    });
+  } catch (error) {
+    const note =
+      `${params.exitNote} Cancel was accepted, but the opening-order re-check failed before sending the closing order: ${error instanceof Error ? error.message : String(error)}`;
+    return {
+      ok: false,
+      heldQuantity: null,
+      decisionLog: appendEntryManagementLog(
+        `${params.exitActionPrefix}_entry_recheck_failed`,
+        note,
+        entryOrderId,
+        canceledDecisionLog,
+      ),
+      snapshotUpdates,
+      note,
+    };
+  }
+
+  if (refreshedOrder?.isAlive && (refreshedOrder.remainingQuantity ?? 0) > 0) {
+    const note =
+      `${params.exitNote} Closing order skipped because opening order ${refreshedOrder.description} is still working after cancel.`;
+    return {
+      ok: false,
+      heldQuantity: null,
+      decisionLog: appendEntryManagementLog(
+        `${params.exitActionPrefix}_entry_still_alive`,
+        note,
+        entryOrderId,
+        canceledDecisionLog,
+      ),
+      snapshotUpdates,
+      note,
+    };
+  }
+
+  try {
+    const heldQuantity = await readHeldOptionQuantity({
+      client: params.client,
+      accountId,
+      optionSymbol,
+    });
+    return {
+      ok: true,
+      heldQuantity,
+      decisionLog: canceledDecisionLog,
+      snapshotUpdates,
+      note: canceledNote,
+    };
+  } catch (error) {
+    const note =
+      `${params.exitNote} Cancel was accepted, but the SIM position re-check failed before sending the closing order: ${error instanceof Error ? error.message : String(error)}`;
+    return {
+      ok: false,
+      heldQuantity: null,
+      decisionLog: appendEntryManagementLog(
+        `${params.exitActionPrefix}_position_recheck_failed`,
+        note,
+        entryOrderId,
+        canceledDecisionLog,
+      ),
+      snapshotUpdates,
+      note,
+    };
+  }
+}
+
 async function manageOpenPaperTrades(
   config: PaperTraderConfig,
   dryRun: boolean,
@@ -3353,6 +3563,7 @@ async function manageOpenPaperTrades(
       continue;
     }
 
+    let liveOpeningOrderForRemainder: OpeningOrderSnapshot | null = null;
     if (automation.orderId) {
       let openingOrderSnapshot: OpeningOrderSnapshot | null = null;
       try {
@@ -3373,12 +3584,7 @@ async function manageOpenPaperTrades(
       }
 
       if (openingOrderSnapshot?.isAlive && (openingOrderSnapshot.remainingQuantity ?? automation.remainingQuantity ?? 0) > 0) {
-        skipped.push({
-          tradeId: trade.id,
-          symbol: trade.symbol,
-          reason: `Opening order ${openingOrderSnapshot.description} is still working, so AI exits and profit protection are paused for this partial fill.`,
-        });
-        continue;
+        liveOpeningOrderForRemainder = openingOrderSnapshot;
       }
     }
 
@@ -3632,14 +3838,52 @@ async function manageOpenPaperTrades(
           orderId: automation.orderId ?? null,
           optionExitPrice: optionQuote.mid,
           quantity: plannedScaleQuantity,
-          note: scaleNote,
+          note: liveOpeningOrderForRemainder
+            ? `${scaleNote} A live opening remainder would be canceled before any scale-out order.`
+            : scaleNote,
         });
         continue;
       }
 
-      let heldQuantity: number;
+      let heldQuantity: number | null = null;
+      const scaleRemainderCancel = await cancelOpeningRemainderBeforeExit({
+        client,
+        trade,
+        automation,
+        openingOrderSnapshot: liveOpeningOrderForRemainder,
+        decisionLog,
+        snapshotUpdates: protectedSnapshotUpdates,
+        nowIso,
+        exitReason: "partial_profit",
+        exitNote: scaleNote,
+        exitActionPrefix: "scale_out",
+        underlyingLast: underlyingQuote.last,
+        optionMid: optionQuote.mid,
+      });
+      decisionLog = scaleRemainderCancel.decisionLog;
+      if (!scaleRemainderCancel.ok) {
+        await updateJournalTradeSignalSnapshot(
+          trade.id,
+          buildUpdatedSignalSnapshot(trade, {
+            ...scaleRemainderCancel.snapshotUpdates,
+            decisionLog,
+          }),
+        );
+        exitsTriggered.push({
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          reason: "partial_profit",
+          action: "skipped",
+          orderId: automation.orderId ?? null,
+          optionExitPrice: null,
+          quantity: plannedScaleQuantity,
+          note: scaleRemainderCancel.note ?? `${scaleNote} Scale-out skipped because the opening remainder could not be canceled first.`,
+        });
+        continue;
+      }
+      heldQuantity = scaleRemainderCancel.heldQuantity;
       try {
-        heldQuantity = await readHeldOptionQuantity({
+        heldQuantity ??= await readHeldOptionQuantity({
           client,
           accountId: automation.accountId,
           optionSymbol: automation.optionSymbol,
@@ -3662,7 +3906,7 @@ async function manageOpenPaperTrades(
         });
         await updateJournalTradeSignalSnapshot(
           trade.id,
-          buildUpdatedSignalSnapshot(trade, { ...protectedSnapshotUpdates, decisionLog }),
+          buildUpdatedSignalSnapshot(trade, { ...scaleRemainderCancel.snapshotUpdates, decisionLog }),
         );
         exitsTriggered.push({
           tradeId: trade.id,
@@ -3696,7 +3940,7 @@ async function manageOpenPaperTrades(
         });
         await updateJournalTradeSignalSnapshot(
           trade.id,
-          buildUpdatedSignalSnapshot(trade, { ...protectedSnapshotUpdates, decisionLog }),
+          buildUpdatedSignalSnapshot(trade, { ...scaleRemainderCancel.snapshotUpdates, decisionLog }),
         );
         exitsTriggered.push({
           tradeId: trade.id,
@@ -3736,7 +3980,7 @@ async function manageOpenPaperTrades(
         });
         await updateJournalTradeSignalSnapshot(
           trade.id,
-          buildUpdatedSignalSnapshot(trade, { ...protectedSnapshotUpdates, decisionLog }),
+          buildUpdatedSignalSnapshot(trade, { ...scaleRemainderCancel.snapshotUpdates, decisionLog }),
         );
         exitsTriggered.push({
           tradeId: trade.id,
@@ -3775,7 +4019,7 @@ async function manageOpenPaperTrades(
         });
         await updateJournalTradeSignalSnapshot(
           trade.id,
-          buildUpdatedSignalSnapshot(trade, { ...protectedSnapshotUpdates, decisionLog }),
+          buildUpdatedSignalSnapshot(trade, { ...scaleRemainderCancel.snapshotUpdates, decisionLog }),
         );
         exitsTriggered.push({
           tradeId: trade.id,
@@ -3825,7 +4069,7 @@ async function manageOpenPaperTrades(
       await updateJournalTradeSignalSnapshot(
         trade.id,
         buildUpdatedSignalSnapshot(trade, {
-          ...protectedSnapshotUpdates,
+          ...scaleRemainderCancel.snapshotUpdates,
           quantity: remainingQuantity,
           filledQuantity: remainingQuantity,
           remainingQuantity: 0,
@@ -3883,14 +4127,51 @@ async function manageOpenPaperTrades(
         action: "would_close",
         orderId: automation.orderId ?? null,
         optionExitPrice: optionQuote.mid,
-        note: decision.note,
+        note: liveOpeningOrderForRemainder
+          ? `${decision.note} A live opening remainder would be canceled before any close order.`
+          : decision.note,
+      });
+        continue;
+      }
+
+    let heldQuantity: number | null = null;
+    const exitRemainderCancel = await cancelOpeningRemainderBeforeExit({
+      client,
+      trade,
+      automation,
+      openingOrderSnapshot: liveOpeningOrderForRemainder,
+      decisionLog,
+      snapshotUpdates: currentSnapshotUpdates,
+      nowIso,
+      exitReason: decision.reason,
+      exitNote: decision.note,
+      exitActionPrefix: "exit",
+      underlyingLast: underlyingQuote.last,
+      optionMid: optionQuote.mid,
+    });
+    decisionLog = exitRemainderCancel.decisionLog;
+    if (!exitRemainderCancel.ok) {
+      await updateJournalTradeSignalSnapshot(
+        trade.id,
+        buildUpdatedSignalSnapshot(trade, {
+          ...exitRemainderCancel.snapshotUpdates,
+          decisionLog,
+        }),
+      );
+      exitsTriggered.push({
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        reason: decision.reason,
+        action: "skipped",
+        orderId: automation.orderId ?? null,
+        optionExitPrice: null,
+        note: exitRemainderCancel.note ?? `${decision.note} Exit skipped because the opening remainder could not be canceled first.`,
       });
       continue;
     }
-
-    let heldQuantity: number;
+    heldQuantity = exitRemainderCancel.heldQuantity;
     try {
-      heldQuantity = await readHeldOptionQuantity({
+      heldQuantity ??= await readHeldOptionQuantity({
         client,
         accountId: automation.accountId,
         optionSymbol: automation.optionSymbol,
@@ -3913,7 +4194,7 @@ async function manageOpenPaperTrades(
       });
       await updateJournalTradeSignalSnapshot(
         trade.id,
-        buildUpdatedSignalSnapshot(trade, { ...currentSnapshotUpdates, decisionLog }),
+        buildUpdatedSignalSnapshot(trade, { ...exitRemainderCancel.snapshotUpdates, decisionLog }),
       );
       exitsTriggered.push({
         tradeId: trade.id,
@@ -3945,7 +4226,7 @@ async function manageOpenPaperTrades(
       await updateJournalTradeSignalSnapshot(
         trade.id,
         buildUpdatedSignalSnapshot(trade, {
-          ...currentSnapshotUpdates,
+          ...exitRemainderCancel.snapshotUpdates,
           quantity: 0,
           filledQuantity: 0,
           remainingQuantity: 0,
@@ -3996,7 +4277,7 @@ async function manageOpenPaperTrades(
       });
       await updateJournalTradeSignalSnapshot(
         trade.id,
-        buildUpdatedSignalSnapshot(trade, { ...currentSnapshotUpdates, decisionLog }),
+        buildUpdatedSignalSnapshot(trade, { ...exitRemainderCancel.snapshotUpdates, decisionLog }),
       );
       exitsTriggered.push({
         tradeId: trade.id,
@@ -4034,7 +4315,7 @@ async function manageOpenPaperTrades(
       });
       await updateJournalTradeSignalSnapshot(
         trade.id,
-        buildUpdatedSignalSnapshot(trade, { ...currentSnapshotUpdates, decisionLog }),
+        buildUpdatedSignalSnapshot(trade, { ...exitRemainderCancel.snapshotUpdates, decisionLog }),
       );
       exitsTriggered.push({
         tradeId: trade.id,
@@ -4065,7 +4346,7 @@ async function manageOpenPaperTrades(
     });
     await updateJournalTradeSignalSnapshot(
       trade.id,
-      buildUpdatedSignalSnapshot(trade, { ...currentSnapshotUpdates, decisionLog }),
+      buildUpdatedSignalSnapshot(trade, { ...exitRemainderCancel.snapshotUpdates, decisionLog }),
     );
 
     await closeJournalTrade(trade.id, {
@@ -4888,6 +5169,10 @@ async function maybeEnterNewPaperTrade(params: {
             entryOrderType: automation.entryOrderType,
             entryTradeAction: automation.entryTradeAction,
             entryLimitPrice,
+            entryOriginalLimitPrice: entryLimitPrice,
+            entryWorkingLimitPrice: entryLimitPrice,
+            entryRepriceAttempts: 0,
+            entryLastRepriceAt: null,
             intendedStopUnderlying: automation.intendedStopUnderlying,
             intendedTargetUnderlying: automation.intendedTargetUnderlying,
             activeStopUnderlying: automation.intendedStopUnderlying,
@@ -4901,6 +5186,7 @@ async function maybeEnterNewPaperTrade(params: {
             lastManagementThesis: "Original thesis accepted at entry.",
             lastManagementAt: now.toISOString(),
             managementHistory: [],
+            entryOrderManagementHistory: [],
             decisionLog: entryDecisionLog,
             entryReasoning,
             entryFeatures,

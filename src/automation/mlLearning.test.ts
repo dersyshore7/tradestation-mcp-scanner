@@ -134,6 +134,8 @@ test("paper trader recognizes alive partial opening orders", () => {
   const snapshot = readOpeningOrderSnapshotForTest({
     OrderID: "956016126",
     StatusDescription: "Partial Fill (Alive)",
+    LimitPrice: "5.70",
+    OpenedDateTime: "2026-06-08T17:04:47Z",
     Legs: [{
       Symbol: "PLTR 260626P135",
       OpenOrClose: "Open",
@@ -149,6 +151,8 @@ test("paper trader recognizes alive partial opening orders", () => {
   assert.equal(snapshot?.orderedQuantity, 52);
   assert.equal(snapshot?.filledQuantity, 8);
   assert.equal(snapshot?.remainingQuantity, 44);
+  assert.equal(snapshot?.limitPrice, 5.7);
+  assert.equal(snapshot?.openedAt, "2026-06-08T17:04:47Z");
   assert.match(snapshot?.description ?? "", /956016126/);
 
   const sellToClose = readOpeningOrderSnapshotForTest({
@@ -163,6 +167,15 @@ test("paper trader recognizes alive partial opening orders", () => {
   }, "PLTR 260626P135", "PLTR");
 
   assert.equal(sellToClose, null);
+});
+
+test("paper trader cancels partial opening remainders before live exit orders", () => {
+  const source = readFileSync(new URL("./paperTrader.ts", import.meta.url), "utf8");
+
+  assert.ok(source.includes("async function cancelOpeningRemainderBeforeExit"));
+  assert.ok(source.includes("const scaleRemainderCancel = await cancelOpeningRemainderBeforeExit"));
+  assert.ok(source.includes("const exitRemainderCancel = await cancelOpeningRemainderBeforeExit"));
+  assert.ok(source.includes("cancel_remaining_before_exit"));
 });
 
 test("close review R math uses proportional cost and risk for partial exits", () => {
