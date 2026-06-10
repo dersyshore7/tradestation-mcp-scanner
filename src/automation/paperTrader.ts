@@ -21,6 +21,8 @@ import {
 import {
   decideAiManagementAction,
   enforceAiManagementGuardrails,
+  type AiManagementDecision,
+  type ThesisStatus,
 } from "./aiManager.js";
 import {
   runAutomatedEntryScan,
@@ -161,6 +163,8 @@ type PaperTraderManagementHistoryEntry = {
   timestamp: string;
   action: "hold" | "update_levels" | "exit_now" | "scale_out" | "fallback";
   confidence?: "low" | "medium" | "high";
+  thesisStatus?: ThesisStatus;
+  thesisInvalidationReasons?: string[];
   stopUnderlying?: number | null;
   targetUnderlying?: number | null;
   currentUnderlyingPrice?: number | null;
@@ -199,6 +203,8 @@ type PaperTraderDecisionLogEntry = {
   reason?: string | null;
   note: string;
   thesis?: string | null;
+  thesisStatus?: ThesisStatus | null;
+  thesisInvalidationReasons?: string[];
   plainEnglishExplanation?: string | null;
   optionSymbol?: string | null;
   orderId?: string | null;
@@ -2093,6 +2099,25 @@ function computeOptionReturnPct(
   return Number((((currentOptionMid - entryOptionPrice) / entryOptionPrice) * 100).toFixed(1));
 }
 
+function joinNoteParts(parts: Array<string | null | undefined>): string {
+  return parts
+    .map((part) => part?.trim() ?? "")
+    .filter((part) => part.length > 0)
+    .join(" ");
+}
+
+function formatThesisInvalidationEvidence(decision: AiManagementDecision): string | null {
+  if (
+    decision.action !== "exit_now"
+    || decision.thesisStatus !== "dead"
+    || decision.thesisInvalidationReasons.length < 2
+  ) {
+    return null;
+  }
+
+  return `Thesis invalidated: ${decision.thesisInvalidationReasons.join("; ")}.`;
+}
+
 function readTradeRationale(trade: JournalTradeDetail): string | null {
   const snapshot = asRecord(trade.signal_snapshot_json);
   const tradeCard = asRecord(snapshot?.tradeCard);
@@ -3680,13 +3705,25 @@ async function manageOpenPaperTrades(
         }),
       );
 
-      aiDecisionNote = `${aiDecision.thesis} ${aiDecision.note}`;
+      const thesisInvalidationEvidence = formatThesisInvalidationEvidence(aiDecision);
+      aiDecisionNote = joinNoteParts([
+        aiDecision.thesis,
+        aiDecision.note,
+        thesisInvalidationEvidence,
+      ]);
       const nextStopUnderlying = chooseMoreProtectiveStop(
         trade.direction,
         aiDecision.updatedStopUnderlying ?? activeLevels.stopUnderlying,
         profitProtectionDecision.updatedStopUnderlying,
       );
       const nextTargetUnderlying = aiDecision.updatedTargetUnderlying ?? activeLevels.targetUnderlying;
+      const historyNote = profitProtectionDecision.action === "scale_out" && aiDecision.action !== "exit_now"
+        ? joinNoteParts([
+            aiDecision.note,
+            thesisInvalidationEvidence,
+            `Profit protection overrides management action: ${profitProtectionDecision.reason}`,
+          ])
+        : joinNoteParts([aiDecision.note, thesisInvalidationEvidence]);
       const historyEntry: PaperTraderManagementHistoryEntry = {
         timestamp: nowIso,
         action:
@@ -3694,15 +3731,15 @@ async function manageOpenPaperTrades(
             ? "scale_out"
             : aiDecision.action,
         confidence: aiDecision.confidence,
+        thesisStatus: aiDecision.thesisStatus,
+        thesisInvalidationReasons: aiDecision.thesisInvalidationReasons,
         stopUnderlying: nextStopUnderlying,
         targetUnderlying: nextTargetUnderlying,
         currentUnderlyingPrice: underlyingQuote.last,
         currentOptionMid: optionQuote.mid,
         progressToTargetPct,
         optionReturnPct,
-        note: profitProtectionDecision.action === "scale_out" && aiDecision.action !== "exit_now"
-          ? `${aiDecision.note} Profit protection overrides management action: ${profitProtectionDecision.reason}`
-          : aiDecision.note,
+        note: historyNote,
         thesis: aiDecision.thesis,
       };
       managementAction = historyEntry.action;
@@ -3715,6 +3752,8 @@ async function manageOpenPaperTrades(
         confidence: aiDecision.confidence,
         note: historyEntry.note,
         thesis: aiDecision.thesis,
+        thesisStatus: aiDecision.thesisStatus,
+        thesisInvalidationReasons: aiDecision.thesisInvalidationReasons,
         plainEnglishExplanation: aiDecision.plainEnglishExplanation,
         optionSymbol: automation.optionSymbol,
         quantity: automation.quantity,

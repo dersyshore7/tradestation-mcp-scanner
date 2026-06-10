@@ -23,6 +23,11 @@ import {
   trainEntryRewardModel,
 } from "./entryRewardModel.js";
 import {
+  enforceAiManagementGuardrails,
+  normalizeAiManagementDecisionForTest,
+  type AiManagementDecision,
+} from "./aiManager.js";
+import {
   buildPaperLearningTradeSet,
   DEFAULT_PAPER_LEARNING_START_AT,
 } from "./paperLearningCutoff.js";
@@ -183,6 +188,118 @@ test("paper trader cancels partial opening remainders before live exit orders", 
   assert.ok(source.includes("const scaleRemainderCancel = await cancelOpeningRemainderBeforeExit"));
   assert.ok(source.includes("const exitRemainderCancel = await cancelOpeningRemainderBeforeExit"));
   assert.ok(source.includes("cancel_remaining_before_exit"));
+});
+
+test("AI management allows thesis-dead exit with two invalidation reasons", () => {
+  const decision = enforceAiManagementGuardrails(
+    "CALL",
+    95,
+    110,
+    100,
+    buildAiManagementDecision({
+      action: "exit_now",
+      updatedStopUnderlying: 97,
+      thesisStatus: "dead",
+      thesisInvalidationReasons: [
+        "Higher-timeframe alignment flipped bearish.",
+        "Continuation volume broke below the trigger zone.",
+      ],
+      note: "Exit because the original continuation thesis failed.",
+    }),
+  );
+
+  assert.equal(decision.action, "exit_now");
+  assert.equal(decision.updatedStopUnderlying, null);
+  assert.equal(decision.updatedTargetUnderlying, null);
+  assert.deepEqual(decision.thesisInvalidationReasons, [
+    "Higher-timeframe alignment flipped bearish.",
+    "Continuation volume broke below the trigger zone.",
+  ]);
+});
+
+test("AI management downgrades weak thesis-dead exit to tighter risk", () => {
+  const decision = enforceAiManagementGuardrails(
+    "CALL",
+    95,
+    110,
+    100,
+    buildAiManagementDecision({
+      action: "exit_now",
+      updatedStopUnderlying: 97,
+      thesisStatus: "dead",
+      thesisInvalidationReasons: ["Trigger-zone support is being tested."],
+      note: "Exit because the trade is red.",
+    }),
+  );
+
+  assert.equal(decision.action, "update_levels");
+  assert.equal(decision.updatedStopUnderlying, 97);
+  assert.match(decision.note, /insufficient/i);
+});
+
+test("AI management treats wounded thesis as a tightening candidate, not an exit", () => {
+  const decision = enforceAiManagementGuardrails(
+    "PUT",
+    105,
+    90,
+    100,
+    buildAiManagementDecision({
+      action: "exit_now",
+      updatedStopUnderlying: 103,
+      thesisStatus: "wounded",
+      thesisInvalidationReasons: ["Option premium is temporarily red."],
+      note: "Exit because the trade is uncomfortable.",
+    }),
+  );
+
+  assert.equal(decision.action, "update_levels");
+  assert.equal(decision.updatedStopUnderlying, 103);
+  assert.match(decision.note, /need dead plus at least 2 reasons/i);
+});
+
+test("AI management normalizes missing or malformed thesis fields predictably", () => {
+  const missingFieldsDecision = normalizeAiManagementDecisionForTest({
+    action: "hold",
+    updatedStopUnderlying: null,
+    updatedTargetUnderlying: null,
+    confidence: "medium",
+    confidencePercent: 61,
+    profitChancePercent: null,
+    thesis: "Still valid.",
+    note: "Keep monitoring.",
+    plainEnglishExplanation: "The setup is still valid enough to monitor.",
+  });
+  const malformedFieldsDecision = normalizeAiManagementDecisionForTest({
+    action: "hold",
+    updatedStopUnderlying: null,
+    updatedTargetUnderlying: null,
+    confidence: "medium",
+    confidencePercent: 61,
+    profitChancePercent: null,
+    thesisStatus: "panic",
+    thesisInvalidationReasons: ["", "Volume failed.", 3, "Volume failed.", "Support failed."],
+    thesis: "Still valid.",
+    note: "Keep monitoring.",
+    plainEnglishExplanation: "The setup is still valid enough to monitor.",
+  });
+
+  assert.equal(missingFieldsDecision.thesisStatus, "intact");
+  assert.deepEqual(missingFieldsDecision.thesisInvalidationReasons, []);
+  assert.equal(malformedFieldsDecision.thesisStatus, "intact");
+  assert.deepEqual(malformedFieldsDecision.thesisInvalidationReasons, [
+    "Volume failed.",
+    "Support failed.",
+  ]);
+});
+
+test("paper trader preserves thesis-invalidation evidence on manual early exits", () => {
+  const source = readFileSync(new URL("./paperTrader.ts", import.meta.url), "utf8");
+
+  assert.ok(source.includes("formatThesisInvalidationEvidence"));
+  assert.ok(source.includes("Thesis invalidated:"));
+  assert.ok(source.includes("thesisStatus: aiDecision.thesisStatus"));
+  assert.ok(source.includes("thesisInvalidationReasons: aiDecision.thesisInvalidationReasons"));
+  assert.ok(source.includes('reason: "manual_early_exit"'));
 });
 
 test("close review R math uses proportional cost and risk for partial exits", () => {
@@ -370,6 +487,25 @@ function buildPreferenceMatchBuckets(
     scanTierBucket: "tier1",
     marketRegimeBucket: "scanner_risk_on",
     ...buildPaperLearningChartStructureBucketsForTest(buildStage3ChecksForLearningTest()),
+    ...overrides,
+  };
+}
+
+function buildAiManagementDecision(
+  overrides: Partial<AiManagementDecision> = {},
+): AiManagementDecision {
+  return {
+    action: "hold",
+    updatedStopUnderlying: null,
+    updatedTargetUnderlying: null,
+    confidence: "medium",
+    confidencePercent: 65,
+    profitChancePercent: null,
+    thesisStatus: "intact",
+    thesisInvalidationReasons: [],
+    thesis: "The original thesis is still being monitored.",
+    note: "Hold while the trade remains valid.",
+    plainEnglishExplanation: "The trade still has a reasonable recovery path.",
     ...overrides,
   };
 }
