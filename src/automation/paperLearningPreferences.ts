@@ -5,7 +5,6 @@ import type {
 } from "./entryRewardModel.js";
 
 const MIN_PAPER_LEARNING_PENALTY_SAMPLE = 8;
-const MIN_PAPER_LEARNING_HARD_BLOCK_SAMPLE = 15;
 
 function parseEntryRewardContextKey(key: string): Record<string, string> {
   const parsed: Record<string, string> = {};
@@ -73,24 +72,15 @@ function buildPaperLearningPreference(
     return null;
   }
 
-  const isHardBlock =
-    decision === "avoid" &&
-    context.count >= MIN_PAPER_LEARNING_HARD_BLOCK_SAMPLE &&
-    context.averageRewardR <= -1.25 &&
-    context.winRate <= 0.2;
   const effect: NonNullable<ScanLearningPreference["effect"]> =
     decision === "prefer"
       ? "boost"
-      : isHardBlock
-        ? "hard_block"
-        : "penalty";
+      : "penalty";
   const boundedReward = Math.max(-3, Math.min(3, context.averageRewardR));
   const scoreAdjustment =
-    effect === "hard_block"
-      ? -8
-      : decision === "prefer"
-        ? Number(Math.max(1, boundedReward).toFixed(2))
-        : Number(Math.min(-1, boundedReward).toFixed(2));
+    decision === "prefer"
+      ? Number(Math.max(1, boundedReward).toFixed(2))
+      : Number(Math.min(-1, boundedReward).toFixed(2));
   const preference: ScanLearningPreference = {
     direction,
     setupType,
@@ -108,6 +98,30 @@ function buildPaperLearningPreference(
 
   if (parts.volume && parts.volume !== "unknown") {
     preference.volumeBucket = parts.volume;
+  }
+  if (parts.expansion && parts.expansion !== "unknown") {
+    preference.expansionBucket = parts.expansion;
+  }
+  if (parts.body_wick && parts.body_wick !== "unknown") {
+    preference.bodyWickBucket = parts.body_wick;
+  }
+  if (parts.chop && parts.chop !== "unknown") {
+    preference.chopBucket = parts.chop;
+  }
+  if (parts.continuation && parts.continuation !== "unknown") {
+    preference.continuationBucket = parts.continuation;
+  }
+  if (parts.pullback_body && parts.pullback_body !== "unknown") {
+    preference.pullbackBodyBucket = parts.pullback_body;
+  }
+  if (parts.pullback_volume && parts.pullback_volume !== "unknown") {
+    preference.pullbackVolumeBucket = parts.pullback_volume;
+  }
+  if (parts.trigger_zone && parts.trigger_zone !== "unknown") {
+    preference.triggerZoneBucket = parts.trigger_zone;
+  }
+  if (parts.failed_checks && parts.failed_checks !== "unknown") {
+    preference.failedCheckBucket = parts.failed_checks;
   }
   if (parts.spread && parts.spread !== "unknown") {
     preference.optionSpreadBucket = parts.spread;
@@ -159,6 +173,14 @@ export function buildPaperLearningPreferences(
       preference.rewardRiskBucket,
       preference.chartScoreBucket,
       preference.volumeBucket ?? "",
+      preference.expansionBucket ?? "",
+      preference.bodyWickBucket ?? "",
+      preference.chopBucket ?? "",
+      preference.continuationBucket ?? "",
+      preference.pullbackBodyBucket ?? "",
+      preference.pullbackVolumeBucket ?? "",
+      preference.triggerZoneBucket ?? "",
+      preference.failedCheckBucket ?? "",
       preference.optionSpreadBucket ?? "",
       preference.scanTierBucket ?? "",
       preference.marketRegimeBucket ?? "",

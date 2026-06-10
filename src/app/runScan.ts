@@ -47,6 +47,14 @@ export type ScanLearningPreference = {
   rewardRiskBucket: string;
   chartScoreBucket: string;
   volumeBucket?: string;
+  expansionBucket?: string;
+  bodyWickBucket?: string;
+  chopBucket?: string;
+  continuationBucket?: string;
+  pullbackBodyBucket?: string;
+  pullbackVolumeBucket?: string;
+  triggerZoneBucket?: string;
+  failedCheckBucket?: string;
   optionSpreadBucket?: string;
   scanTierBucket?: string;
   marketRegimeBucket?: string;
@@ -221,7 +229,7 @@ type ChartReviewResult = {
   diagnostics: Stage3Diagnostics;
 };
 
-type Stage3CheckDiagnostic = {
+export type Stage3CheckDiagnostic = {
   check: string;
   pass: boolean;
   reason: string;
@@ -1490,6 +1498,132 @@ function bucketLearningText(value: string | null | undefined): string {
     : "unknown";
 }
 
+export type PaperLearningChartStructureBuckets = {
+  expansionBucket: string;
+  bodyWickBucket: string;
+  chopBucket: string;
+  continuationBucket: string;
+  pullbackBodyBucket: string;
+  pullbackVolumeBucket: string;
+  triggerZoneBucket: string;
+  failedCheckBucket: string;
+};
+
+export type PaperLearningCandidateBuckets = PaperLearningChartStructureBuckets & {
+  direction: ScanDirection;
+  setupType: string;
+  dteBucket: string;
+  rewardRiskBucket: string;
+  chartScoreBucket: string;
+  volumeBucket: string;
+  optionSpreadBucket: string;
+  scanTierBucket: string;
+  marketRegimeBucket: string;
+};
+
+function bucketLearningCheckOutcome(check: Stage3CheckDiagnostic | undefined): string {
+  if (!check) {
+    return "unknown";
+  }
+  return check.pass ? "pass" : `fail_${check.impact}`;
+}
+
+function bucketLearningFailedChecks(checks: Stage3CheckDiagnostic[]): string {
+  const failedCount = checks.filter((check) => !check.pass).length;
+  if (failedCount === 0) {
+    return "none";
+  }
+  return failedCount === 1 ? "one" : "multi";
+}
+
+function buildPaperLearningChartStructureBuckets(
+  checks: Stage3CheckDiagnostic[],
+): PaperLearningChartStructureBuckets {
+  const byCheck = new Map(checks.map((check) => [check.check, check]));
+  return {
+    expansionBucket: bucketLearningCheckOutcome(byCheck.get("expansion")),
+    bodyWickBucket: bucketLearningCheckOutcome(byCheck.get("body-wick")),
+    chopBucket: bucketLearningCheckOutcome(byCheck.get("choppy")),
+    continuationBucket: bucketLearningCheckOutcome(byCheck.get("continuation")),
+    pullbackBodyBucket: bucketLearningCheckOutcome(byCheck.get("pullback-body-control")),
+    pullbackVolumeBucket: bucketLearningCheckOutcome(byCheck.get("pullback-volume-control")),
+    triggerZoneBucket: bucketLearningCheckOutcome(byCheck.get("trigger-zone-flips")),
+    failedCheckBucket: bucketLearningFailedChecks(checks),
+  };
+}
+
+function buildPaperLearningCandidateBuckets(
+  candidate: ChartCandidate & { score: number },
+  stage2BySymbol: Map<string, OptionsCandidate>,
+  scanTierBucket: string,
+  marketRegimeBucket: string,
+): PaperLearningCandidateBuckets {
+  const stage2Candidate = stage2BySymbol.get(candidate.symbol);
+  return {
+    direction: candidate.chartDirection,
+    setupType: getPaperLearningSetupType(candidate),
+    dteBucket: bucketLearningDte(
+      stage2Candidate?.targetDte ?? candidate.targetDte,
+    ),
+    rewardRiskBucket: bucketLearningRewardRisk(
+      candidate.chartDiagnostics.chartAnchoredAsymmetry.actualRewardRiskRatio,
+    ),
+    chartScoreBucket: bucketLearningChartScore(candidate.chartReviewScore),
+    volumeBucket: bucketLearningVolume(candidate.volumeRatio),
+    optionSpreadBucket: bucketLearningOptionSpread(
+      stage2Candidate?.optionSpread ?? candidate.optionSpread,
+    ),
+    scanTierBucket,
+    marketRegimeBucket,
+    ...buildPaperLearningChartStructureBuckets(candidate.chartDiagnostics.checks),
+  };
+}
+
+function matchesOptionalLearningBucket(
+  preferred: string | undefined,
+  actual: string,
+): boolean {
+  return !preferred || preferred === actual;
+}
+
+function matchesPaperLearningPreferenceBuckets(
+  candidateBuckets: PaperLearningCandidateBuckets,
+  preference: ScanLearningPreference,
+): boolean {
+  return (
+    preference.direction === candidateBuckets.direction
+    && preference.setupType === candidateBuckets.setupType
+    && preference.dteBucket === candidateBuckets.dteBucket
+    && preference.rewardRiskBucket === candidateBuckets.rewardRiskBucket
+    && preference.chartScoreBucket === candidateBuckets.chartScoreBucket
+    && matchesOptionalLearningBucket(preference.volumeBucket, candidateBuckets.volumeBucket)
+    && matchesOptionalLearningBucket(preference.expansionBucket, candidateBuckets.expansionBucket)
+    && matchesOptionalLearningBucket(preference.bodyWickBucket, candidateBuckets.bodyWickBucket)
+    && matchesOptionalLearningBucket(preference.chopBucket, candidateBuckets.chopBucket)
+    && matchesOptionalLearningBucket(preference.continuationBucket, candidateBuckets.continuationBucket)
+    && matchesOptionalLearningBucket(preference.pullbackBodyBucket, candidateBuckets.pullbackBodyBucket)
+    && matchesOptionalLearningBucket(preference.pullbackVolumeBucket, candidateBuckets.pullbackVolumeBucket)
+    && matchesOptionalLearningBucket(preference.triggerZoneBucket, candidateBuckets.triggerZoneBucket)
+    && matchesOptionalLearningBucket(preference.failedCheckBucket, candidateBuckets.failedCheckBucket)
+    && matchesOptionalLearningBucket(preference.optionSpreadBucket, candidateBuckets.optionSpreadBucket)
+    && matchesOptionalLearningBucket(preference.scanTierBucket, candidateBuckets.scanTierBucket)
+    && matchesOptionalLearningBucket(preference.marketRegimeBucket, candidateBuckets.marketRegimeBucket)
+  );
+}
+
+function formatPaperLearningPreferenceContext(
+  preference: ScanLearningPreference,
+): string {
+  const parts = [
+    preference.volumeBucket ? `volume=${preference.volumeBucket}` : null,
+    preference.bodyWickBucket ? `body_wick=${preference.bodyWickBucket}` : null,
+    preference.continuationBucket ? `continuation=${preference.continuationBucket}` : null,
+    preference.pullbackVolumeBucket ? `pullback_volume=${preference.pullbackVolumeBucket}` : null,
+  ].filter((part): part is string => part !== null);
+
+  return parts.length > 0 ? `; ${parts.join(", ")}` : "";
+}
+
 function derivePaperLearningMarketRegime(
   candidates: (ChartCandidate & { score: number })[],
 ): string {
@@ -1527,29 +1661,14 @@ function matchPaperLearningPreference(
     return null;
   }
 
-  const stage2Candidate = stage2BySymbol.get(candidate.symbol);
-  const dteBucket = bucketLearningDte(
-    stage2Candidate?.targetDte ?? candidate.targetDte,
+  const candidateBuckets = buildPaperLearningCandidateBuckets(
+    candidate,
+    stage2BySymbol,
+    scanTierBucket,
+    marketRegimeBucket,
   );
-  const rewardRiskBucket = bucketLearningRewardRisk(
-    candidate.chartDiagnostics.chartAnchoredAsymmetry.actualRewardRiskRatio,
-  );
-  const chartScoreBucket = bucketLearningChartScore(candidate.chartReviewScore);
-  const volumeBucket = bucketLearningVolume(candidate.volumeRatio);
-  const optionSpreadBucket = bucketLearningOptionSpread(
-    stage2Candidate?.optionSpread ?? candidate.optionSpread,
-  );
-  const setupType = getPaperLearningSetupType(candidate);
   const matches = preferences.filter((preference) =>
-    preference.direction === candidate.chartDirection
-    && preference.setupType === setupType
-    && preference.dteBucket === dteBucket
-    && preference.rewardRiskBucket === rewardRiskBucket
-    && preference.chartScoreBucket === chartScoreBucket
-    && (!preference.volumeBucket || preference.volumeBucket === volumeBucket)
-    && (!preference.optionSpreadBucket || preference.optionSpreadBucket === optionSpreadBucket)
-    && (!preference.scanTierBucket || preference.scanTierBucket === scanTierBucket)
-    && (!preference.marketRegimeBucket || preference.marketRegimeBucket === marketRegimeBucket)
+    matchesPaperLearningPreferenceBuckets(candidateBuckets, preference)
   );
   const avoided = matches
     .filter((preference) => preference.decision === "avoid")
@@ -1567,6 +1686,19 @@ function matchPaperLearningPreference(
       const rewardDelta = right.averageRewardR - left.averageRewardR;
       return rewardDelta !== 0 ? rewardDelta : right.sampleSize - left.sampleSize;
     })[0] ?? null;
+}
+
+export function buildPaperLearningChartStructureBucketsForTest(
+  checks: Stage3CheckDiagnostic[],
+): PaperLearningChartStructureBuckets {
+  return buildPaperLearningChartStructureBuckets(checks);
+}
+
+export function matchesPaperLearningPreferenceForTest(
+  candidateBuckets: PaperLearningCandidateBuckets,
+  preference: ScanLearningPreference,
+): boolean {
+  return matchesPaperLearningPreferenceBuckets(candidateBuckets, preference);
 }
 
 function applyPaperLearningSelection(params: {
@@ -1599,22 +1731,13 @@ function applyPaperLearningSelection(params: {
       preferences,
     ),
   }));
-  const hardBlocked = decorated.filter(
-    (item) => item.preference?.decision === "avoid" && item.preference.effect === "hard_block",
-  );
   const penalized = decorated.filter(
-    (item) => item.preference?.decision === "avoid" && item.preference.effect !== "hard_block",
+    (item) => item.preference?.decision === "avoid",
   );
   const preferred = decorated.filter(
     (item) => item.preference?.decision === "prefer",
   );
-  const blockableSymbols = new Set(
-    hardBlocked.length < decorated.length
-      ? hardBlocked.map((item) => item.candidate.symbol)
-      : [],
-  );
   const kept = decorated
-    .filter((item) => !blockableSymbols.has(item.candidate.symbol))
     .sort((left, right) => {
       const leftAdjustedScore = left.candidate.score + (left.preference?.scoreAdjustment ?? 0);
       const rightAdjustedScore = right.candidate.score + (right.preference?.scoreAdjustment ?? 0);
@@ -1634,7 +1757,7 @@ function applyPaperLearningSelection(params: {
     warnings.push(
       `Paper learning promoted ${preferred
         .slice(0, 5)
-        .map((item) => `${item.candidate.symbol} (${item.preference?.averageRewardR.toFixed(2)}R)`)
+        .map((item) => `${item.candidate.symbol} (${item.preference?.averageRewardR.toFixed(2)}R${item.preference ? formatPaperLearningPreferenceContext(item.preference) : ""})`)
         .join(", ")} from rewarded setup history.`,
     );
   }
@@ -1642,22 +1765,8 @@ function applyPaperLearningSelection(params: {
     warnings.push(
       `Paper learning penalized ${penalized
         .slice(0, 5)
-        .map((item) => `${item.candidate.symbol} (${item.preference?.averageRewardR.toFixed(2)}R)`)
+        .map((item) => `${item.candidate.symbol} (${item.preference?.averageRewardR.toFixed(2)}R${item.preference ? formatPaperLearningPreferenceContext(item.preference) : ""})`)
         .join(", ")} from weak setup history without vetoing the setup.`,
-    );
-  }
-  if (blockableSymbols.size > 0) {
-    warnings.push(
-      `Paper learning hard-blocked ${hardBlocked
-        .filter((item) => blockableSymbols.has(item.candidate.symbol))
-        .slice(0, 5)
-        .map((item) => `${item.candidate.symbol} (${item.preference?.averageRewardR.toFixed(2)}R, n=${item.preference?.sampleSize})`)
-        .join(", ")} from high-confidence weak setup history.`,
-    );
-  }
-  if (hardBlocked.length === decorated.length && hardBlocked.length > 0) {
-    warnings.push(
-      "Paper learning found weak history on every confirmation-eligible finalist, but kept the candidates alive because ML may not erase the full board.",
     );
   }
 

@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import type { ScanResult } from "../app/runScan.js";
+import {
+  buildPaperLearningChartStructureBucketsForTest,
+  matchesPaperLearningPreferenceForTest,
+  type PaperLearningCandidateBuckets,
+  type ScanLearningPreference,
+  type ScanResult,
+  type Stage3CheckDiagnostic,
+} from "../app/runScan.js";
 import type { JournalTradeDetail } from "../journal/types.js";
 import {
   calculateAggregateCloseReviewValues,
@@ -276,12 +283,16 @@ function buildLearningTrade(params: {
   createdAt: string;
   realizedR: number;
   symbol?: string;
+  managementOptionReturnPct?: number | null;
 }): JournalTradeDetail {
   const features = buildEntryRewardFeatureInputFromScan({
     scan: buildScan(),
     entryTimestamp: new Date("2026-05-20T15:00:00.000Z"),
   });
   assert.ok(features);
+  const managementOptionReturnPct = params.managementOptionReturnPct === undefined
+    ? 5
+    : params.managementOptionReturnPct;
 
   return {
     id: params.id,
@@ -313,7 +324,7 @@ function buildLearningTrade(params: {
               timestamp: params.createdAt,
               action: "hold",
               progressToTargetPct: 35,
-              optionReturnPct: 5,
+              optionReturnPct: managementOptionReturnPct,
               stopUnderlying: 95,
               currentUnderlyingPrice: 101,
               currentOptionMid: 5.25,
@@ -323,6 +334,44 @@ function buildLearningTrade(params: {
       },
     },
   } as unknown as JournalTradeDetail;
+}
+
+function buildStage3ChecksForLearningTest(
+  overrides: Partial<Record<string, Partial<Stage3CheckDiagnostic>>> = {},
+): Stage3CheckDiagnostic[] {
+  const baseChecks: Stage3CheckDiagnostic[] = [
+    { check: "expansion", pass: true, reason: "ok", impact: "downgrader" },
+    { check: "body-wick", pass: true, reason: "ok", impact: "downgrader" },
+    { check: "choppy", pass: false, reason: "flipCount=4", impact: "mild_caution" },
+    { check: "continuation", pass: false, reason: "rejection risk", impact: "downgrader" },
+    { check: "pullback-body-control", pass: true, reason: "ok", impact: "downgrader" },
+    { check: "pullback-volume-control", pass: false, reason: "expanding", impact: "blocker" },
+    { check: "trigger-zone-flips", pass: true, reason: "contained", impact: "downgrader" },
+    { check: "higher-timeframe-2r-viability", pass: false, reason: "tight", impact: "blocker" },
+  ];
+
+  return baseChecks.map((check) => ({
+    ...check,
+    ...(overrides[check.check] ?? {}),
+  }));
+}
+
+function buildPreferenceMatchBuckets(
+  overrides: Partial<PaperLearningCandidateBuckets> = {},
+): PaperLearningCandidateBuckets {
+  return {
+    direction: "bullish",
+    setupType: "bullish_continuation",
+    dteBucket: "8_21",
+    rewardRiskBucket: "1_1_5r",
+    chartScoreBucket: "strong",
+    volumeBucket: "expanded",
+    optionSpreadBucket: "normal",
+    scanTierBucket: "tier1",
+    marketRegimeBucket: "scanner_risk_on",
+    ...buildPaperLearningChartStructureBucketsForTest(buildStage3ChecksForLearningTest()),
+    ...overrides,
+  };
 }
 
 test("paper learning cutoff excludes the first 14 days from entry and management training", () => {
@@ -375,6 +424,102 @@ test("any positive R counts as a win without creating a strong scanner boost", (
   assert.equal(recommendation.winRate, 1);
   assert.equal(recommendation.decision, "allow");
   assert.deepEqual(preferences, []);
+});
+
+test("paper learning preferences include candle and volume setup buckets", () => {
+  const trades = Array.from({ length: 8 }, (_, index) =>
+    buildLearningTrade({
+      id: `strong-candle-volume-${index}`,
+      createdAt: `2026-05-${20 + index}T15:00:00.000Z`,
+      realizedR: 1.25,
+      symbol: `CV${index}`,
+    })
+  );
+
+  const model = trainEntryRewardModel(trades);
+  const preferences = buildPaperLearningPreferences(model);
+  const detailedPreference = preferences.find((preference) =>
+    preference.volumeBucket === "expanded"
+    && preference.bodyWickBucket === "pass"
+    && preference.continuationBucket === "fail_downgrader"
+    && preference.pullbackVolumeBucket === "fail_blocker"
+    && preference.failedCheckBucket === "multi"
+  );
+
+  assert.ok(detailedPreference);
+  assert.equal(detailedPreference.effect, "boost");
+  assert.equal(detailedPreference.decision, "prefer");
+  assert.equal(detailedPreference.sampleSize, 8);
+});
+
+test("scanner learning preference matching requires detailed candle and volume buckets", () => {
+  const preference: ScanLearningPreference = {
+    direction: "bullish",
+    setupType: "bullish_continuation",
+    dteBucket: "8_21",
+    rewardRiskBucket: "1_1_5r",
+    chartScoreBucket: "strong",
+    volumeBucket: "expanded",
+    bodyWickBucket: "pass",
+    continuationBucket: "fail_downgrader",
+    pullbackVolumeBucket: "fail_blocker",
+    failedCheckBucket: "multi",
+    decision: "prefer",
+    effect: "boost",
+    scoreAdjustment: 1.25,
+    reason: "test preference",
+    sampleSize: 8,
+    averageRewardR: 1.25,
+    winRate: 1,
+  };
+
+  assert.equal(
+    matchesPaperLearningPreferenceForTest(
+      buildPreferenceMatchBuckets(),
+      preference,
+    ),
+    true,
+  );
+  assert.equal(
+    matchesPaperLearningPreferenceForTest(
+      buildPreferenceMatchBuckets({ pullbackVolumeBucket: "pass" }),
+      preference,
+    ),
+    false,
+  );
+  assert.equal(
+    matchesPaperLearningPreferenceForTest(
+      buildPreferenceMatchBuckets({ volumeBucket: "normal" }),
+      preference,
+    ),
+    false,
+  );
+});
+
+test("weak candle and volume history creates penalties but not hard blocks", () => {
+  const trades = Array.from({ length: 15 }, (_, index) =>
+    buildLearningTrade({
+      id: `weak-candle-volume-${index}`,
+      createdAt: `2026-05-${10 + index}T15:00:00.000Z`,
+      realizedR: -2,
+      symbol: `WV${index}`,
+      managementOptionReturnPct: null,
+    })
+  );
+
+  const model = trainEntryRewardModel(trades);
+  const preferences = buildPaperLearningPreferences(model);
+  const detailedPenalty = preferences.find((preference) =>
+    preference.decision === "avoid"
+    && preference.volumeBucket === "expanded"
+    && preference.continuationBucket === "fail_downgrader"
+    && preference.pullbackVolumeBucket === "fail_blocker"
+  );
+
+  assert.ok(detailedPenalty);
+  assert.equal(detailedPenalty.effect, "penalty");
+  assert.equal(detailedPenalty.scoreAdjustment, -2);
+  assert.equal(preferences.some((preference) => preference.effect === "hard_block"), false);
 });
 
 function buildBkrGivebackTrade(): JournalTradeDetail {
