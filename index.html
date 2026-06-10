@@ -393,6 +393,23 @@
         padding: 14px;
         background: linear-gradient(180deg, #ffffff 0%, var(--neutral-soft) 100%);
       }
+      .stat-card-button {
+        display: block;
+        width: 100%;
+        color: var(--text);
+        text-align: left;
+        box-shadow: none;
+      }
+      .stat-card-button:hover:not(:disabled) {
+        border-color: var(--accent-border);
+        box-shadow: 0 10px 24px rgba(14, 36, 27, 0.1);
+      }
+      .stat-action-note {
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+        margin-top: 8px;
+      }
       .stat-card.tone-positive {
         background: linear-gradient(180deg, #ffffff 0%, var(--accent-soft) 100%);
         border-color: var(--accent-border);
@@ -437,6 +454,49 @@
       }
       .comparison-card {
         margin-top: 0;
+      }
+      .outcome-detail-panel {
+        border-top: 1px solid var(--border);
+        margin-top: 16px;
+        padding-top: 16px;
+      }
+      .outcome-detail-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 14px;
+      }
+      .outcome-list {
+        display: grid;
+        gap: 10px;
+      }
+      .outcome-list h3 {
+        margin-bottom: 0;
+      }
+      .outcome-row {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: #fff;
+        padding: 11px 12px;
+      }
+      .outcome-row-header,
+      .outcome-row-metrics {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .outcome-row-meta {
+        color: var(--muted-text);
+        font-size: 13px;
+        line-height: 1.45;
+        margin-top: 6px;
+      }
+      .outcome-row-metrics {
+        justify-content: flex-start;
+        margin-top: 8px;
+        font-size: 13px;
+        font-weight: 700;
       }
       .decision-module .journal-trade {
         background: #fff;
@@ -1084,6 +1144,7 @@
       let selectedRecommendationForJournal = null;
       let paperDashboardHasLoaded = false;
       let paperAutomationActivityHasLoaded = false;
+      let paperDashboardOutcomeDetailsExpanded = false;
 
       const menuToggle = document.getElementById("menuToggle");
       const menuClose = document.getElementById("menuClose");
@@ -1988,6 +2049,87 @@
         `;
       }
 
+      function formatOutcomeEntryLabel(trade) {
+        const entryTime = typeof trade.entry_time === "string" && trade.entry_time
+          ? trade.entry_time.slice(0, 5)
+          : "";
+        return [
+          `Entry ${renderMaybe(trade.entry_date)}`,
+          entryTime,
+          trade.entry_day ? `(${trade.entry_day})` : null,
+        ].filter(Boolean).join(" ");
+      }
+
+      function renderPaperOutcomeRows(title, trades, totalCount, outcomeLabel, chipClass) {
+        const rows = Array.isArray(trades) ? trades : [];
+        const total = asNumber(totalCount) ?? rows.length;
+        const truncatedCount = Math.max(0, total - rows.length);
+        return `
+          <div class="outcome-list">
+            <div class="outcome-row-header">
+              <h3>${escapeHtml(title)}</h3>
+              <span class="winner-chip ${escapeHtml(chipClass)}">${escapeHtml(renderMaybe(total, "0"))}</span>
+            </div>
+            ${truncatedCount > 0
+              ? `<div class="field-note">Showing latest ${escapeHtml(rows.length)} of ${escapeHtml(total)}.</div>`
+              : ""}
+            ${rows.length === 0
+              ? `<div class="empty-state">No ${escapeHtml(title.toLowerCase())} in the current learning epoch.</div>`
+              : rows.map((trade) => {
+                  const plTone = numberToneClass(trade.realized_pl_usd);
+                  return `
+                    <div class="outcome-row">
+                      <div class="outcome-row-header">
+                        <strong>${escapeHtml(renderMaybe(trade.symbol))}</strong>
+                        <span class="winner-chip ${escapeHtml(chipClass)}">${escapeHtml(outcomeLabel)}</span>
+                      </div>
+                      <div class="outcome-row-meta">
+                        ${escapeHtml(formatOutcomeEntryLabel(trade))} | ${escapeHtml(renderMaybe(trade.direction))} | ${escapeHtml(renderMaybe(trade.setup_type))}
+                      </div>
+                      <div class="outcome-row-meta">
+                        Exit ${escapeHtml(formatCentralTimestamp(trade.exit_time))} | ${escapeHtml(renderMaybe(trade.exit_reason))}
+                      </div>
+                      <div class="outcome-row-metrics">
+                        <span class="${escapeHtml(plTone)}">P/L ${escapeHtml(formatMoney(trade.realized_pl_usd))}</span>
+                        <span>R ${escapeHtml(formatRatio(trade.realized_r_multiple))}</span>
+                        <span>Return ${escapeHtml(formatPercent(trade.realized_return_pct, 1))}</span>
+                        <span>Cost ${escapeHtml(formatMoney(trade.position_cost_usd))}</span>
+                      </div>
+                    </div>
+                  `;
+                }).join("")}
+          </div>
+        `;
+      }
+
+      function renderPaperOutcomeDetails(insights, historyUnavailable) {
+        if (historyUnavailable) {
+          return "";
+        }
+        const details = insights?.outcome_details || {};
+        const winners = Array.isArray(details.winners) ? details.winners : [];
+        const losers = Array.isArray(details.losers) ? details.losers : [];
+        const totals = insights?.totals || {};
+        return `
+          <div
+            id="paperOutcomeDetails"
+            class="outcome-detail-panel"
+            ${paperDashboardOutcomeDetailsExpanded ? "" : "hidden"}
+          >
+            <div class="panel-header">
+              <div>
+                <h3>Winner / Loser Trades</h3>
+                <p class="section-description">Current-epoch closed paper trades, sorted by latest exit.</p>
+              </div>
+            </div>
+            <div class="outcome-detail-grid">
+              ${renderPaperOutcomeRows("Winners", winners, totals.winners, "Win", "chip-positive")}
+              ${renderPaperOutcomeRows("Losers", losers, totals.losers, "Loss", "chip-negative")}
+            </div>
+          </div>
+        `;
+      }
+
       function renderPaperDashboard(insights) {
         if (!paperDashboardArea) {
           return;
@@ -2108,10 +2250,18 @@
               <div class="stat-label">Epoch Open Journal Trades</div>
               <div class="stat-value">${escapeHtml(journalDataUnavailable && openJournalTrades === 0 ? "unavailable" : renderMaybe(openJournalTrades, "0"))}</div>
             </div>
-            <div class="stat-card">
+            <button
+              class="stat-card stat-card-button"
+              type="button"
+              data-paper-outcome-toggle="true"
+              aria-controls="paperOutcomeDetails"
+              aria-expanded="${paperDashboardOutcomeDetailsExpanded ? "true" : "false"}"
+              ${journalDataUnavailable ? "disabled" : ""}
+            >
               <div class="stat-label">Winners / Losers</div>
               <div class="stat-value">${escapeHtml(journalDataUnavailable ? "unavailable" : `${renderMaybe(totals.winners, "0")} / ${renderMaybe(totals.losers, "0")}`)}</div>
-            </div>
+              <div class="stat-action-note">${escapeHtml(journalDataUnavailable ? "Details unavailable" : paperDashboardOutcomeDetailsExpanded ? "Hide trade details" : "View trade details")}</div>
+            </button>
             <div class="stat-card">
               <div class="stat-label">Best Day</div>
               <div class="stat-value">${escapeHtml(renderMaybe(bestDay?.label))}</div>
@@ -2129,6 +2279,8 @@
               <div class="stat-value">${escapeHtml(learningState)}</div>
             </div>
           </div>
+
+          ${renderPaperOutcomeDetails(insights, journalDataUnavailable)}
 
           <div class="empty-state" style="margin-top: 16px;">
             <strong>${escapeHtml(scopeLabel)}:</strong> since ${escapeHtml(learningStartLabel)}. ${escapeHtml(renderMaybe(includedTradeCount, "0"))} current-epoch paper trade(s); ${escapeHtml(renderMaybe(excludedTradeCount, "0"))} archived paper trade(s) kept in journal/history and excluded from current dashboard learning metrics.
@@ -2148,6 +2300,20 @@
             ${renderPaperDashboardBucket("Exit Outcomes", insights.by_exit_reason, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`, 6, journalDataUnavailable)}
           </div>
         `;
+
+        const outcomeToggle = paperDashboardArea.querySelector("[data-paper-outcome-toggle]");
+        const outcomeDetails = paperDashboardArea.querySelector("#paperOutcomeDetails");
+        const outcomeNote = outcomeToggle?.querySelector(".stat-action-note");
+        outcomeToggle?.addEventListener("click", () => {
+          paperDashboardOutcomeDetailsExpanded = !paperDashboardOutcomeDetailsExpanded;
+          if (outcomeDetails) {
+            outcomeDetails.hidden = !paperDashboardOutcomeDetailsExpanded;
+          }
+          outcomeToggle.setAttribute("aria-expanded", paperDashboardOutcomeDetailsExpanded ? "true" : "false");
+          if (outcomeNote) {
+            outcomeNote.textContent = paperDashboardOutcomeDetailsExpanded ? "Hide trade details" : "View trade details";
+          }
+        });
       }
 
       async function readJsonResponse(response, fallbackMessage) {

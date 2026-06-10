@@ -4,6 +4,7 @@ import { supabaseCount, supabaseSelect } from "../supabase/serverClient.js";
 const WEEKDAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const CURRENT_EPOCH_SCOPE_LABEL = "Current learning epoch" as const;
 const PAPER_DASHBOARD_METRIC_LIMIT = 5000;
+const PAPER_DASHBOARD_OUTCOME_DETAIL_LIMIT = 50;
 
 type NumericValue = number | string | null;
 
@@ -48,6 +49,22 @@ export type PaperDashboardBucket = {
   average_return_pct: number | null;
 };
 
+export type PaperDashboardOutcomeTrade = {
+  id: string;
+  symbol: string;
+  direction: "CALL" | "PUT";
+  setup_type: string;
+  entry_date: string;
+  entry_time: string | null;
+  entry_day: string;
+  exit_time: string | null;
+  exit_reason: string | null;
+  position_cost_usd: number | null;
+  realized_pl_usd: number | null;
+  realized_r_multiple: number | null;
+  realized_return_pct: number | null;
+};
+
 export type PaperDashboard = {
   dataWarnings: string[];
   learningStartAt: string;
@@ -75,6 +92,11 @@ export type PaperDashboard = {
   by_setup_type: PaperDashboardBucket[];
   by_symbol: PaperDashboardBucket[];
   by_exit_reason: PaperDashboardBucket[];
+  outcome_details: {
+    winners: PaperDashboardOutcomeTrade[];
+    losers: PaperDashboardOutcomeTrade[];
+    limit: number;
+  };
 };
 
 type PaperDashboardTrade = PaperDashboardTradeRow & {
@@ -187,6 +209,30 @@ function bestBucketLabel(buckets: PaperDashboardBucket[]): string | null {
     .sort((left, right) => right.realized_pl_usd - left.realized_pl_usd)[0]?.label ?? null;
 }
 
+function sortByLatestOutcomeDesc(left: PaperDashboardTrade, right: PaperDashboardTrade): number {
+  const leftTime = left.latest_exit?.exit_time ?? left.created_at;
+  const rightTime = right.latest_exit?.exit_time ?? right.created_at;
+  return rightTime.localeCompare(leftTime);
+}
+
+function buildOutcomeTrade(trade: PaperDashboardTrade): PaperDashboardOutcomeTrade {
+  return {
+    id: trade.id,
+    symbol: trade.symbol,
+    direction: trade.direction,
+    setup_type: trade.setup_type,
+    entry_date: trade.entry_date,
+    entry_time: trade.entry_time,
+    entry_day: trade.entry_day,
+    exit_time: trade.latest_exit?.exit_time ?? null,
+    exit_reason: trade.latest_exit?.exit_reason ?? null,
+    position_cost_usd: asNumber(trade.position_cost_usd),
+    realized_pl_usd: asNumber(trade.review?.realized_pl_usd),
+    realized_r_multiple: asNumber(trade.review?.realized_r_multiple),
+    realized_return_pct: asNumber(trade.review?.realized_return_pct),
+  };
+}
+
 function buildEpochFilter(learningStartAt: string): string {
   return `created_at=gte.${learningStartAt}`;
 }
@@ -283,6 +329,11 @@ export function buildEmptyPaperDashboard(dataWarnings: string[] = []): PaperDash
     by_setup_type: [],
     by_symbol: [],
     by_exit_reason: [],
+    outcome_details: {
+      winners: [],
+      losers: [],
+      limit: PAPER_DASHBOARD_OUTCOME_DETAIL_LIMIT,
+    },
   };
 }
 
@@ -366,5 +417,16 @@ export async function getPaperDashboard(limit = 300): Promise<PaperDashboard> {
     by_setup_type: bySetup,
     by_symbol: bySymbol,
     by_exit_reason: byExitReason,
+    outcome_details: {
+      winners: winners
+        .sort(sortByLatestOutcomeDesc)
+        .slice(0, PAPER_DASHBOARD_OUTCOME_DETAIL_LIMIT)
+        .map(buildOutcomeTrade),
+      losers: losers
+        .sort(sortByLatestOutcomeDesc)
+        .slice(0, PAPER_DASHBOARD_OUTCOME_DETAIL_LIMIT)
+        .map(buildOutcomeTrade),
+      limit: PAPER_DASHBOARD_OUTCOME_DETAIL_LIMIT,
+    },
   };
 }
