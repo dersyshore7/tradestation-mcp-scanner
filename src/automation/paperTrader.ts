@@ -89,8 +89,6 @@ import {
 } from "./entryOrderManager.js";
 
 const MAX_TRADESTATION_CONTRACTS_PER_ORDER = 2000;
-const TRADESTATION_PDT_OPENING_EQUITY_MIN_USD = 25_000.01;
-const NON_PDT_DAILY_OPENING_TRANSACTION_LIMIT = 3;
 // Paper entries are daily/weekly continuation trades, not penny-distance scalps.
 const MIN_AUTOMATED_ENTRY_TARGET_ROOM_PCT = 0.0075;
 const MIN_AUTOMATED_ENTRY_RISK_ROOM_PCT = 0.0025;
@@ -1443,30 +1441,6 @@ function readStringFromRecord(record: Record<string, unknown> | null, keys: stri
   return null;
 }
 
-function readBooleanFromRecord(record: Record<string, unknown> | null, keys: string[]): boolean | null {
-  if (!record) {
-    return null;
-  }
-
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "boolean") {
-      return value;
-    }
-    if (typeof value === "string") {
-      const normalized = value.trim().toLowerCase();
-      if (normalized === "true") {
-        return true;
-      }
-      if (normalized === "false") {
-        return false;
-      }
-    }
-  }
-
-  return null;
-}
-
 function objectArrayFromPayload(payload: unknown, keys: string[]): Record<string, unknown>[] {
   if (Array.isArray(payload)) {
     return payload
@@ -1615,100 +1589,8 @@ function formatUsdForReason(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
-function buildDayTradeOpeningBlockReason(params: {
-  accountValueUsd: number;
-  cashBalanceUsd: number | null;
-  optionsBuyingPowerUsd: number | null;
-  accountLabel: string;
-}): string | null {
-  if (params.accountValueUsd < TRADESTATION_PDT_OPENING_EQUITY_MIN_USD) {
-    return `TradeStation balance check skipped the entry because ${params.accountLabel} value is ${formatUsdForReason(params.accountValueUsd)}, below the ${formatUsdForReason(TRADESTATION_PDT_OPENING_EQUITY_MIN_USD)} PDT opening threshold.`;
-  }
-
-  const openingBuyingPowerUsd = params.optionsBuyingPowerUsd ?? params.cashBalanceUsd;
-  const openingBuyingPowerLabel = params.optionsBuyingPowerUsd !== null
-    ? "option buying power"
-    : "cash balance";
-  if (
-    openingBuyingPowerUsd !== null
-    && openingBuyingPowerUsd < TRADESTATION_PDT_OPENING_EQUITY_MIN_USD
-  ) {
-    return `TradeStation balance check skipped the entry because ${openingBuyingPowerLabel} is ${formatUsdForReason(openingBuyingPowerUsd)}, below the ${formatUsdForReason(TRADESTATION_PDT_OPENING_EQUITY_MIN_USD)} PDT opening threshold even though ${params.accountLabel} net worth is ${formatUsdForReason(params.accountValueUsd)}.`;
-  }
-
-  return null;
-}
-
-function extractAccountDayTradeFlags(payload: unknown, accountId: string): {
-  patternDayTrader: boolean | null;
-  dayTradingQualified: boolean | null;
-} {
-  const account = objectArrayFromPayload(payload, ["Accounts"])
-    .find((item) => readStringFromRecord(item, ["AccountID", "AccountId", "accountId"]) === accountId);
-  const detail = asRecord(account?.AccountDetail);
-
-  return {
-    patternDayTrader: readBooleanFromRecord(detail, ["PatternDayTrader"]),
-    dayTradingQualified: readBooleanFromRecord(detail, ["DayTradingQualified"]),
-  };
-}
-
-function extractBeginningDayTrades(payload: unknown, accountId: string): number | null {
-  const balance = objectArrayFromPayload(payload, ["BODBalances", "Balances"])
-    .find((item) => readStringFromRecord(item, ["AccountID", "AccountId", "accountId"]) === accountId);
-  const detail = asRecord(balance?.BalanceDetail);
-
-  return readNumber(detail?.DayTrades as string | number | null | undefined);
-}
-
 function readOrdersNextToken(payload: unknown): string | null {
   return readStringFromRecord(asRecord(payload), ["NextToken", "nextToken"]);
-}
-
-async function countFilledOpeningOrdersTodayFromTradeStation(params: {
-  client: AutomationTradeStationClient;
-  accountId: string;
-  todayChicagoDate: string;
-}): Promise<number> {
-  const orderIds = new Set<string>();
-  let nextToken: string | null = null;
-
-  for (let page = 0; page < 6; page += 1) {
-    const ordersPayload = await params.client.getOrders(
-      params.accountId,
-      nextToken ?? undefined,
-    );
-    const orders = objectArrayFromPayload(ordersPayload, ["Orders"]);
-    for (const order of orders) {
-      const openedAt = readStringFromRecord(order, ["OpenedDateTime", "OpenedAt", "CreatedAt"]);
-      if (!openedAt || toChicagoDateString(openedAt) !== params.todayChicagoDate) {
-        continue;
-      }
-
-      const status = `${readStringFromRecord(order, ["Status"]) ?? ""} ${readStringFromRecord(order, ["StatusDescription"]) ?? ""}`.toLowerCase();
-      if (!(status.includes("fll") || status.includes("filled"))) {
-        continue;
-      }
-
-      const legs = objectArrayFromPayload(order.Legs, ["Legs"]);
-      const isOpeningOrder = legs.some((leg) =>
-        (readStringFromRecord(leg, ["OpenOrClose"]) ?? "").toLowerCase() === "open"
-      );
-      if (!isOpeningOrder) {
-        continue;
-      }
-
-      const orderId = readStringFromRecord(order, ["OrderID", "OrderId", "orderId"]) ?? openedAt;
-      orderIds.add(orderId);
-    }
-
-    nextToken = readOrdersNextToken(ordersPayload);
-    if (!nextToken) {
-      break;
-    }
-  }
-
-  return orderIds.size;
 }
 
 function normalizeOrderSymbolForMatch(value: string): string {
@@ -1946,43 +1828,6 @@ async function buildDuplicateLiveOpeningOrderBlockReason(params: {
   }
 
   return null;
-}
-
-async function buildNonPatternDayTraderOpeningLimitBlockReason(params: {
-  client: AutomationTradeStationClient;
-  accountId: string;
-  now?: Date;
-}): Promise<string | null> {
-  const accountsPayload = await params.client.getAccounts();
-  const flags = extractAccountDayTradeFlags(accountsPayload, params.accountId);
-  if (flags.patternDayTrader !== false) {
-    return null;
-  }
-
-  const bodPayload = await params.client.getBeginningOfDayBalances(params.accountId);
-  const beginningDayTrades = extractBeginningDayTrades(bodPayload, params.accountId);
-  if (beginningDayTrades === null) {
-    return null;
-  }
-
-  const allowedOpenings = Math.max(
-    0,
-    NON_PDT_DAILY_OPENING_TRANSACTION_LIMIT - beginningDayTrades,
-  );
-  const usedOpeningsToday = await countFilledOpeningOrdersTodayFromTradeStation({
-    client: params.client,
-    accountId: params.accountId,
-    todayChicagoDate: formatChicagoParts(params.now ?? new Date()).date,
-  });
-
-  if (usedOpeningsToday < allowedOpenings) {
-    return null;
-  }
-
-  const qualifiedNote = flags.dayTradingQualified === true
-    ? " The account is day-trade qualified, but TradeStation still reports it as Non-PDT."
-    : "";
-  return `TradeStation non-PDT opening limit is exhausted: beginning-of-day DayTrades=${beginningDayTrades}, allowed openings today=${allowedOpenings}, filled openings today=${usedOpeningsToday}.${qualifiedNote} Skipped the new entry before sending another order.`;
 }
 
 function computePositionCap(params: {
@@ -4882,14 +4727,10 @@ async function maybeEnterNewPaperTrade(params: {
     }
 
     let accountValueUsd: number | null = null;
-    let cashBalanceUsd: number | null = null;
-    let optionsBuyingPowerUsd: number | null = null;
     let entryBuyingPowerUsd: number | null = null;
     try {
       const balancesPayload = await client.getBalances(config.accountId as string);
       accountValueUsd = extractAccountValue(balancesPayload);
-      cashBalanceUsd = extractCashBalance(balancesPayload);
-      optionsBuyingPowerUsd = extractOptionsBuyingPower(balancesPayload);
       entryBuyingPowerUsd = extractEntryBuyingPower(balancesPayload);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -4936,74 +4777,6 @@ async function maybeEnterNewPaperTrade(params: {
         outcome: "trade_card_blocked",
         symbol: scan.ticker,
         reason,
-        tradeCard,
-        reasoning: entryReasoning,
-        evaluatedCandidates,
-        scanSummary: entryScanSummary,
-      };
-    }
-
-    const dayTradeOpeningBlockReason = buildDayTradeOpeningBlockReason({
-      accountValueUsd,
-      cashBalanceUsd,
-      optionsBuyingPowerUsd,
-      accountLabel,
-    });
-    if (dayTradeOpeningBlockReason) {
-      await recordEntryCandidateAudit({
-        scanRunId,
-        dryRun,
-        symbol: scan.ticker,
-        decision: "day_trade_opening_blocked",
-        decisionReason: dayTradeOpeningBlockReason,
-        features: entryFeatures,
-        entryPolicy: entryPolicyRecommendation,
-        selected: true,
-        scan,
-        tradeCard,
-      });
-      return {
-        attempted: true,
-        outcome: "trade_card_blocked",
-        symbol: scan.ticker,
-        reason: dayTradeOpeningBlockReason,
-        tradeCard,
-        reasoning: entryReasoning,
-        evaluatedCandidates,
-        scanSummary: entryScanSummary,
-      };
-    }
-
-    let nonPdtOpeningLimitBlockReason: string | null = null;
-    try {
-      nonPdtOpeningLimitBlockReason = await buildNonPatternDayTraderOpeningLimitBlockReason({
-        client,
-        accountId: config.accountId as string,
-      });
-    } catch (error) {
-      console.warn(
-        "non-PDT opening limit check failed",
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-    if (nonPdtOpeningLimitBlockReason) {
-      await recordEntryCandidateAudit({
-        scanRunId,
-        dryRun,
-        symbol: scan.ticker,
-        decision: "non_pdt_opening_limit_blocked",
-        decisionReason: nonPdtOpeningLimitBlockReason,
-        features: entryFeatures,
-        entryPolicy: entryPolicyRecommendation,
-        selected: true,
-        scan,
-        tradeCard,
-      });
-      return {
-        attempted: true,
-        outcome: "trade_card_blocked",
-        symbol: scan.ticker,
-        reason: nonPdtOpeningLimitBlockReason,
         tradeCard,
         reasoning: entryReasoning,
         evaluatedCandidates,
