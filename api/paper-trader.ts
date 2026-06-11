@@ -1,8 +1,9 @@
 import { getPaperTraderStatus, runPaperTraderCycle } from "../src/automation/paperTrader.js";
-import { readPaperTraderApiSecrets } from "../src/automation/config.js";
+import { readAutomationLane, readPaperTraderApiSecrets, type AutomationLane } from "../src/automation/config.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 type PaperTraderRequestBody = {
+  mode?: string;
   prompt?: string;
   dryRun?: boolean;
 };
@@ -20,6 +21,16 @@ function isAuthorized(req: RequestWithHeaders): boolean {
   return secrets.some((secret) => req.headers?.authorization === `Bearer ${secret}`);
 }
 
+function firstQueryValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function parseMode(req: VercelRequestLike, body?: PaperTraderRequestBody): AutomationLane {
+  return readAutomationLane(firstQueryValue(req.query?.mode))
+    ?? readAutomationLane(body?.mode)
+    ?? "paper";
+}
+
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
   if (!isAuthorized(req as RequestWithHeaders)) {
     sendError(res, 401, "Unauthorized.");
@@ -28,7 +39,7 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
 
   if (req.method === "GET") {
     try {
-      const status = await getPaperTraderStatus();
+      const status = await getPaperTraderStatus(parseMode(req));
       sendJson(res, 200, { status });
       return;
     } catch (error) {
@@ -41,7 +52,9 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
   if (req.method === "POST") {
     try {
       const body = (req.body ?? {}) as PaperTraderRequestBody;
+      const mode = parseMode(req, body);
       const result = await runPaperTraderCycle({
+        mode,
         ...(
           typeof body.prompt === "string" && body.prompt.trim().length > 0
             ? { prompt: body.prompt.trim() }

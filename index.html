@@ -478,6 +478,13 @@
         background: #fff;
         padding: 11px 12px;
       }
+      .outcome-row > summary {
+        cursor: pointer;
+        list-style: none;
+      }
+      .outcome-row > summary::-webkit-details-marker {
+        display: none;
+      }
       .outcome-row-header,
       .outcome-row-metrics {
         display: flex;
@@ -497,6 +504,11 @@
         margin-top: 8px;
         font-size: 13px;
         font-weight: 700;
+      }
+      .outcome-row-detail {
+        border-top: 1px solid var(--border);
+        margin-top: 10px;
+        padding-top: 10px;
       }
       .decision-module .journal-trade {
         background: #fff;
@@ -742,6 +754,7 @@
       <div class="nav-list">
         <button class="nav-link is-active" type="button" data-page-target="manual-scan">Manual Scan</button>
         <button class="nav-link" type="button" data-page-target="paper-trader">Paper Trader</button>
+        <button class="nav-link" type="button" data-page-target="live-trader">Live Trader</button>
         <button class="nav-link" type="button" data-page-target="journal">Journal</button>
       </div>
     </nav>
@@ -836,13 +849,13 @@
         <div class="panel-header">
           <div>
             <h2>Paper Trader Controls</h2>
-            <p class="section-description">TradeStation automation lane for status checks, dry runs, and live cycles.</p>
+            <p class="section-description">TradeStation SIM automation lane for status checks, dry runs, and order-enabled cycles.</p>
           </div>
           <div class="actions">
             <button id="loadPaperTraderStatusButton" class="secondary">Load Status</button>
             <button id="checkPaperTraderOrdersButton" class="secondary">Check Orders</button>
             <button id="runPaperTraderDryButton" class="secondary">Run Dry Cycle</button>
-            <button id="runPaperTraderLiveButton">Run Live Cycle</button>
+            <button id="runPaperTraderLiveButton">Run Order Cycle</button>
           </div>
         </div>
 
@@ -864,6 +877,76 @@
         </details>
 
         <div id="paperTraderArea" class="muted">Load status to confirm the TradeStation automation configuration.</div>
+      </div>
+      </section>
+
+      <section id="live-trader-page" class="page-view" data-page="live-trader">
+        <section class="page-header">
+          <div class="page-kicker">Automation</div>
+          <h1>Live Trader</h1>
+          <p class="page-subtitle">Monitor TradeStation live performance, trade outcomes, and automation.</p>
+        </section>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Live Dashboard</h2>
+            <p class="section-description">Live trade analytics with the configured TradeStation account snapshot as the source of truth for unrealized P/L.</p>
+          </div>
+          <div class="actions">
+            <button id="refreshLiveDashboardButton" class="secondary">Refresh Dashboard</button>
+          </div>
+        </div>
+
+        <div id="liveDashboardArea" class="muted">Loading live dashboard...</div>
+      </div>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Automation Activity</h2>
+            <p class="section-description">Latest cron and manual live-trader cycles from compact run history, shown in Central time.</p>
+          </div>
+          <div class="actions">
+            <button id="refreshLiveAutomationActivityButton" class="secondary">Refresh Activity</button>
+          </div>
+        </div>
+
+        <div id="liveAutomationActivityArea" class="muted">Loading automation activity...</div>
+      </div>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Live Trader Controls</h2>
+            <p class="section-description">TradeStation LIVE automation lane for status checks, dry runs, and order-enabled cycles.</p>
+          </div>
+          <div class="actions">
+            <button id="loadLiveTraderStatusButton" class="secondary">Load Status</button>
+            <button id="checkLiveTraderOrdersButton" class="secondary">Check Orders</button>
+            <button id="runLiveTraderDryButton" class="secondary">Run Dry Cycle</button>
+            <button id="runLiveTraderLiveButton">Run Order Cycle</button>
+          </div>
+        </div>
+
+        <label for="liveTraderSecret">Live trader secret</label>
+        <input
+          id="liveTraderSecret"
+          type="password"
+          placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET"
+          autocomplete="off"
+        />
+        <div class="field-note">Required only for protected controls such as status checks and manual automation cycles. The dashboard above loads automatically without this password.</div>
+
+        <details>
+          <summary>Optional prompt override</summary>
+          <div id="liveTraderPromptFields">
+            <label for="liveTraderPrompt">Prompt override</label>
+            <input id="liveTraderPrompt" placeholder="Optional custom prompt for this automation cycle" />
+          </div>
+        </details>
+
+        <div id="liveTraderArea" class="muted">Load status to confirm the TradeStation automation configuration.</div>
       </div>
       </section>
 
@@ -1142,9 +1225,6 @@
       let selectedTradeToClose = null;
       let selectedTradeToEdit = null;
       let selectedRecommendationForJournal = null;
-      let paperDashboardHasLoaded = false;
-      let paperAutomationActivityHasLoaded = false;
-      let paperDashboardOutcomeDetailsExpanded = false;
 
       const menuToggle = document.getElementById("menuToggle");
       const menuClose = document.getElementById("menuClose");
@@ -1213,6 +1293,17 @@
       const checkPaperTraderOrdersButton = document.getElementById("checkPaperTraderOrdersButton");
       const runPaperTraderDryButton = document.getElementById("runPaperTraderDryButton");
       const runPaperTraderLiveButton = document.getElementById("runPaperTraderLiveButton");
+      const liveTraderSecretInput = document.getElementById("liveTraderSecret");
+      const liveTraderPromptInput = document.getElementById("liveTraderPrompt");
+      const liveDashboardArea = document.getElementById("liveDashboardArea");
+      const refreshLiveDashboardButton = document.getElementById("refreshLiveDashboardButton");
+      const liveAutomationActivityArea = document.getElementById("liveAutomationActivityArea");
+      const refreshLiveAutomationActivityButton = document.getElementById("refreshLiveAutomationActivityButton");
+      const liveTraderArea = document.getElementById("liveTraderArea");
+      const loadLiveTraderStatusButton = document.getElementById("loadLiveTraderStatusButton");
+      const checkLiveTraderOrdersButton = document.getElementById("checkLiveTraderOrdersButton");
+      const runLiveTraderDryButton = document.getElementById("runLiveTraderDryButton");
+      const runLiveTraderLiveButton = document.getElementById("runLiveTraderLiveButton");
       const lateSymbolInput = document.getElementById("lateSymbol");
       const lateDirectionInput = document.getElementById("lateDirection");
       const lateAccountModeInput = document.getElementById("lateAccountMode");
@@ -1231,10 +1322,56 @@
       const lateSaveToJournalInput = document.getElementById("lateSaveToJournal");
       const lateReviewButton = document.getElementById("lateReviewButton");
       const lateReviewArea = document.getElementById("lateReviewArea");
-      const paperTraderSecretStorageKey = "paperTraderApiSecret";
+      const traderPages = {
+        paper: {
+          mode: "paper",
+          pageKey: "paper-trader",
+          label: "Paper",
+          tradeLabel: "paper",
+          environmentLabel: "SIM",
+          dashboardArea: paperDashboardArea,
+          refreshDashboardButton: refreshPaperDashboardButton,
+          activityArea: paperAutomationActivityArea,
+          refreshActivityButton: refreshPaperAutomationActivityButton,
+          traderArea: paperTraderArea,
+          loadStatusButton: loadPaperTraderStatusButton,
+          checkOrdersButton: checkPaperTraderOrdersButton,
+          runDryButton: runPaperTraderDryButton,
+          runOrderButton: runPaperTraderLiveButton,
+          secretInput: paperTraderSecretInput,
+          promptInput: paperTraderPromptInput,
+          secretStorageKey: "paperTraderApiSecret",
+          dashboardHasLoaded: false,
+          activityHasLoaded: false,
+          outcomeDetailsExpanded: false,
+        },
+        live: {
+          mode: "live",
+          pageKey: "live-trader",
+          label: "Live",
+          tradeLabel: "live",
+          environmentLabel: "LIVE",
+          dashboardArea: liveDashboardArea,
+          refreshDashboardButton: refreshLiveDashboardButton,
+          activityArea: liveAutomationActivityArea,
+          refreshActivityButton: refreshLiveAutomationActivityButton,
+          traderArea: liveTraderArea,
+          loadStatusButton: loadLiveTraderStatusButton,
+          checkOrdersButton: checkLiveTraderOrdersButton,
+          runDryButton: runLiveTraderDryButton,
+          runOrderButton: runLiveTraderLiveButton,
+          secretInput: liveTraderSecretInput,
+          promptInput: liveTraderPromptInput,
+          secretStorageKey: "liveTraderApiSecret",
+          dashboardHasLoaded: false,
+          activityHasLoaded: false,
+          outcomeDetailsExpanded: false,
+        },
+      };
       const pageTitles = {
         "manual-scan": "Manual Scan",
         "paper-trader": "Paper Trader",
+        "live-trader": "Live Trader",
         journal: "Journal",
       };
 
@@ -1265,12 +1402,13 @@
           window.history.replaceState(null, "", `#${nextPage}`);
         }
         closeNavigation();
-        if (nextPage === "paper-trader") {
-          if (!paperDashboardHasLoaded) {
-            loadPaperDashboard();
+        const traderPage = Object.values(traderPages).find((page) => page.pageKey === nextPage);
+        if (traderPage) {
+          if (!traderPage.dashboardHasLoaded) {
+            loadPaperDashboard(traderPage.mode);
           }
-          if (!paperAutomationActivityHasLoaded) {
-            loadPaperAutomationActivity();
+          if (!traderPage.activityHasLoaded) {
+            loadPaperAutomationActivity(traderPage.mode);
           }
         }
       }
@@ -1283,13 +1421,15 @@
         defaultPromptText.textContent = "Loading...";
       }
 
-      if (paperTraderSecretInput) {
-        try {
-          paperTraderSecretInput.value = window.localStorage.getItem(paperTraderSecretStorageKey) || "";
-        } catch {
-          paperTraderSecretInput.value = "";
+      Object.values(traderPages).forEach((page) => {
+        if (page.secretInput) {
+          try {
+            page.secretInput.value = window.localStorage.getItem(page.secretStorageKey) || "";
+          } catch {
+            page.secretInput.value = "";
+          }
         }
-      }
+      });
 
       if (lateEntryDateInput && !lateEntryDateInput.value) {
         lateEntryDateInput.value = formatDateInputValue(new Date());
@@ -1725,21 +1865,21 @@
         return `${text.slice(0, maxLength - 3)}...`;
       }
 
-      function renderPaperAutomationActivity(activity) {
-        if (!paperAutomationActivityArea) {
+      function renderPaperAutomationActivity(activity, page = traderPages.paper) {
+        if (!page.activityArea) {
           return;
         }
 
         const runs = sortByTimestampDesc(Array.isArray(activity?.runs) ? activity.runs : [], "created_at");
         const dataWarnings = Array.isArray(activity?.dataWarnings) ? activity.dataWarnings : [];
-        paperAutomationActivityHasLoaded = true;
+        page.activityHasLoaded = true;
 
         if (runs.length === 0 && dataWarnings.length === 0) {
-          paperAutomationActivityArea.innerHTML = '<div class="empty-state">No saved automation runs yet. Once the Vercel cron or a manual cycle runs, it will appear here.</div>';
+          page.activityArea.innerHTML = '<div class="empty-state">No saved automation runs yet. Once the Vercel cron or a manual cycle runs, it will appear here.</div>';
           return;
         }
 
-        paperAutomationActivityArea.innerHTML = `
+        page.activityArea.innerHTML = `
           ${dataWarnings.length > 0 ? `<div class="empty-state">${renderList(dataWarnings)}</div>` : ""}
           ${runs.length === 0
             ? ""
@@ -1764,10 +1904,10 @@
                   const existingTradeSummary = [
                     `${orderUpdates.length} order check(s)`,
                     `${entryOrderUpdates.length} entry-order decision(s)`,
-                    `${updates.length} live trade review(s)`,
+                    `${updates.length} ${page.tradeLabel} trade review(s)`,
                     `${exits.length} exit trigger(s)`,
                     `${staleArchived} stale archived`,
-                    `${adoptedPositions} live adopted`,
+                    `${adoptedPositions} ${page.tradeLabel} adopted`,
                     `${orderSkipped.length + entryOrderSkipped.length + managementSkipped.length} skipped row(s)`,
                   ].join(" | ");
                   const orderDetails = orderUpdates.slice(0, 5).map((item) =>
@@ -1952,13 +2092,13 @@
               "Layer 1: Session Timeline",
               `${runs.length} run(s)`,
               renderRunTimeline(runs, input?.runHistoryMigrationMessage),
-              "No saved paper-trader runs yet.",
+              "No saved automation runs yet.",
             )}
             ${renderWorkspaceLayer(
               "Layer 2: Trades By Phase",
               `${trades.length} trade(s)`,
               renderTradeDecisionTrees(trades),
-              "No paper-trader journal trades yet.",
+              "No automation journal trades yet.",
             )}
             ${renderWorkspaceLayer(
               "Entry Candidate Audit",
@@ -1976,9 +2116,9 @@
         `;
       }
 
-      function buildPaperTraderHeaders(includeJson = false) {
+      function buildPaperTraderHeaders(page = traderPages.paper, includeJson = false) {
         const headers = {};
-        const secret = paperTraderSecretInput?.value?.trim() || "";
+        const secret = page.secretInput?.value?.trim() || "";
         if (secret) {
           headers.authorization = `Bearer ${secret}`;
         }
@@ -2008,7 +2148,7 @@
         return "No outcomes";
       }
 
-      function renderPaperDashboardBucket(title, buckets, formatter, limit = 6, historyUnavailable = false) {
+      function renderPaperDashboardBucket(title, buckets, formatter, limit = 6, historyUnavailable = false, tradeLabel = "paper") {
         const rows = (Array.isArray(buckets) ? buckets : [])
           .filter((bucket) => bucket.trade_count > 0)
           .sort((left, right) => (asNumber(right.realized_pl_usd) ?? 0) - (asNumber(left.realized_pl_usd) ?? 0))
@@ -2017,7 +2157,7 @@
           return `
             <div class="comparison-card">
               <h4>${escapeHtml(title)}</h4>
-              <div class="empty-state">${historyUnavailable ? "Journal history unavailable." : "No current-epoch paper-trade data yet."}</div>
+              <div class="empty-state">${historyUnavailable ? "Journal history unavailable." : `No current-epoch ${tradeLabel}-trade data yet.`}</div>
             </div>
           `;
         }
@@ -2073,6 +2213,80 @@
         ].filter(Boolean).join(" ");
       }
 
+      function renderOutcomeDetailRows(trade) {
+        const reasoning = trade.reasoning || {};
+        const technical = reasoning.technical_snapshot || {};
+        const geometry = reasoning.chart_geometry || null;
+        const chartLevels = geometry
+          ? `${renderMaybe(geometry.reference)} -> stop ${renderMaybe(technical.final_invalidation || geometry.invalidation)} / target ${renderMaybe(technical.final_target || geometry.target)}`
+          : null;
+        const activeLevels = trade.active_stop_underlying !== null && trade.active_stop_underlying !== undefined
+          || trade.active_target_underlying !== null && trade.active_target_underlying !== undefined
+            ? `${formatMoney(trade.active_stop_underlying)} / ${formatMoney(trade.active_target_underlying)}`
+            : null;
+        const plannedLevels = trade.intended_stop_underlying !== null && trade.intended_stop_underlying !== undefined
+          || trade.intended_target_underlying !== null && trade.intended_target_underlying !== undefined
+            ? `${formatMoney(trade.intended_stop_underlying)} / ${formatMoney(trade.intended_target_underlying)}`
+            : null;
+        const rows = [
+          `<strong>Contracts:</strong> ${escapeHtml(renderMaybe(trade.contracts))} | <strong>Closed:</strong> ${escapeHtml(renderMaybe(trade.quantity_closed))}`,
+          `<strong>Option entry / exit:</strong> ${escapeHtml(formatMoney(trade.option_entry_price))} / ${escapeHtml(formatMoney(trade.option_exit_price))}`,
+          `<strong>Underlying entry:</strong> ${escapeHtml(formatMoney(trade.underlying_entry_price))}`,
+          `<strong>Sold for:</strong> ${escapeHtml(formatMoney(trade.sold_for_usd))} | <strong>Cost:</strong> ${escapeHtml(formatMoney(trade.position_cost_usd))}`,
+          plannedLevels ? `<strong>Planned stop / target:</strong> ${escapeHtml(plannedLevels)}` : null,
+          activeLevels ? `<strong>Active stop / target:</strong> ${escapeHtml(activeLevels)}` : null,
+          trade.entry_notes ? `<strong>Entry notes:</strong> ${escapeHtml(trade.entry_notes)}` : null,
+          trade.exit_notes ? `<strong>Exit notes:</strong> ${escapeHtml(trade.exit_notes)}` : null,
+          trade.review_notes ? `<strong>Review notes:</strong> ${escapeHtml(trade.review_notes)}` : null,
+          reasoning.concise_reasoning || reasoning.scan_reason
+            ? `<strong>Reasoning:</strong> ${escapeHtml(reasoning.concise_reasoning || reasoning.scan_reason)}`
+            : null,
+          reasoning.stage3_summary || technical.stage3_summary
+            ? `<strong>Stage 3:</strong> ${escapeHtml(reasoning.stage3_summary || technical.stage3_summary)}`
+            : null,
+          technical.candlestick_checks
+            ? `<strong>Candlestick / structure:</strong> ${escapeHtml(technical.candlestick_checks)}`
+            : null,
+          chartLevels ? `<strong>Chart levels:</strong> ${escapeHtml(chartLevels)}` : null,
+          technical.support_or_invalidation
+            ? `<strong>Support / invalidation:</strong> ${escapeHtml(technical.support_or_invalidation)}`
+            : null,
+          technical.resistance_or_target
+            ? `<strong>Resistance / target:</strong> ${escapeHtml(technical.resistance_or_target)}`
+            : null,
+          technical.final_chart_reward_risk || geometry?.final_chart_reward_risk
+            ? `<strong>Final chart R:R:</strong> ${escapeHtml(technical.final_chart_reward_risk || geometry.final_chart_reward_risk)}`
+            : null,
+          technical.volume_ratio !== null && technical.volume_ratio !== undefined
+            ? `<strong>Volume ratio:</strong> ${escapeHtml(`${Number(technical.volume_ratio).toFixed(2)}x`)}`
+            : null,
+          technical.chart_review_score !== null && technical.chart_review_score !== undefined
+            ? `<strong>Chart score:</strong> ${escapeHtml(Number(technical.chart_review_score).toFixed(2))}`
+            : null,
+          technical.option_open_interest !== null && technical.option_open_interest !== undefined
+            ? `<strong>Option OI:</strong> ${escapeHtml(renderMaybe(technical.option_open_interest))}`
+            : null,
+          technical.option_spread !== null && technical.option_spread !== undefined
+            ? `<strong>Option spread:</strong> ${escapeHtml(renderMaybe(technical.option_spread))}`
+            : null,
+          technical.option_mid !== null && technical.option_mid !== undefined
+            ? `<strong>Option mid:</strong> ${escapeHtml(formatMoney(technical.option_mid))}`
+            : null,
+          reasoning.expected_timing
+            ? `<strong>Expected timing:</strong> ${escapeHtml(reasoning.expected_timing)}`
+            : null,
+          reasoning.trade_rationale
+            ? `<strong>Trade rationale:</strong> ${escapeHtml(reasoning.trade_rationale)}`
+            : null,
+        ].filter(Boolean);
+
+        if (rows.length === 0) {
+          return '<div class="empty-state">No saved detail or reasoning snapshot is available for this trade.</div>';
+        }
+
+        return `<div class="outcome-row-detail">${rows.map((row) => `<div class="row">${row}</div>`).join("")}</div>`;
+      }
+
       function renderPaperOutcomeRows(title, trades, totalCount, outcomeLabel, chipClass) {
         const rows = Array.isArray(trades) ? trades : [];
         const total = asNumber(totalCount) ?? rows.length;
@@ -2091,11 +2305,13 @@
               : rows.map((trade) => {
                   const plTone = numberToneClass(trade.realized_pl_usd);
                   return `
-                    <div class="outcome-row">
-                      <div class="outcome-row-header">
-                        <strong>${escapeHtml(renderMaybe(trade.symbol))}</strong>
-                        <span class="winner-chip ${escapeHtml(chipClass)}">${escapeHtml(outcomeLabel)}</span>
-                      </div>
+                    <details class="outcome-row">
+                      <summary>
+                        <span class="outcome-row-header">
+                          <strong>${escapeHtml(renderMaybe(trade.symbol))}</strong>
+                          <span class="winner-chip ${escapeHtml(chipClass)}">${escapeHtml(outcomeLabel)}</span>
+                        </span>
+                      </summary>
                       <div class="outcome-row-meta">
                         ${escapeHtml(formatOutcomeEntryLabel(trade))} | ${escapeHtml(renderMaybe(trade.direction))} | ${escapeHtml(renderMaybe(trade.setup_type))}
                       </div>
@@ -2108,14 +2324,15 @@
                         <span>Return ${escapeHtml(formatPercent(trade.realized_return_pct, 1))}</span>
                         <span>Cost ${escapeHtml(formatMoney(trade.position_cost_usd))}</span>
                       </div>
-                    </div>
+                      ${renderOutcomeDetailRows(trade)}
+                    </details>
                   `;
                 }).join("")}
           </div>
         `;
       }
 
-      function renderPaperOutcomeDetails(insights, historyUnavailable) {
+      function renderPaperOutcomeDetails(insights, historyUnavailable, page = traderPages.paper) {
         if (historyUnavailable) {
           return "";
         }
@@ -2125,14 +2342,14 @@
         const totals = insights?.totals || {};
         return `
           <div
-            id="paperOutcomeDetails"
+            id="${escapeHtml(page.mode)}OutcomeDetails"
             class="outcome-detail-panel"
-            ${paperDashboardOutcomeDetailsExpanded ? "" : "hidden"}
+            ${page.outcomeDetailsExpanded ? "" : "hidden"}
           >
             <div class="panel-header">
               <div>
                 <h3>Winner / Loser Trades</h3>
-                <p class="section-description">Current-epoch closed paper trades, sorted by latest exit.</p>
+                <p class="section-description">Current-epoch closed ${escapeHtml(page.tradeLabel)} trades, sorted by latest exit.</p>
               </div>
             </div>
             <div class="outcome-detail-grid">
@@ -2143,19 +2360,19 @@
         `;
       }
 
-      function renderPaperDashboard(insights) {
-        if (!paperDashboardArea) {
+      function renderPaperDashboard(insights, page = traderPages.paper) {
+        if (!page.dashboardArea) {
           return;
         }
 
         if (!insights) {
-          paperDashboardArea.innerHTML = '<div class="empty-state">No paper dashboard data yet.</div>';
+          page.dashboardArea.innerHTML = `<div class="empty-state">No ${escapeHtml(page.tradeLabel)} dashboard data yet.</div>`;
           return;
         }
-        paperDashboardHasLoaded = true;
+        page.dashboardHasLoaded = true;
 
         const totals = insights.totals || {};
-        const simAccount = insights.sim_account || null;
+        const accountSnapshot = insights.account_snapshot || insights.sim_account || null;
         const dataWarnings = Array.isArray(insights.dataWarnings) ? insights.dataWarnings : [];
         const scopeLabel = insights.scopeLabel || "Current learning epoch";
         const learningStartLabel = formatCentralTimestamp(insights.learningStartAt);
@@ -2169,19 +2386,19 @@
         const bestTime = journalDataUnavailable ? null : bestBucketByRealizedPl(insights.by_entry_hour);
         const bestSetup = journalDataUnavailable ? null : bestBucketByRealizedPl(insights.by_setup_type);
         const realizedTone = journalDataUnavailable ? "" : numberToneClass(totals.total_realized_pl_usd);
-        const unrealizedTone = numberToneClass(simAccount?.unrealizedPlUsd);
+        const unrealizedTone = numberToneClass(accountSnapshot?.unrealizedPlUsd);
         const winRateTone = journalDataUnavailable ? "" : winRateToneClass(totals.win_rate);
         const avgRTone = journalDataUnavailable ? "" : numberToneClass(totals.average_r_multiple);
         const learningState = journalDataUnavailable && (asNumber(totals.closed_trades) ?? 0) === 0
           ? "Unavailable"
           : formatLearningState(totals.closed_trades);
-        const openSimPositions = asNumber(simAccount?.openPositionCount);
-        const openSimContracts = asNumber(simAccount?.openContractCount);
-        const openSimCost = asNumber(simAccount?.openPositionCostUsd);
-        const openSimMarketValue = asNumber(simAccount?.openPositionMarketValueUsd);
+        const openSimPositions = asNumber(accountSnapshot?.openPositionCount);
+        const openSimContracts = asNumber(accountSnapshot?.openContractCount);
+        const openSimCost = asNumber(accountSnapshot?.openPositionCostUsd);
+        const openSimMarketValue = asNumber(accountSnapshot?.openPositionMarketValueUsd);
         const openJournalTrades = asNumber(totals.open_trades);
         const simPositionUnderlyings = new Set(
-          (Array.isArray(simAccount?.positions) ? simAccount.positions : [])
+          (Array.isArray(accountSnapshot?.positions) ? accountSnapshot.positions : [])
             .map((position) => String(position?.symbol || "").trim().split(/\s+/)[0]?.toUpperCase())
             .filter(Boolean),
         );
@@ -2205,10 +2422,11 @@
             : null,
         ].filter(Boolean);
         const syncWarningLabel = hasArchivedTrades ? "Position scope note:" : "Position sync warning:";
+        const outcomeDetailsId = `${page.mode}OutcomeDetails`;
 
-        paperDashboardArea.innerHTML = `
-          ${simAccount?.error
-            ? `<div class="empty-state">${escapeHtml(simAccount.error)}</div>`
+        page.dashboardArea.innerHTML = `
+          ${accountSnapshot?.error
+            ? `<div class="empty-state">${escapeHtml(accountSnapshot.error)}</div>`
             : ""}
           ${dataWarnings.length > 0
             ? `<div class="empty-state">${renderList(dataWarnings)}</div>`
@@ -2217,11 +2435,11 @@
           <div class="stats-grid" style="margin-top: 12px;">
             <div class="stat-card">
               <div class="stat-label">TradeStation Net Worth</div>
-              <div class="stat-value">${escapeHtml(formatMoney(simAccount?.accountValueUsd))}</div>
+              <div class="stat-value">${escapeHtml(formatMoney(accountSnapshot?.accountValueUsd))}</div>
             </div>
             <div class="stat-card ${escapeHtml(unrealizedTone)}">
               <div class="stat-label">TradeStation Unrealized P/L</div>
-              <div class="stat-value ${escapeHtml(unrealizedTone)}">${escapeHtml(formatMoney(simAccount?.unrealizedPlUsd))}</div>
+              <div class="stat-value ${escapeHtml(unrealizedTone)}">${escapeHtml(formatMoney(accountSnapshot?.unrealizedPlUsd))}</div>
             </div>
             <div class="stat-card ${escapeHtml(realizedTone)}">
               <div class="stat-label">Epoch Realized P/L</div>
@@ -2248,11 +2466,11 @@
               <div class="stat-value">${escapeHtml(journalDataUnavailable ? "unavailable" : formatPercent(totals.average_return_pct, 1))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">SIM Position Cost</div>
+              <div class="stat-label">${escapeHtml(page.environmentLabel)} Position Cost</div>
               <div class="stat-value">${escapeHtml(formatMoney(openSimCost))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">SIM Position Value</div>
+              <div class="stat-label">${escapeHtml(page.environmentLabel)} Position Value</div>
               <div class="stat-value">${escapeHtml(formatMoney(openSimMarketValue))}</div>
             </div>
             <div class="stat-card">
@@ -2267,13 +2485,13 @@
               class="stat-card stat-card-button"
               type="button"
               data-paper-outcome-toggle="true"
-              aria-controls="paperOutcomeDetails"
-              aria-expanded="${paperDashboardOutcomeDetailsExpanded ? "true" : "false"}"
+              aria-controls="${escapeHtml(outcomeDetailsId)}"
+              aria-expanded="${page.outcomeDetailsExpanded ? "true" : "false"}"
               ${journalDataUnavailable ? "disabled" : ""}
             >
               <div class="stat-label">Winners / Losers</div>
               <div class="stat-value">${escapeHtml(journalDataUnavailable ? "unavailable" : `${renderMaybe(totals.winners, "0")} / ${renderMaybe(totals.losers, "0")}`)}</div>
-              <div class="stat-action-note">${escapeHtml(journalDataUnavailable ? "Details unavailable" : paperDashboardOutcomeDetailsExpanded ? "Hide trade details" : "View trade details")}</div>
+              <div class="stat-action-note">${escapeHtml(journalDataUnavailable ? "Details unavailable" : page.outcomeDetailsExpanded ? "Hide trade details" : "View trade details")}</div>
             </button>
             <div class="stat-card">
               <div class="stat-label">Best Day</div>
@@ -2293,10 +2511,10 @@
             </div>
           </div>
 
-          ${renderPaperOutcomeDetails(insights, journalDataUnavailable)}
+          ${renderPaperOutcomeDetails(insights, journalDataUnavailable, page)}
 
           <div class="empty-state" style="margin-top: 16px;">
-            <strong>${escapeHtml(scopeLabel)}:</strong> since ${escapeHtml(learningStartLabel)}. ${escapeHtml(renderMaybe(includedTradeCount, "0"))} current-epoch paper trade(s); ${escapeHtml(renderMaybe(excludedTradeCount, "0"))} archived paper trade(s) kept in journal/history and excluded from current dashboard learning metrics.
+            <strong>${escapeHtml(scopeLabel)}:</strong> since ${escapeHtml(learningStartLabel)}. ${escapeHtml(renderMaybe(includedTradeCount, "0"))} current-epoch ${escapeHtml(page.tradeLabel)} trade(s); ${escapeHtml(renderMaybe(excludedTradeCount, "0"))} archived ${escapeHtml(page.tradeLabel)} trade(s) kept in journal/history and excluded from current dashboard learning metrics.
             Open positions, unrealized P/L, and net worth come from read-only TradeStation account data. Epoch realized results and learning analytics come from Supabase journal history, so they can be temporarily unavailable if Supabase times out.
           </div>
           ${syncWarnings.length > 0
@@ -2304,27 +2522,27 @@
             : ""}
 
           <div class="section-grid" style="margin-top: 16px;">
-            ${renderOpenSimPositions(simAccount?.positions)}
-            ${renderPaperDashboardBucket("Best Days To Trade", insights.by_day_of_week, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)} | ${bucket.closed_trade_count} closed`, 6, journalDataUnavailable)}
-            ${renderPaperDashboardBucket("Best Entry Times", insights.by_entry_hour, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)} | ${bucket.closed_trade_count} closed`, 6, journalDataUnavailable)}
-            ${renderPaperDashboardBucket("Best Setups", insights.by_setup_type, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)}`, 6, journalDataUnavailable)}
-            ${renderPaperDashboardBucket("Best Symbols", insights.by_symbol, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`, 6, journalDataUnavailable)}
-            ${renderPaperDashboardBucket("Direction Performance", insights.by_direction, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)}`, 6, journalDataUnavailable)}
-            ${renderPaperDashboardBucket("Exit Outcomes", insights.by_exit_reason, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`, 6, journalDataUnavailable)}
+            ${renderOpenSimPositions(accountSnapshot?.positions)}
+            ${renderPaperDashboardBucket("Best Days To Trade", insights.by_day_of_week, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)} | ${bucket.closed_trade_count} closed`, 6, journalDataUnavailable, page.tradeLabel)}
+            ${renderPaperDashboardBucket("Best Entry Times", insights.by_entry_hour, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)} | ${bucket.closed_trade_count} closed`, 6, journalDataUnavailable, page.tradeLabel)}
+            ${renderPaperDashboardBucket("Best Setups", insights.by_setup_type, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)}`, 6, journalDataUnavailable, page.tradeLabel)}
+            ${renderPaperDashboardBucket("Best Symbols", insights.by_symbol, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`, 6, journalDataUnavailable, page.tradeLabel)}
+            ${renderPaperDashboardBucket("Direction Performance", insights.by_direction, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)}`, 6, journalDataUnavailable, page.tradeLabel)}
+            ${renderPaperDashboardBucket("Exit Outcomes", insights.by_exit_reason, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`, 6, journalDataUnavailable, page.tradeLabel)}
           </div>
         `;
 
-        const outcomeToggle = paperDashboardArea.querySelector("[data-paper-outcome-toggle]");
-        const outcomeDetails = paperDashboardArea.querySelector("#paperOutcomeDetails");
+        const outcomeToggle = page.dashboardArea.querySelector("[data-paper-outcome-toggle]");
+        const outcomeDetails = page.dashboardArea.querySelector(`#${outcomeDetailsId}`);
         const outcomeNote = outcomeToggle?.querySelector(".stat-action-note");
         outcomeToggle?.addEventListener("click", () => {
-          paperDashboardOutcomeDetailsExpanded = !paperDashboardOutcomeDetailsExpanded;
+          page.outcomeDetailsExpanded = !page.outcomeDetailsExpanded;
           if (outcomeDetails) {
-            outcomeDetails.hidden = !paperDashboardOutcomeDetailsExpanded;
+            outcomeDetails.hidden = !page.outcomeDetailsExpanded;
           }
-          outcomeToggle.setAttribute("aria-expanded", paperDashboardOutcomeDetailsExpanded ? "true" : "false");
+          outcomeToggle.setAttribute("aria-expanded", page.outcomeDetailsExpanded ? "true" : "false");
           if (outcomeNote) {
-            outcomeNote.textContent = paperDashboardOutcomeDetailsExpanded ? "Hide trade details" : "View trade details";
+            outcomeNote.textContent = page.outcomeDetailsExpanded ? "Hide trade details" : "View trade details";
           }
         });
       }
@@ -2389,8 +2607,8 @@
         return contractsMatch ? contractsMatch[1] : "";
       }
 
-      function renderPaperTraderStatus(status) {
-        if (!paperTraderArea) {
+      function renderPaperTraderStatus(status, page = traderPages.paper) {
+        if (!page.traderArea) {
           return;
         }
         const configurationIssues = Array.isArray(status?.configurationIssues)
@@ -2408,7 +2626,7 @@
         const closedLiveTrades = sourceCounts.live ?? learning?.closedLiveTrades ?? 0;
         const closedLearningTrades = learning?.closedLearningTrades ?? (Number(closedPaperTrades) + Number(closedLiveTrades));
 
-        paperTraderArea.innerHTML = `
+        page.traderArea.innerHTML = `
           <div class="stats-grid" style="margin-top: 12px;">
             <div class="stat-card">
               <div class="stat-label">Enabled</div>
@@ -2506,7 +2724,7 @@
             <div class="row"><strong>Route secret required:</strong> ${escapeHtml(formatBoolean(status?.requiresSecret))}</div>
             <div class="row"><strong>Configuration checks:</strong> ${configurationIssues.length > 0 ? renderList(configurationIssues) : `<span class="muted">${escapeHtml(environmentLabel)} configuration is ready.</span>`}</div>
             ${dataWarnings.length > 0 ? `<div class="row"><strong>Data warnings:</strong> ${renderList(dataWarnings)}</div>` : ""}
-            <div class="row"><strong>Autonomous cron:</strong> Every 5 minutes on weekdays via <code>/api/paper-trader-run?reconcileOrders=true</code>; can reconcile fills, manage exits, and enter new ${escapeHtml(accountModeLabel.toLowerCase())} trades when guards allow.</div>
+            <div class="row"><strong>Autonomous cron:</strong> Every 5 minutes on weekdays via <code>/api/paper-trader-run?mode=${escapeHtml(page.mode)}&reconcileOrders=true</code>; can reconcile fills, manage exits, and enter new ${escapeHtml(accountModeLabel.toLowerCase())} trades when guards allow.</div>
             <div class="row"><strong>Entry order management:</strong> ${escapeHtml(status?.entryOrderManagementEnabled ? `Enabled for working ${environmentLabel} buy-to-open limits.` : "Off; working entry orders are monitored but not repriced/canceled by AI.")}</div>
             <div class="row"><strong>Entry cadence:</strong> Every full cron cycle can scan for another excellent setup and enter one additional non-duplicate ticker if the trade card passes.</div>
             <div class="row"><strong>Position size guard:</strong> New ${escapeHtml(accountModeLabel.toLowerCase())} entries are capped at ${escapeHtml(formatPercent(status?.maxPositionPct, 0))} of the TradeStation ${escapeHtml(environmentLabel)} account value${sizing?.maxPositionCostUsd === null || sizing?.maxPositionCostUsd === undefined ? "." : ` (${escapeHtml(formatMoney(sizing.maxPositionCostUsd))}).`}</div>
@@ -2529,8 +2747,8 @@
         `;
       }
 
-      function renderPaperTraderRunResult(result) {
-        if (!paperTraderArea) {
+      function renderPaperTraderRunResult(result, page = traderPages.paper) {
+        if (!page.traderArea) {
           return;
         }
 
@@ -2564,7 +2782,7 @@
           reasoning?.conciseReasoning ? `Full reasoning: ${reasoning.conciseReasoning}` : null,
         ].filter(Boolean);
 
-        paperTraderArea.innerHTML = `
+        page.traderArea.innerHTML = `
           <div class="summary-section">
             <div class="row"><strong>Mode:</strong> <span class="pill">${escapeHtml(renderMaybe(result?.dryRun ? "Dry Run" : `${environmentLabel} Orders`))}</span></div>
             <div class="row"><strong>Account mode:</strong> ${escapeHtml(renderMaybe(result?.mode))} | <strong>TradeStation environment:</strong> ${escapeHtml(environmentLabel)}</div>
@@ -2672,120 +2890,135 @@
         `;
       }
 
-      async function loadPaperDashboard() {
-        if (!paperDashboardArea) {
+      async function loadPaperDashboard(mode = "paper") {
+        const page = traderPages[mode] || traderPages.paper;
+        if (!page.dashboardArea) {
           return;
         }
 
-        paperDashboardArea.innerHTML = '<div class="muted">Loading paper dashboard...</div>';
-        if (refreshPaperDashboardButton) {
-          refreshPaperDashboardButton.disabled = true;
+        page.dashboardArea.innerHTML = `<div class="muted">Loading ${escapeHtml(page.tradeLabel)} dashboard...</div>`;
+        if (page.refreshDashboardButton) {
+          page.refreshDashboardButton.disabled = true;
         }
 
         try {
           const params = new URLSearchParams({
+            mode: page.mode,
             limit: "300",
           });
           const response = await fetch(`/api/paper-dashboard?${params.toString()}`);
-          const data = await readJsonResponse(response, "Failed to load paper dashboard.");
-          renderPaperDashboard(data?.dashboard || null);
+          const data = await readJsonResponse(response, `Failed to load ${page.tradeLabel} dashboard.`);
+          renderPaperDashboard(data?.dashboard || null, page);
         } catch (error) {
-          paperDashboardArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Failed to load paper dashboard."))}</div>`;
+          page.dashboardArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, `Failed to load ${page.tradeLabel} dashboard.`))}</div>`;
         } finally {
-          if (refreshPaperDashboardButton) {
-            refreshPaperDashboardButton.disabled = false;
+          if (page.refreshDashboardButton) {
+            page.refreshDashboardButton.disabled = false;
           }
         }
       }
 
-      async function loadPaperAutomationActivity() {
-        if (!paperAutomationActivityArea) {
+      async function loadPaperAutomationActivity(mode = "paper") {
+        const page = traderPages[mode] || traderPages.paper;
+        if (!page.activityArea) {
           return;
         }
 
-        paperAutomationActivityArea.innerHTML = '<div class="muted">Loading automation activity...</div>';
-        if (refreshPaperAutomationActivityButton) {
-          refreshPaperAutomationActivityButton.disabled = true;
+        page.activityArea.innerHTML = '<div class="muted">Loading automation activity...</div>';
+        if (page.refreshActivityButton) {
+          page.refreshActivityButton.disabled = true;
         }
 
         try {
           const params = new URLSearchParams({
+            mode: page.mode,
             limit: "25",
           });
           const response = await fetch(`/api/paper-activity?${params.toString()}`);
           const data = await readJsonResponse(response, "Failed to load automation activity.");
-          renderPaperAutomationActivity(data?.activity || null);
+          renderPaperAutomationActivity(data?.activity || null, page);
         } catch (error) {
-          paperAutomationActivityArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Failed to load automation activity."))}</div>`;
+          page.activityArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Failed to load automation activity."))}</div>`;
         } finally {
-          if (refreshPaperAutomationActivityButton) {
-            refreshPaperAutomationActivityButton.disabled = false;
+          if (page.refreshActivityButton) {
+            page.refreshActivityButton.disabled = false;
           }
         }
       }
 
-      async function loadPaperTraderStatus() {
-        if (!paperTraderArea) {
+      async function loadPaperTraderStatus(mode = "paper") {
+        const page = traderPages[mode] || traderPages.paper;
+        if (!page.traderArea) {
           return;
         }
 
-        paperTraderArea.innerHTML = '<div class="muted">Loading paper-trader status...</div>';
+        page.traderArea.innerHTML = `<div class="muted">Loading ${escapeHtml(page.tradeLabel)}-trader status...</div>`;
 
         try {
-          const response = await fetch("/api/paper-trader", {
-            headers: buildPaperTraderHeaders(),
+          const params = new URLSearchParams({ mode: page.mode });
+          const response = await fetch(`/api/paper-trader?${params.toString()}`, {
+            headers: buildPaperTraderHeaders(page),
           });
-          const data = await readJsonResponse(response, "Failed to load paper-trader status.");
-          renderPaperTraderStatus(data?.status || null);
+          const data = await readJsonResponse(response, `Failed to load ${page.tradeLabel}-trader status.`);
+          renderPaperTraderStatus(data?.status || null, page);
         } catch (error) {
-          paperTraderArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Failed to load paper-trader status."))}</div>`;
+          page.traderArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, `Failed to load ${page.tradeLabel}-trader status.`))}</div>`;
         }
       }
 
-      async function runPaperTraderCycle(dryRun) {
-        if (!paperTraderArea) {
+      async function runPaperTraderCycle(mode = "paper", dryRun) {
+        const page = traderPages[mode] || traderPages.paper;
+        if (!page.traderArea) {
           return;
         }
 
-        paperTraderArea.innerHTML = `<div class="muted">${escapeHtml(dryRun ? "Running dry cycle..." : "Running live automation cycle...")}</div>`;
+        page.traderArea.innerHTML = `<div class="muted">${escapeHtml(dryRun ? "Running dry cycle..." : `Running ${page.tradeLabel} order-enabled cycle...`)}</div>`;
 
         try {
-          const prompt = paperTraderPromptInput?.value?.trim() || "";
+          const prompt = page.promptInput?.value?.trim() || "";
           const response = await fetch("/api/paper-trader", {
             method: "POST",
-            headers: buildPaperTraderHeaders(true),
+            headers: buildPaperTraderHeaders(page, true),
             body: JSON.stringify({
+              mode: page.mode,
               dryRun,
               ...(prompt ? { prompt } : {}),
             }),
           });
           const data = await readJsonResponse(response, "Paper trader cycle failed.");
-          renderPaperTraderRunResult(data);
-          await loadPaperAutomationActivity();
+          renderPaperTraderRunResult(data, page);
+          await loadPaperAutomationActivity(page.mode);
           await refreshJournalData();
         } catch (error) {
-          paperTraderArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Paper trader cycle failed."))}</div>`;
+          page.traderArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Paper trader cycle failed."))}</div>`;
         }
       }
 
-      async function checkPaperTraderOrders() {
-        if (!paperTraderArea) {
+      async function checkPaperTraderOrders(mode = "paper") {
+        const page = traderPages[mode] || traderPages.paper;
+        if (!page.traderArea) {
           return;
         }
 
-        paperTraderArea.innerHTML = '<div class="muted">Checking open automation orders...</div>';
+        page.traderArea.innerHTML = '<div class="muted">Checking open automation orders...</div>';
 
         try {
-          const response = await fetch("/api/paper-trader-run?reconcileOnly=true&reconcileOrders=true&skipNewEntry=true", {
+          const params = new URLSearchParams({
+            mode: page.mode,
+            reconcileOnly: "true",
+            reconcileOrders: "true",
+            skipNewEntry: "true",
+          });
+          const response = await fetch(`/api/paper-trader-run?${params.toString()}`, {
             method: "GET",
-            headers: buildPaperTraderHeaders(true),
+            headers: buildPaperTraderHeaders(page, true),
           });
           const data = await readJsonResponse(response, "Paper trader order check failed.");
-          renderPaperTraderRunResult(data);
-          await loadPaperAutomationActivity();
+          renderPaperTraderRunResult(data, page);
+          await loadPaperAutomationActivity(page.mode);
           await refreshJournalData();
         } catch (error) {
-          paperTraderArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Paper trader order check failed."))}</div>`;
+          page.traderArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Paper trader order check failed."))}</div>`;
         }
       }
 
@@ -4088,26 +4321,28 @@
       loadInsightReasoningButton?.addEventListener("click", () => loadJournalInsights(true));
       refreshJournalButton?.addEventListener("click", loadJournalTrades);
       refreshRecommendationsButton?.addEventListener("click", loadTradeRecommendations);
-      paperTraderSecretInput?.addEventListener("input", () => {
-        try {
-          window.localStorage.setItem(paperTraderSecretStorageKey, paperTraderSecretInput.value);
-        } catch {
-          // Ignore browsers where localStorage is unavailable.
-        }
-      });
-      loadPaperTraderStatusButton?.addEventListener("click", loadPaperTraderStatus);
-      refreshPaperDashboardButton?.addEventListener("click", loadPaperDashboard);
-      refreshPaperAutomationActivityButton?.addEventListener("click", loadPaperAutomationActivity);
-      checkPaperTraderOrdersButton?.addEventListener("click", checkPaperTraderOrders);
-      runPaperTraderDryButton?.addEventListener("click", () => {
-        runPaperTraderCycle(true);
-      });
-      runPaperTraderLiveButton?.addEventListener("click", () => {
-        const shouldRun = window.confirm("Run a live automation cycle? This can place or close trades if order placement is enabled.");
-        if (!shouldRun) {
-          return;
-        }
-        runPaperTraderCycle(false);
+      Object.values(traderPages).forEach((page) => {
+        page.secretInput?.addEventListener("input", () => {
+          try {
+            window.localStorage.setItem(page.secretStorageKey, page.secretInput.value);
+          } catch {
+            // Ignore browsers where localStorage is unavailable.
+          }
+        });
+        page.loadStatusButton?.addEventListener("click", () => loadPaperTraderStatus(page.mode));
+        page.refreshDashboardButton?.addEventListener("click", () => loadPaperDashboard(page.mode));
+        page.refreshActivityButton?.addEventListener("click", () => loadPaperAutomationActivity(page.mode));
+        page.checkOrdersButton?.addEventListener("click", () => checkPaperTraderOrders(page.mode));
+        page.runDryButton?.addEventListener("click", () => {
+          runPaperTraderCycle(page.mode, true);
+        });
+        page.runOrderButton?.addEventListener("click", () => {
+          const shouldRun = window.confirm(`Run a ${page.tradeLabel} automation cycle? This can place or close trades if ${page.mode === "live" ? "LIVE" : "PAPER"} order placement is enabled.`);
+          if (!shouldRun) {
+            return;
+          }
+          runPaperTraderCycle(page.mode, false);
+        });
       });
       lateReviewButton?.addEventListener("click", runLateTradeReview);
       tradeRecommendationsArea?.addEventListener("click", (event) => {

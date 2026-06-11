@@ -543,7 +543,7 @@ async function resolveCurrentPrices(input: LateTradeReviewInput): Promise<{
 
   if (currentUnderlyingPrice === null || (currentOptionMid === null && input.option_symbol)) {
     try {
-      const client = await createAutomationTradeStationClient(readPaperTraderConfig().automationBaseUrl);
+      const client = await createAutomationTradeStationClient(readPaperTraderConfig("live").automationBaseUrl);
       if (currentUnderlyingPrice === null) {
         const quote = await client.fetchQuote(input.symbol);
         currentUnderlyingPrice = quote.last;
@@ -582,7 +582,7 @@ async function readCurrentChartReview(
   optionReturnPct: number | null,
 ): Promise<LateTradeReviewResult["chart_review"]> {
   try {
-    const baseUrl = readPaperTraderConfig().automationBaseUrl;
+    const baseUrl = readPaperTraderConfig("live").automationBaseUrl;
     const [review, barsByView] = await Promise.all([
       runSingleSymbolTradeStationAnalysis(input.symbol, baseUrl),
       loadLateReviewBars(input.symbol, baseUrl),

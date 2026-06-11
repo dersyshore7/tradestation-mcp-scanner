@@ -18,6 +18,7 @@ import {
   readPaperTraderConfig,
   TRADESTATION_LIVE_AUTOMATION_BASE_URL,
   TRADESTATION_SIM_AUTOMATION_BASE_URL,
+  type AutomationLane,
   type PaperTraderConfig,
 } from "./config.js";
 import {
@@ -96,6 +97,7 @@ const MIN_AUTOMATED_ENTRY_RISK_ROOM_PCT = 0.0025;
 const MAX_AUTOMATED_SCAN_RESUME_AGE_MS = 6 * 60 * 60 * 1000;
 
 type PaperTraderRunOptions = {
+  mode?: AutomationLane;
   prompt?: string;
   dryRun?: boolean;
   source?: "api" | "cli";
@@ -667,20 +669,24 @@ function buildRunResultConfig(config: PaperTraderConfig): PaperTraderRunResult["
 function buildPaperTraderConfigurationIssues(config: PaperTraderConfig): string[] {
   const issues: string[] = [];
   const environmentLabel = formatTradeStationEnvironmentLabel(config);
+  const lanePrefix = config.lane === "live" ? "LIVE" : "PAPER";
+  const allowOrderPlacementEnv = `${lanePrefix}_AUTO_TRADER_ALLOW_ORDER_PLACEMENT`;
+  const accountIdEnv = `${lanePrefix}_TRADESTATION_AUTOMATION_ACCOUNT_ID`;
+  const baseUrlEnv = `${lanePrefix}_TRADESTATION_AUTOMATION_BASE_URL`;
 
   if (!config.allowOrderPlacement) {
     issues.push(
-      `Set AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1 to allow ${environmentLabel} order placement; requests stay preview-only until then.`,
+      `Set ${allowOrderPlacementEnv}=1 to allow ${environmentLabel} order placement; requests stay preview-only until then.`,
     );
   }
 
   if (!config.accountId) {
-    issues.push(`Set TRADESTATION_AUTOMATION_ACCOUNT_ID to the TradeStation ${formatAutomationAccountLabel(config)} id.`);
+    issues.push(`Set ${accountIdEnv} to the TradeStation ${formatAutomationAccountLabel(config)} id.`);
   }
 
   if (!isRecognizedTradeStationAutomationBaseUrl(config.automationBaseUrl)) {
     issues.push(
-      `Set TRADESTATION_AUTOMATION_BASE_URL=${TRADESTATION_SIM_AUTOMATION_BASE_URL} for SIM or ${TRADESTATION_LIVE_AUTOMATION_BASE_URL} for LIVE.`,
+      `Set ${baseUrlEnv}=${config.lane === "live" ? TRADESTATION_LIVE_AUTOMATION_BASE_URL : TRADESTATION_SIM_AUTOMATION_BASE_URL}.`,
     );
   }
 
@@ -836,11 +842,13 @@ export function readAutomatedScanStateFromPaperTraderRun(
 }
 
 async function loadResumableAutomatedScanState(
+  mode: AutomationLane,
   dryRun: boolean,
 ): Promise<AutomatedEntryScanState | null> {
   try {
     const recentRuns = await listRecentPaperTraderRuns(12, {
       includeRawResult: true,
+      mode,
     });
     for (const run of recentRuns.runs.filter((item) => item.dry_run === dryRun)) {
       const state = readAutomatedScanStateFromPaperTraderRun(run);
@@ -1071,13 +1079,13 @@ async function loadPaperTraderCycleTrades(config: PaperTraderConfig): Promise<Jo
   return [...openTrades, ...closedTrades];
 }
 
-async function loadPaperTraderRunHistory(): Promise<{
+async function loadPaperTraderRunHistory(mode: AutomationLane): Promise<{
   runHistory: PaperTraderRunRecord[];
   runHistoryMigrationRequired: boolean;
   runHistoryMigrationMessage: string | null;
 }> {
   try {
-    const runHistoryResult = await listRecentPaperTraderRuns(50);
+    const runHistoryResult = await listRecentPaperTraderRuns(50, { mode });
     return {
       runHistory: runHistoryResult.runs,
       runHistoryMigrationRequired: runHistoryResult.migrationRequired,
@@ -1378,8 +1386,10 @@ async function loadPaperTraderSizingSnapshot(
   }
 }
 
-export async function getPaperTraderSizingSnapshot(): Promise<PaperTraderStatus["sizing"]> {
-  return await loadPaperTraderSizingSnapshot(readPaperTraderConfig());
+export async function getPaperTraderSizingSnapshot(
+  mode: AutomationLane = "paper",
+): Promise<PaperTraderStatus["sizing"]> {
+  return await loadPaperTraderSizingSnapshot(readPaperTraderConfig(mode));
 }
 
 function findFirstNumberByKeys(value: unknown, keys: string[]): number | null {
@@ -1938,43 +1948,6 @@ async function buildDuplicateLiveOpeningOrderBlockReason(params: {
   return null;
 }
 
-async function buildNonPatternDayTraderOpeningLimitBlockReason(params: {
-  client: AutomationTradeStationClient;
-  accountId: string;
-  now?: Date;
-}): Promise<string | null> {
-  const accountsPayload = await params.client.getAccounts();
-  const flags = extractAccountDayTradeFlags(accountsPayload, params.accountId);
-  if (flags.patternDayTrader !== false) {
-    return null;
-  }
-
-  const bodPayload = await params.client.getBeginningOfDayBalances(params.accountId);
-  const beginningDayTrades = extractBeginningDayTrades(bodPayload, params.accountId);
-  if (beginningDayTrades === null) {
-    return null;
-  }
-
-  const allowedOpenings = Math.max(
-    0,
-    NON_PDT_DAILY_OPENING_TRANSACTION_LIMIT - beginningDayTrades,
-  );
-  const usedOpeningsToday = await countFilledOpeningOrdersTodayFromTradeStation({
-    client: params.client,
-    accountId: params.accountId,
-    todayChicagoDate: formatChicagoParts(params.now ?? new Date()).date,
-  });
-
-  if (usedOpeningsToday < allowedOpenings) {
-    return null;
-  }
-
-  const qualifiedNote = flags.dayTradingQualified === true
-    ? " The account is day-trade qualified, but TradeStation still reports it as Non-PDT."
-    : "";
-  return `TradeStation non-PDT opening limit is exhausted: beginning-of-day DayTrades=${beginningDayTrades}, allowed openings today=${allowedOpenings}, filled openings today=${usedOpeningsToday}.${qualifiedNote} Skipped the new entry before sending another order.`;
-}
-
 function computePositionCap(params: {
   requestedContracts: number;
   limitPrice: number;
@@ -2524,7 +2497,7 @@ async function finalizePaperTraderRunResult(
   }
 
   const runHistory = includeHistory
-    ? await loadPaperTraderRunHistory()
+    ? await loadPaperTraderRunHistory(result.mode)
     : {
         runHistory: [],
         runHistoryMigrationRequired: false,
@@ -2547,8 +2520,8 @@ async function finalizePaperTraderRunResult(
   };
 }
 
-export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
-  const config = readPaperTraderConfig();
+export async function getPaperTraderStatus(mode: AutomationLane = "paper"): Promise<PaperTraderStatus> {
+  const config = readPaperTraderConfig(mode);
   const loadedTrades = await loadJournalTradesForPaperTraderStatus(config);
   const trades = loadedTrades.trades;
   const paperLearning = buildPaperLearningTradeSet(trades);
@@ -2556,7 +2529,7 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
   const configurationIssues = buildPaperTraderConfigurationIssues(config);
   const policyModel = trainPolicyModel(learningTrades);
   const entryRewardModel = trainEntryRewardModel(learningTrades);
-  const runHistory = await loadPaperTraderRunHistory();
+  const runHistory = await loadPaperTraderRunHistory(config.accountMode);
   const entryCandidateHistory = await loadPaperEntryCandidateHistory(200);
   const sizing = await loadPaperTraderSizingSnapshot(config);
   const currentModeTrades = trades.filter((trade) => isConfiguredAccountModeTrade(config, trade));
@@ -3165,7 +3138,7 @@ async function manageWorkingEntryOrders(
       result.skipped.push({
         tradeId: trade.id,
         symbol: trade.symbol,
-        reason: "Entry order management is disabled by AUTO_TRADER_MANAGE_ENTRY_ORDERS.",
+        reason: `Entry order management is disabled by ${config.lane === "live" ? "LIVE" : "PAPER"}_AUTO_TRADER_MANAGE_ENTRY_ORDERS.`,
       });
       continue;
     }
@@ -4544,7 +4517,7 @@ async function maybeEnterNewPaperTrade(params: {
 
   const learningTrades = filterRecordsForPaperLearning(allTrades);
   const entryRewardModel = trainEntryRewardModel(learningTrades);
-  const resumableScanState = await loadResumableAutomatedScanState(dryRun);
+  const resumableScanState = await loadResumableAutomatedScanState(config.accountMode, dryRun);
   const scanRunId = resumableScanState?.scanRunId ?? buildScanRunId();
   const paperLearningPreferences =
     resumableScanState?.paperLearningPreferences
@@ -4926,74 +4899,6 @@ async function maybeEnterNewPaperTrade(params: {
         outcome: "trade_card_blocked",
         symbol: scan.ticker,
         reason,
-        tradeCard,
-        reasoning: entryReasoning,
-        evaluatedCandidates,
-        scanSummary: entryScanSummary,
-      };
-    }
-
-    const dayTradeOpeningBlockReason = buildDayTradeOpeningBlockReason({
-      accountValueUsd,
-      cashBalanceUsd,
-      optionsBuyingPowerUsd,
-      accountLabel,
-    });
-    if (dayTradeOpeningBlockReason) {
-      await recordEntryCandidateAudit({
-        scanRunId,
-        dryRun,
-        symbol: scan.ticker,
-        decision: "day_trade_opening_blocked",
-        decisionReason: dayTradeOpeningBlockReason,
-        features: entryFeatures,
-        entryPolicy: entryPolicyRecommendation,
-        selected: true,
-        scan,
-        tradeCard,
-      });
-      return {
-        attempted: true,
-        outcome: "trade_card_blocked",
-        symbol: scan.ticker,
-        reason: dayTradeOpeningBlockReason,
-        tradeCard,
-        reasoning: entryReasoning,
-        evaluatedCandidates,
-        scanSummary: entryScanSummary,
-      };
-    }
-
-    let nonPdtOpeningLimitBlockReason: string | null = null;
-    try {
-      nonPdtOpeningLimitBlockReason = await buildNonPatternDayTraderOpeningLimitBlockReason({
-        client,
-        accountId: config.accountId as string,
-      });
-    } catch (error) {
-      console.warn(
-        "non-PDT opening limit check failed",
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-    if (nonPdtOpeningLimitBlockReason) {
-      await recordEntryCandidateAudit({
-        scanRunId,
-        dryRun,
-        symbol: scan.ticker,
-        decision: "non_pdt_opening_limit_blocked",
-        decisionReason: nonPdtOpeningLimitBlockReason,
-        features: entryFeatures,
-        entryPolicy: entryPolicyRecommendation,
-        selected: true,
-        scan,
-        tradeCard,
-      });
-      return {
-        attempted: true,
-        outcome: "trade_card_blocked",
-        symbol: scan.ticker,
-        reason: nonPdtOpeningLimitBlockReason,
         tradeCard,
         reasoning: entryReasoning,
         evaluatedCandidates,
@@ -5471,7 +5376,7 @@ async function maybeEnterNewPaperTrade(params: {
 export async function runPaperTraderCycle(
   options: PaperTraderRunOptions = {},
 ): Promise<PaperTraderRunResult> {
-  const config = readPaperTraderConfig();
+  const config = readPaperTraderConfig(options.mode ?? "paper");
   assertPaperTraderConfig(config);
 
   const requestedDryRun = options.dryRun === true;
@@ -5483,7 +5388,7 @@ export async function runPaperTraderCycle(
       ? "Monitor-only run uses read-only TradeStation checks and does not place orders."
       : requestedDryRun
       ? "Dry run was requested explicitly."
-      : "AUTO_TRADER_ALLOW_ORDER_PLACEMENT is not enabled, so this run used preview-only mode."
+      : `${config.lane === "live" ? "LIVE" : "PAPER"}_AUTO_TRADER_ALLOW_ORDER_PLACEMENT is not enabled, so this run used preview-only mode.`
     : null;
   let allTrades = await loadPaperTraderCycleTrades(config);
   const shouldReconcileOrders = options.reconcileOrders === true || !dryRun;

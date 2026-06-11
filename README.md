@@ -214,13 +214,15 @@ This UI is intentionally thin and does not place orders.
 
 The existing scanner workflow remains unchanged and read-only.
 
-A separate automation lane supports TradeStation SIM paper trading or LIVE account automation depending on `TRADESTATION_AUTOMATION_BASE_URL`:
+A separate automation module supports explicit TradeStation SIM paper trading and LIVE account automation lanes:
 
-- API: `GET /api/paper-trader` for status, `POST /api/paper-trader` to run one automation cycle
-- Cron/manual-run route: `GET /api/paper-trader-run`
-- Full automation cron route: `GET /api/paper-trader-run?reconcileOrders=true` reconciles fills, manages open trades for the configured account mode, and can enter new trades when guards allow
-- Read-only monitor mode: `GET /api/paper-trader-run?reconcileOnly=true&reconcileOrders=true&skipNewEntry=true` is still available for manual order checks
-- CLI: `npm run paper-trader:run`
+- API: `GET /api/paper-trader?mode=paper|live` for status, `POST /api/paper-trader` to run one automation cycle
+- Dashboard API: `GET /api/paper-dashboard?mode=paper|live`
+- Activity API: `GET /api/paper-activity?mode=paper|live`
+- Cron/manual-run route: `GET /api/paper-trader-run?mode=paper|live`
+- Full automation cron route: `GET /api/paper-trader-run?mode=paper|live&reconcileOrders=true` reconciles fills, manages open trades for that lane, and can enter new trades when guards allow
+- Read-only monitor mode: `GET /api/paper-trader-run?mode=paper|live&reconcileOnly=true&reconcileOrders=true&skipNewEntry=true` is still available for manual order checks
+- CLI: `npm run paper-trader:run -- --mode=paper|live`
 
 What one automation cycle does:
 
@@ -242,9 +244,9 @@ New automation trades seed AI management state in `signal_snapshot_json`, includ
 
 Safety defaults:
 
-- Order placement stays off until you set `AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1`
+- Order placement stays off until you set the lane-specific placement flag, such as `PAPER_AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1` or `LIVE_AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1`
 - The automation module only accepts official TradeStation SIM (`https://sim-api.tradestation.com/v3`) or LIVE (`https://api.tradestation.com/v3`) base URLs
-- New entries are capped by `AUTO_TRADER_MAX_POSITION_PCT`, defaulting to 10% of the configured TradeStation account value
+- New entries are capped by the lane-specific max-position setting, defaulting to 10% of the configured TradeStation account value
 - There is no open-trade-count cap; each full 5-minute cron cycle can add one new non-duplicate setup if the scan and trade card both pass
 - Daily losses are not capped; the automation keeps collecting trade outcomes so the policy memory can learn from both winners and losers
 - The API route can be protected with `AUTO_TRADER_API_SECRET` or `CRON_SECRET`
@@ -254,20 +256,29 @@ Safety defaults:
 Recommended env vars for the separate automation module:
 
 ```bash
-AUTO_TRADER_ALLOW_ORDER_PLACEMENT=0
-AUTO_TRADER_MAX_POSITION_PCT=0.10
-AUTO_TRADER_SCAN_PROMPT=Run a new Scan for this week
 AUTO_TRADER_API_SECRET=your_long_random_secret
 
-TRADESTATION_AUTOMATION_BASE_URL=https://sim-api.tradestation.com/v3
-# For LIVE automation, use https://api.tradestation.com/v3 instead.
-TRADESTATION_AUTOMATION_ACCOUNT_ID=your_account_id
+PAPER_TRADESTATION_AUTOMATION_BASE_URL=https://sim-api.tradestation.com/v3
+PAPER_TRADESTATION_AUTOMATION_ACCOUNT_ID=your_sim_account_id
+PAPER_AUTO_TRADER_ALLOW_ORDER_PLACEMENT=0
+PAPER_AUTO_TRADER_MANAGE_ENTRY_ORDERS=1
+PAPER_AUTO_TRADER_MAX_POSITION_PCT=0.10
+PAPER_AUTO_TRADER_SCAN_PROMPT=Run a new Scan for this week
+
+LIVE_TRADESTATION_AUTOMATION_BASE_URL=https://api.tradestation.com/v3
+LIVE_TRADESTATION_AUTOMATION_ACCOUNT_ID=your_live_account_id
+LIVE_AUTO_TRADER_ALLOW_ORDER_PLACEMENT=0
+LIVE_AUTO_TRADER_MANAGE_ENTRY_ORDERS=1
+LIVE_AUTO_TRADER_MAX_POSITION_PCT=0.10
+LIVE_AUTO_TRADER_SCAN_PROMPT=Run a new Scan for this week
 ```
+
+The legacy `TRADESTATION_AUTOMATION_BASE_URL`, `TRADESTATION_AUTOMATION_ACCOUNT_ID`, and `TRADESTATION_ACCOUNT_ID` variables are treated as LIVE-lane fallbacks only. The PAPER lane does not inherit them.
 
 Dry-run example:
 
 ```bash
-npm run paper-trader:run -- --dry-run
+npm run paper-trader:run -- --mode=paper --dry-run
 ```
 
 API trigger example:
@@ -276,27 +287,27 @@ API trigger example:
 curl -X POST https://your-deployment.vercel.app/api/paper-trader \
   -H "Authorization: Bearer your_long_random_secret" \
   -H "Content-Type: application/json" \
-  -d '{"dryRun":true}'
+  -d '{"mode":"paper","dryRun":true}'
 ```
 
 Cron/manual GET example:
 
 ```bash
-curl "https://your-deployment.vercel.app/api/paper-trader-run?dryRun=true" \
+curl "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&dryRun=true" \
   -H "Authorization: Bearer your_long_random_secret"
 ```
 
 Read-only order monitor example:
 
 ```bash
-curl "https://your-deployment.vercel.app/api/paper-trader-run?reconcileOnly=true&reconcileOrders=true&skipNewEntry=true" \
+curl "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&reconcileOnly=true&reconcileOrders=true&skipNewEntry=true" \
   -H "Authorization: Bearer your_long_random_secret"
 ```
 
 Full automation run example:
 
 ```bash
-curl "https://your-deployment.vercel.app/api/paper-trader-run?reconcileOrders=true" \
+curl "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&reconcileOrders=true" \
   -H "Authorization: Bearer your_long_random_secret"
 ```
 
@@ -305,7 +316,7 @@ Notes:
 - This module is intentionally separate from `/api/workflow` and the current scanner UI.
 - It is built for long single-leg options entries only.
 - It uses the existing trade-card logic for entry planning and an AI manager for ongoing trade assessment.
-- `vercel.json` schedules `/api/paper-trader-run?reconcileOrders=true`, so the deployed cron can reconcile fills, manage exits, and enter new trades when `AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1`.
+- `vercel.json` schedules both `/api/paper-trader-run?mode=paper&reconcileOrders=true` and `/api/paper-trader-run?mode=live&reconcileOrders=true`, so each deployed lane can reconcile fills, manage exits, and enter new trades when its lane-specific order-placement flag is enabled.
 - Use read-only monitor mode only for manual diagnostics; it reconciles partial fills and saved average entry price, but does not scan for new entries or send exit orders.
 - The current AI manager now includes a first trained contextual policy layer learned from closed paper and live trades, plus rewarded experience memory in the prompt.
 - New entries now include a separate realized-R entry reward model. It learns which entry contexts have produced better or worse closed paper/live trade R multiples, uses a 5R outlier cap to keep bad journal math from dominating, audits feature coverage for missing variables, can block repeatedly poor contexts when enough evidence exists, and then asks the scanner for another non-duplicate candidate.

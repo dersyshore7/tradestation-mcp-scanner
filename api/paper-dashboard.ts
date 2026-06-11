@@ -1,5 +1,6 @@
 import { getPaperTraderSizingSnapshot } from "../src/automation/paperTrader.js";
 import { buildEmptyPaperDashboard, getPaperDashboard } from "../src/journal/paperDashboard.js";
+import { readAutomationLane, type AutomationLane } from "../src/automation/config.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 function firstQueryValue(value: string | string[] | undefined): string | undefined {
@@ -12,6 +13,10 @@ function parseLimit(value: string | string[] | undefined): number {
     return 300;
   }
   return Math.min(500, Math.max(50, Math.floor(parsed)));
+}
+
+function parseMode(value: string | string[] | undefined): AutomationLane {
+  return readAutomationLane(firstQueryValue(value)) ?? "paper";
 }
 
 function formatWarning(label: string, error: unknown): string {
@@ -36,14 +41,16 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
   }
 
   const limit = parseLimit(req.query?.limit);
+  const mode = parseMode(req.query?.mode);
   const [dashboardResult, simAccountResult] = await Promise.allSettled([
-    getPaperDashboard(limit),
-    getPaperTraderSizingSnapshot(),
+    getPaperDashboard(limit, mode),
+    getPaperTraderSizingSnapshot(mode),
   ]);
 
   const dashboard = dashboardResult.status === "fulfilled"
     ? dashboardResult.value
-    : buildEmptyPaperDashboard([formatWarning("Paper dashboard data unavailable", dashboardResult.reason)]);
+    : buildEmptyPaperDashboard([formatWarning(`${mode === "live" ? "Live" : "Paper"} dashboard data unavailable`, dashboardResult.reason)], mode);
+  const accountLabel = mode === "live" ? "LIVE account" : "SIM account";
   const simAccount = simAccountResult.status === "fulfilled"
     ? simAccountResult.value
     : {
@@ -59,12 +66,13 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
         openPositionCostUsd: null,
         openPositionMarketValueUsd: null,
         positions: [],
-        error: formatWarning("SIM account snapshot unavailable", simAccountResult.reason),
+        error: formatWarning(`${accountLabel} snapshot unavailable`, simAccountResult.reason),
       };
 
   sendJson(res, 200, {
     dashboard: {
       ...dashboard,
+      account_snapshot: simAccount,
       sim_account: simAccount,
     },
   });

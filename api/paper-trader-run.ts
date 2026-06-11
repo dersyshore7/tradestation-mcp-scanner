@@ -1,5 +1,5 @@
 import { runPaperTraderCycle } from "../src/automation/paperTrader.js";
-import { readPaperTraderApiSecrets } from "../src/automation/config.js";
+import { readAutomationLane, readPaperTraderApiSecrets, type AutomationLane } from "../src/automation/config.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 type RequestWithHeaders = VercelRequestLike & {
@@ -22,6 +22,14 @@ function readBooleanQuery(req: RequestWithHeaders, name: string): boolean {
   return value === "1" || value === "true";
 }
 
+function firstQueryValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function parseMode(req: RequestWithHeaders): AutomationLane {
+  return readAutomationLane(firstQueryValue(req.query?.mode)) ?? "paper";
+}
+
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
   const request = req as RequestWithHeaders;
   if (!isAuthorized(request)) {
@@ -40,7 +48,9 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
 
   try {
     const startedAt = Date.now();
+    const mode = parseMode(request);
     const options = {
+      mode,
       dryRun: readBooleanQuery(request, "dryRun"),
       reconcileOnly: readBooleanQuery(request, "reconcileOnly"),
       reconcileOrders: readBooleanQuery(request, "reconcileOrders"),
@@ -52,6 +62,7 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
     };
     console.info("paper-trader-run started", {
       method: req.method,
+      mode,
       dryRun: options.dryRun,
       reconcileOnly: options.reconcileOnly,
       reconcileOrders: options.reconcileOrders,
@@ -62,6 +73,7 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
     });
     console.info("paper-trader-run completed", {
       durationMs: Date.now() - startedAt,
+      mode: result.mode,
       dryRun: result.dryRun,
       openPaperTrades: result.guards.openPaperTrades,
       managementInspected: result.management.inspected,

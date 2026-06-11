@@ -1,5 +1,7 @@
 import { readPaperLearningWindow } from "../automation/paperLearningCutoff.js";
+import { buildReasoningSnapshot } from "./insights.js";
 import { supabaseCount, supabaseSelect } from "../supabase/serverClient.js";
+import type { AccountMode, JournalReasoningSnapshot } from "./types.js";
 
 const WEEKDAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const CURRENT_EPOCH_SCOPE_LABEL = "Current learning epoch" as const;
@@ -17,7 +19,13 @@ type PaperDashboardTradeRow = {
   direction: "CALL" | "PUT";
   setup_type: string;
   status: "open" | "closed";
+  contracts: NumericValue;
   position_cost_usd: string | null;
+  underlying_entry_price: NumericValue;
+  option_entry_price: NumericValue;
+  intended_stop_underlying: NumericValue;
+  intended_target_underlying: NumericValue;
+  entry_notes: string | null;
 };
 
 type PaperDashboardReviewRow = {
@@ -26,12 +34,21 @@ type PaperDashboardReviewRow = {
   realized_pl_usd: NumericValue;
   realized_r_multiple: NumericValue;
   realized_return_pct: NumericValue;
+  review_notes: string | null;
 };
 
 type PaperDashboardExitRow = {
   trade_id: string;
   exit_time: string;
   exit_reason: string;
+  option_exit_price: NumericValue;
+  quantity_closed: number;
+  exit_notes: string | null;
+};
+
+type PaperDashboardOutcomeDetailRow = {
+  id: string;
+  signal_snapshot_json: Record<string, unknown> | null;
 };
 
 export type PaperDashboardBucket = {
@@ -59,14 +76,29 @@ export type PaperDashboardOutcomeTrade = {
   entry_day: string;
   exit_time: string | null;
   exit_reason: string | null;
+  contracts: number | null;
   position_cost_usd: number | null;
+  underlying_entry_price: number | null;
+  option_entry_price: number | null;
+  option_exit_price: number | null;
+  quantity_closed: number | null;
+  sold_for_usd: number | null;
+  intended_stop_underlying: number | null;
+  intended_target_underlying: number | null;
+  active_stop_underlying: number | null;
+  active_target_underlying: number | null;
   realized_pl_usd: number | null;
   realized_r_multiple: number | null;
   realized_return_pct: number | null;
+  entry_notes: string | null;
+  exit_notes: string | null;
+  review_notes: string | null;
+  reasoning: JournalReasoningSnapshot | null;
 };
 
 export type PaperDashboard = {
   dataWarnings: string[];
+  accountMode: AccountMode;
   learningStartAt: string;
   includedTradeCount: number;
   excludedTradeCount: number;
@@ -107,12 +139,18 @@ type PaperDashboardTrade = PaperDashboardTradeRow & {
   latest_exit: PaperDashboardExitRow | null;
 };
 
-function asNumber(value: NumericValue | undefined): number | null {
+function asNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === "") {
     return null;
   }
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 function average(values: number[]): number | null {
@@ -215,7 +253,28 @@ function sortByLatestOutcomeDesc(left: PaperDashboardTrade, right: PaperDashboar
   return rightTime.localeCompare(leftTime);
 }
 
-function buildOutcomeTrade(trade: PaperDashboardTrade): PaperDashboardOutcomeTrade {
+function readAutomationLevel(
+  signalSnapshot: Record<string, unknown> | null,
+  key: "activeStopUnderlying" | "activeTargetUnderlying",
+): number | null {
+  const automation = asRecord(asRecord(signalSnapshot?.automation)?.paperTrader);
+  return asNumber(automation?.[key]);
+}
+
+function buildSoldForUsd(exit: PaperDashboardExitRow | null): number | null {
+  const optionExitPrice = asNumber(exit?.option_exit_price);
+  const quantityClosed = asNumber(exit?.quantity_closed);
+  if (optionExitPrice === null || quantityClosed === null) {
+    return null;
+  }
+  return Number((optionExitPrice * quantityClosed * 100).toFixed(2));
+}
+
+function buildOutcomeTrade(
+  trade: PaperDashboardTrade,
+  detail: PaperDashboardOutcomeDetailRow | null,
+): PaperDashboardOutcomeTrade {
+  const signalSnapshot = asRecord(detail?.signal_snapshot_json);
   return {
     id: trade.id,
     symbol: trade.symbol,
@@ -226,10 +285,24 @@ function buildOutcomeTrade(trade: PaperDashboardTrade): PaperDashboardOutcomeTra
     entry_day: trade.entry_day,
     exit_time: trade.latest_exit?.exit_time ?? null,
     exit_reason: trade.latest_exit?.exit_reason ?? null,
+    contracts: asNumber(trade.contracts),
     position_cost_usd: asNumber(trade.position_cost_usd),
+    underlying_entry_price: asNumber(trade.underlying_entry_price),
+    option_entry_price: asNumber(trade.option_entry_price),
+    option_exit_price: asNumber(trade.latest_exit?.option_exit_price),
+    quantity_closed: asNumber(trade.latest_exit?.quantity_closed),
+    sold_for_usd: buildSoldForUsd(trade.latest_exit),
+    intended_stop_underlying: asNumber(trade.intended_stop_underlying),
+    intended_target_underlying: asNumber(trade.intended_target_underlying),
+    active_stop_underlying: readAutomationLevel(signalSnapshot, "activeStopUnderlying"),
+    active_target_underlying: readAutomationLevel(signalSnapshot, "activeTargetUnderlying"),
     realized_pl_usd: asNumber(trade.review?.realized_pl_usd),
     realized_r_multiple: asNumber(trade.review?.realized_r_multiple),
     realized_return_pct: asNumber(trade.review?.realized_return_pct),
+    entry_notes: trade.entry_notes,
+    exit_notes: trade.latest_exit?.exit_notes ?? null,
+    review_notes: trade.review?.review_notes ?? null,
+    reasoning: buildReasoningSnapshot(signalSnapshot, trade.symbol),
   };
 }
 
@@ -241,18 +314,22 @@ function buildArchiveFilter(learningStartAt: string): string {
   return `created_at=lt.${learningStartAt}`;
 }
 
-async function countPaperDashboardRows(filters: string[]): Promise<number> {
+async function countPaperDashboardRows(accountMode: AccountMode, filters: string[]): Promise<number> {
   return supabaseCount({
     table: "journal_trades",
-    filters: ["account_mode=eq.paper", ...filters],
+    filters: [`account_mode=eq.${accountMode}`, ...filters],
   });
 }
 
-async function loadPaperDashboardRows(limit: number, filters: string[] = []): Promise<PaperDashboardTrade[]> {
+async function loadPaperDashboardRows(
+  accountMode: AccountMode,
+  limit: number,
+  filters: string[] = [],
+): Promise<PaperDashboardTrade[]> {
   const tradeRows = await supabaseSelect<PaperDashboardTradeRow>({
     table: "journal_trades",
-    select: "id,created_at,entry_date,entry_time,symbol,direction,setup_type,status,position_cost_usd",
-    filters: ["account_mode=eq.paper", ...filters],
+    select: "id,created_at,entry_date,entry_time,symbol,direction,setup_type,status,contracts,position_cost_usd,underlying_entry_price,option_entry_price,intended_stop_underlying,intended_target_underlying,entry_notes",
+    filters: [`account_mode=eq.${accountMode}`, ...filters],
     order: ["entry_date.desc", "created_at.desc"],
     limit,
   });
@@ -265,12 +342,12 @@ async function loadPaperDashboardRows(limit: number, filters: string[] = []): Pr
   const [reviewRows, exitRows] = await Promise.all([
     supabaseSelect<PaperDashboardReviewRow>({
       table: "journal_reviews",
-      select: "trade_id,winner,realized_pl_usd,realized_r_multiple,realized_return_pct",
+      select: "trade_id,winner,realized_pl_usd,realized_r_multiple,realized_return_pct,review_notes",
       filters: [buildInFilter("trade_id", tradeIds)],
     }),
     supabaseSelect<PaperDashboardExitRow>({
       table: "journal_exits",
-      select: "trade_id,exit_time,exit_reason",
+      select: "trade_id,exit_time,exit_reason,option_exit_price,quantity_closed,exit_notes",
       filters: [buildInFilter("trade_id", tradeIds)],
       order: ["exit_time.desc"],
     }),
@@ -300,10 +377,33 @@ async function loadPaperDashboardRows(limit: number, filters: string[] = []): Pr
   });
 }
 
-export function buildEmptyPaperDashboard(dataWarnings: string[] = []): PaperDashboard {
+async function loadPaperDashboardOutcomeDetails(
+  tradeIds: string[],
+): Promise<Map<string, PaperDashboardOutcomeDetailRow>> {
+  if (tradeIds.length === 0) {
+    return new Map();
+  }
+
+  const rows = await supabaseSelect<PaperDashboardOutcomeDetailRow>({
+    table: "journal_trades",
+    select: "id,signal_snapshot_json",
+    filters: [buildInFilter("id", tradeIds)],
+  });
+
+  return rows.reduce((map, row) => {
+    map.set(row.id, row);
+    return map;
+  }, new Map<string, PaperDashboardOutcomeDetailRow>());
+}
+
+export function buildEmptyPaperDashboard(
+  dataWarnings: string[] = [],
+  accountMode: AccountMode = "paper",
+): PaperDashboard {
   const learningWindow = readPaperLearningWindow();
   return {
     dataWarnings,
+    accountMode,
     learningStartAt: learningWindow.learningStartAt,
     includedTradeCount: 0,
     excludedTradeCount: 0,
@@ -337,15 +437,18 @@ export function buildEmptyPaperDashboard(dataWarnings: string[] = []): PaperDash
   };
 }
 
-export async function getPaperDashboard(limit = 300): Promise<PaperDashboard> {
+export async function getPaperDashboard(
+  limit = 300,
+  accountMode: AccountMode = "paper",
+): Promise<PaperDashboard> {
   const learningWindow = readPaperLearningWindow();
   const epochFilter = buildEpochFilter(learningWindow.learningStartAt);
   const archiveFilter = buildArchiveFilter(learningWindow.learningStartAt);
   const metricLimit = Math.max(limit, PAPER_DASHBOARD_METRIC_LIMIT);
   const [trades, includedTradeCount, excludedTradeCount] = await Promise.all([
-    loadPaperDashboardRows(metricLimit, [epochFilter]),
-    countPaperDashboardRows([epochFilter]),
-    countPaperDashboardRows([archiveFilter]),
+    loadPaperDashboardRows(accountMode, metricLimit, [epochFilter]),
+    countPaperDashboardRows(accountMode, [epochFilter]),
+    countPaperDashboardRows(accountMode, [archiveFilter]),
   ]);
   const closedTrades = toClosedTrades(trades);
   const openTrades = trades.filter((trade) => trade.status === "open");
@@ -381,11 +484,21 @@ export async function getPaperDashboard(limit = 300): Promise<PaperDashboard> {
     key: trade.latest_exit?.exit_reason ?? "unknown",
     label: trade.latest_exit?.exit_reason ?? "unknown",
   })).sort((left, right) => right.realized_pl_usd - left.realized_pl_usd);
+  const outcomeWinnerTrades = winners
+    .sort(sortByLatestOutcomeDesc)
+    .slice(0, PAPER_DASHBOARD_OUTCOME_DETAIL_LIMIT);
+  const outcomeLoserTrades = losers
+    .sort(sortByLatestOutcomeDesc)
+    .slice(0, PAPER_DASHBOARD_OUTCOME_DETAIL_LIMIT);
+  const outcomeDetailsById = await loadPaperDashboardOutcomeDetails(
+    [...outcomeWinnerTrades, ...outcomeLoserTrades].map((trade) => trade.id),
+  );
 
   return {
     dataWarnings: includedTradeCount > trades.length
-      ? [`Dashboard is showing the latest ${trades.length} current-epoch paper trades out of ${includedTradeCount}.`]
+      ? [`Dashboard is showing the latest ${trades.length} current-epoch ${accountMode} trades out of ${includedTradeCount}.`]
       : [],
+    accountMode,
     learningStartAt: learningWindow.learningStartAt,
     includedTradeCount,
     excludedTradeCount,
@@ -418,14 +531,12 @@ export async function getPaperDashboard(limit = 300): Promise<PaperDashboard> {
     by_symbol: bySymbol,
     by_exit_reason: byExitReason,
     outcome_details: {
-      winners: winners
-        .sort(sortByLatestOutcomeDesc)
-        .slice(0, PAPER_DASHBOARD_OUTCOME_DETAIL_LIMIT)
-        .map(buildOutcomeTrade),
-      losers: losers
-        .sort(sortByLatestOutcomeDesc)
-        .slice(0, PAPER_DASHBOARD_OUTCOME_DETAIL_LIMIT)
-        .map(buildOutcomeTrade),
+      winners: outcomeWinnerTrades.map((trade) =>
+        buildOutcomeTrade(trade, outcomeDetailsById.get(trade.id) ?? null)
+      ),
+      losers: outcomeLoserTrades.map((trade) =>
+        buildOutcomeTrade(trade, outcomeDetailsById.get(trade.id) ?? null)
+      ),
       limit: PAPER_DASHBOARD_OUTCOME_DETAIL_LIMIT,
     },
   };

@@ -1,4 +1,5 @@
 import { listRecentPaperTraderRuns } from "../src/automation/paperTraderHistory.js";
+import { readAutomationLane, type AutomationLane } from "../src/automation/config.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 function firstQueryValue(value: string | string[] | undefined): string | undefined {
@@ -11,6 +12,10 @@ function parseLimit(value: string | string[] | undefined): number {
     return 25;
   }
   return Math.min(50, Math.max(5, Math.floor(parsed)));
+}
+
+function parseMode(value: string | string[] | undefined): AutomationLane {
+  return readAutomationLane(firstQueryValue(value)) ?? "paper";
 }
 
 function formatWarning(error: unknown): string {
@@ -35,8 +40,10 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
   }
 
   try {
+    const mode = parseMode(req.query?.mode);
     const result = await listRecentPaperTraderRuns(parseLimit(req.query?.limit), {
       includeRawResult: true,
+      mode,
     });
     sendJson(res, 200, {
       activity: {

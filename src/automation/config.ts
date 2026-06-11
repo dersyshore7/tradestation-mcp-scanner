@@ -1,17 +1,26 @@
 import { DEFAULT_SCAN_PROMPT } from "../config/defaultScanPrompt.js";
 import type { AccountMode } from "../journal/types.js";
 
-const AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV = "AUTO_TRADER_ALLOW_ORDER_PLACEMENT";
-const AUTO_TRADER_MANAGE_ENTRY_ORDERS_ENV = "AUTO_TRADER_MANAGE_ENTRY_ORDERS";
-const AUTO_TRADER_MAX_POSITION_PCT_ENV = "AUTO_TRADER_MAX_POSITION_PCT";
-const AUTO_TRADER_SCAN_PROMPT_ENV = "AUTO_TRADER_SCAN_PROMPT";
 const AUTO_TRADER_API_SECRET_ENV = "AUTO_TRADER_API_SECRET";
 const TRADESTATION_AUTOMATION_BASE_URL_ENV = "TRADESTATION_AUTOMATION_BASE_URL";
 const TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV = "TRADESTATION_AUTOMATION_ACCOUNT_ID";
+const PAPER_TRADESTATION_AUTOMATION_BASE_URL_ENV = "PAPER_TRADESTATION_AUTOMATION_BASE_URL";
+const PAPER_TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV = "PAPER_TRADESTATION_AUTOMATION_ACCOUNT_ID";
+const PAPER_AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV = "PAPER_AUTO_TRADER_ALLOW_ORDER_PLACEMENT";
+const PAPER_AUTO_TRADER_MANAGE_ENTRY_ORDERS_ENV = "PAPER_AUTO_TRADER_MANAGE_ENTRY_ORDERS";
+const PAPER_AUTO_TRADER_MAX_POSITION_PCT_ENV = "PAPER_AUTO_TRADER_MAX_POSITION_PCT";
+const PAPER_AUTO_TRADER_SCAN_PROMPT_ENV = "PAPER_AUTO_TRADER_SCAN_PROMPT";
+const LIVE_TRADESTATION_AUTOMATION_BASE_URL_ENV = "LIVE_TRADESTATION_AUTOMATION_BASE_URL";
+const LIVE_TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV = "LIVE_TRADESTATION_AUTOMATION_ACCOUNT_ID";
+const LIVE_AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV = "LIVE_AUTO_TRADER_ALLOW_ORDER_PLACEMENT";
+const LIVE_AUTO_TRADER_MANAGE_ENTRY_ORDERS_ENV = "LIVE_AUTO_TRADER_MANAGE_ENTRY_ORDERS";
+const LIVE_AUTO_TRADER_MAX_POSITION_PCT_ENV = "LIVE_AUTO_TRADER_MAX_POSITION_PCT";
+const LIVE_AUTO_TRADER_SCAN_PROMPT_ENV = "LIVE_AUTO_TRADER_SCAN_PROMPT";
 export const TRADESTATION_SIM_AUTOMATION_BASE_URL = "https://sim-api.tradestation.com/v3";
 export const TRADESTATION_LIVE_AUTOMATION_BASE_URL = "https://api.tradestation.com/v3";
 
 export type TradeStationEnvironment = "sim" | "live";
+export type AutomationLane = AccountMode;
 
 export type PaperTraderConfig = {
   enabled: boolean;
@@ -25,6 +34,7 @@ export type PaperTraderConfig = {
   automationBaseUrl: string;
   tradeStationEnvironment: TradeStationEnvironment;
   accountMode: AccountMode;
+  lane: AutomationLane;
   accountId: string | null;
 };
 
@@ -65,6 +75,26 @@ function readPositiveRatioEnv(name: string, fallback: number): number {
   return ratio;
 }
 
+function readPositiveRatioEnvFrom(names: string[], fallback: number): number {
+  const name = names.find((candidate) => readStringEnv(candidate) !== null);
+  return name ? readPositiveRatioEnv(name, fallback) : fallback;
+}
+
+function readBooleanEnvFrom(names: string[], defaultValue: boolean): boolean {
+  const name = names.find((candidate) => readStringEnv(candidate) !== null);
+  return name ? readBooleanEnv(name, defaultValue) : defaultValue;
+}
+
+function readStringEnvFrom(names: string[]): string | null {
+  for (const name of names) {
+    const value = readStringEnv(name);
+    if (value !== null) {
+      return value;
+    }
+  }
+  return null;
+}
+
 export function isTradeStationSimBaseUrl(value: string): boolean {
   return value.replace(/\/$/, "") === TRADESTATION_SIM_AUTOMATION_BASE_URL;
 }
@@ -88,8 +118,68 @@ export function isRecognizedTradeStationAutomationBaseUrl(value: string): boolea
   return readTradeStationEnvironment(value) !== null;
 }
 
-function accountModeForTradeStationEnvironment(environment: TradeStationEnvironment): AccountMode {
-  return environment === "live" ? "live" : "paper";
+export function readAutomationLane(value: unknown): AutomationLane | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === "paper" || normalized === "live"
+    ? normalized
+    : null;
+}
+
+function expectedTradeStationEnvironmentForLane(lane: AutomationLane): TradeStationEnvironment {
+  return lane === "live" ? "live" : "sim";
+}
+
+function defaultTradeStationBaseUrlForLane(lane: AutomationLane): string {
+  return lane === "live"
+    ? TRADESTATION_LIVE_AUTOMATION_BASE_URL
+    : TRADESTATION_SIM_AUTOMATION_BASE_URL;
+}
+
+function baseUrlEnvNamesForLane(lane: AutomationLane): string[] {
+  return lane === "live"
+    ? [LIVE_TRADESTATION_AUTOMATION_BASE_URL_ENV, TRADESTATION_AUTOMATION_BASE_URL_ENV]
+    : [PAPER_TRADESTATION_AUTOMATION_BASE_URL_ENV];
+}
+
+function accountIdEnvNamesForLane(lane: AutomationLane): string[] {
+  return lane === "live"
+    ? [
+        LIVE_TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV,
+        TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV,
+        "TRADESTATION_ACCOUNT_ID",
+      ]
+    : [PAPER_TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV];
+}
+
+function allowOrderPlacementEnvNamesForLane(lane: AutomationLane): string[] {
+  return lane === "live"
+    ? [LIVE_AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV]
+    : [PAPER_AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV];
+}
+
+function manageEntryOrdersEnvNamesForLane(lane: AutomationLane): string[] {
+  return lane === "live"
+    ? [LIVE_AUTO_TRADER_MANAGE_ENTRY_ORDERS_ENV]
+    : [PAPER_AUTO_TRADER_MANAGE_ENTRY_ORDERS_ENV];
+}
+
+function maxPositionPctEnvNamesForLane(lane: AutomationLane): string[] {
+  return lane === "live"
+    ? [LIVE_AUTO_TRADER_MAX_POSITION_PCT_ENV]
+    : [PAPER_AUTO_TRADER_MAX_POSITION_PCT_ENV];
+}
+
+function scanPromptEnvNamesForLane(lane: AutomationLane): string[] {
+  return lane === "live"
+    ? [LIVE_AUTO_TRADER_SCAN_PROMPT_ENV]
+    : [PAPER_AUTO_TRADER_SCAN_PROMPT_ENV];
+}
+
+function configLabelForLane(lane: AutomationLane): string {
+  return lane === "live" ? "LIVE" : "PAPER";
 }
 
 export function readPaperTraderApiSecrets(): string[] {
@@ -101,46 +191,59 @@ export function readPaperTraderApiSecrets(): string[] {
   );
 }
 
-export function readPaperTraderConfig(): PaperTraderConfig {
+export function readPaperTraderConfig(lane: AutomationLane = "paper"): PaperTraderConfig {
   const automationBaseUrl = (
-    readStringEnv(TRADESTATION_AUTOMATION_BASE_URL_ENV)
-    ?? TRADESTATION_SIM_AUTOMATION_BASE_URL
+    readStringEnvFrom(baseUrlEnvNamesForLane(lane))
+    ?? defaultTradeStationBaseUrlForLane(lane)
   ).replace(/\/$/, "");
   const tradeStationEnvironment = readTradeStationEnvironment(automationBaseUrl);
   if (!tradeStationEnvironment) {
     throw new Error(
-      `${TRADESTATION_AUTOMATION_BASE_URL_ENV} must be ${TRADESTATION_SIM_AUTOMATION_BASE_URL} for SIM or ${TRADESTATION_LIVE_AUTOMATION_BASE_URL} for LIVE.`,
+      `${configLabelForLane(lane)} automation base URL must be ${TRADESTATION_SIM_AUTOMATION_BASE_URL} for PAPER or ${TRADESTATION_LIVE_AUTOMATION_BASE_URL} for LIVE.`,
+    );
+  }
+
+  const expectedEnvironment = expectedTradeStationEnvironmentForLane(lane);
+  if (tradeStationEnvironment !== expectedEnvironment) {
+    throw new Error(
+      `${configLabelForLane(lane)} automation must use the ${expectedEnvironment === "live" ? "LIVE" : "SIM"} TradeStation URL.`,
     );
   }
 
   return {
     enabled: true,
-    allowOrderPlacement: readBooleanEnv(AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV, false),
-    manageEntryOrders: readBooleanEnv(AUTO_TRADER_MANAGE_ENTRY_ORDERS_ENV, false),
+    allowOrderPlacement: readBooleanEnvFrom(allowOrderPlacementEnvNamesForLane(lane), false),
+    manageEntryOrders: readBooleanEnvFrom(manageEntryOrdersEnvNamesForLane(lane), false),
     maxOpenTrades: null,
     maxDailyLossUsd: null,
-    maxPositionPct: readPositiveRatioEnv(AUTO_TRADER_MAX_POSITION_PCT_ENV, 0.1),
-    scanPrompt: readStringEnv(AUTO_TRADER_SCAN_PROMPT_ENV) ?? DEFAULT_SCAN_PROMPT,
+    maxPositionPct: readPositiveRatioEnvFrom(maxPositionPctEnvNamesForLane(lane), 0.1),
+    scanPrompt: readStringEnvFrom(scanPromptEnvNamesForLane(lane)) ?? DEFAULT_SCAN_PROMPT,
     apiSecret: readPaperTraderApiSecrets()[0] ?? null,
     automationBaseUrl,
     tradeStationEnvironment,
-    accountMode: accountModeForTradeStationEnvironment(tradeStationEnvironment),
-    accountId:
-      readStringEnv(TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV)
-      ?? readStringEnv("TRADESTATION_ACCOUNT_ID"),
+    accountMode: lane,
+    lane,
+    accountId: readStringEnvFrom(accountIdEnvNamesForLane(lane)),
   };
 }
 
 export function assertPaperTraderConfig(config: PaperTraderConfig): void {
   if (!config.accountId) {
     throw new Error(
-      `Missing ${TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV}. The automation requires a TradeStation account id.`,
+      `Missing ${accountIdEnvNamesForLane(config.lane)[0]}. The ${config.lane} automation requires a TradeStation account id.`,
     );
   }
 
   if (!isRecognizedTradeStationAutomationBaseUrl(config.automationBaseUrl)) {
     throw new Error(
-      `${TRADESTATION_AUTOMATION_BASE_URL_ENV} must be ${TRADESTATION_SIM_AUTOMATION_BASE_URL} for SIM or ${TRADESTATION_LIVE_AUTOMATION_BASE_URL} for LIVE.`,
+      `${configLabelForLane(config.lane)} automation base URL must be ${TRADESTATION_SIM_AUTOMATION_BASE_URL} for PAPER or ${TRADESTATION_LIVE_AUTOMATION_BASE_URL} for LIVE.`,
+    );
+  }
+
+  const expectedEnvironment = expectedTradeStationEnvironmentForLane(config.lane);
+  if (config.tradeStationEnvironment !== expectedEnvironment) {
+    throw new Error(
+      `${configLabelForLane(config.lane)} automation must use the ${expectedEnvironment === "live" ? "LIVE" : "SIM"} TradeStation URL.`,
     );
   }
 

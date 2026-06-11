@@ -56,7 +56,7 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
     });
     const simAccount = includeSimAccount
       ? isPaperTraderAuthorized(req as RequestWithHeaders)
-        ? await getPaperTraderSizingSnapshot()
+        ? await getPaperTraderSizingSnapshot(accountMode ?? "paper")
         : {
             accountValueUsd: null,
             cashBalanceUsd: null,

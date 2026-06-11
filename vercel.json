@@ -37,7 +37,11 @@
   ],
   "crons": [
     {
-      "path": "/api/paper-trader-run?reconcileOrders=true",
+      "path": "/api/paper-trader-run?mode=paper&reconcileOrders=true",
+      "schedule": "*/5 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/paper-trader-run?mode=live&reconcileOrders=true",
       "schedule": "*/5 13-21 * * 1-5"
     }
   ]

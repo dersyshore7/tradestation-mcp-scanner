@@ -135,7 +135,7 @@ function buildTechnicalSnapshot(params: {
   return hasAnyValue ? technicalSnapshot : null;
 }
 
-function buildReasoningSnapshot(signalSnapshot: Record<string, unknown> | null, symbol: string): JournalReasoningSnapshot | null {
+export function buildReasoningSnapshot(signalSnapshot: Record<string, unknown> | null, symbol: string): JournalReasoningSnapshot | null {
   if (!signalSnapshot) {
     return null;
   }
