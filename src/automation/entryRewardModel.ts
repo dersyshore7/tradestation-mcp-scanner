@@ -1,6 +1,6 @@
 import type { ScanResult } from "../app/runScan.js";
 import type { TradeConstructionResult } from "../app/runTradeConstruction.js";
-import type { JournalTradeDetail, TradeDirection } from "../journal/types.js";
+import type { AccountMode, JournalTradeDetail, TradeDirection } from "../journal/types.js";
 
 export type EntryPolicyDecision = "favor" | "allow" | "caution" | "block";
 
@@ -80,6 +80,12 @@ type EntryRewardExperience = {
   buckets: EntryRewardFeatureBuckets;
 };
 
+type ReviewedLearningTrade = JournalTradeDetail & {
+  account_mode: "paper" | "live";
+  status: "closed";
+  review: NonNullable<JournalTradeDetail["review"]>;
+};
+
 type EntryRewardAggregate = {
   count: number;
   totalRewardR: number;
@@ -105,6 +111,7 @@ export type EntryFeatureCoverage = {
 export type EntryRewardModel = {
   generatedAt: string;
   closedTradeCount: number;
+  sourceCounts: Record<"paper" | "live", number>;
   experienceCount: number;
   buckets: Record<string, EntryRewardAggregate>;
   featureCoverage: EntryFeatureCoverage[];
@@ -878,11 +885,28 @@ function summarizeBucket(key: string, aggregate: EntryRewardAggregate): EntryRew
   };
 }
 
+function isLearningAccountMode(accountMode: AccountMode): accountMode is "paper" | "live" {
+  return accountMode === "paper" || accountMode === "live";
+}
+
+function isClosedReviewedLearningTrade(trade: JournalTradeDetail): trade is ReviewedLearningTrade {
+  return isLearningAccountMode(trade.account_mode) && trade.status === "closed" && !!trade.review;
+}
+
+function countLearningSources(trades: JournalTradeDetail[]): Record<"paper" | "live", number> {
+  return trades.reduce<Record<"paper" | "live", number>>((counts, trade) => {
+    if (isClosedReviewedLearningTrade(trade)) {
+      counts[trade.account_mode] += 1;
+    }
+    return counts;
+  }, { paper: 0, live: 0 });
+}
+
 function extractEntryRewardExperiences(trades: JournalTradeDetail[]): EntryRewardExperience[] {
   const experiences: EntryRewardExperience[] = [];
 
   for (const trade of trades) {
-    if (trade.account_mode !== "paper" || trade.status !== "closed" || !trade.review) {
+    if (!isClosedReviewedLearningTrade(trade)) {
       continue;
     }
 
@@ -975,9 +999,8 @@ export function trainEntryRewardModel(trades: JournalTradeDetail[]): EntryReward
 
   return {
     generatedAt: new Date().toISOString(),
-    closedTradeCount: trades.filter(
-      (trade) => trade.account_mode === "paper" && trade.status === "closed" && !!trade.review,
-    ).length,
+    closedTradeCount: trades.filter(isClosedReviewedLearningTrade).length,
+    sourceCounts: countLearningSources(trades),
     experienceCount: experiences.length,
     buckets,
     featureCoverage: summarizeFeatureCoverage(experiences),
@@ -1073,7 +1096,7 @@ export function summarizeEntryRewardModel(model: EntryRewardModel): string | nul
     .join("\n");
 
   return [
-    `Entry reward model: ${model.experienceCount} closed paper entry outcome(s), trained on entry opportunity R so profitable setups are not punished for later management giveback.`,
+    `Entry reward model: ${model.experienceCount} closed entry outcome(s) (${model.sourceCounts.paper} paper, ${model.sourceCounts.live} live), trained on entry opportunity R so profitable setups are not punished for later management giveback.`,
     `Feature audit: ${model.featureCoverage.map((item) => `${item.feature} unknown ${(item.unknownPct * 100).toFixed(0)}%`).join(", ")}.`,
     top ? `Best contexts:\n${top}` : null,
     weak ? `Weak contexts:\n${weak}` : null,

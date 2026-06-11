@@ -6,7 +6,6 @@ import { recommendPolicyAction, trainPolicyModel } from "./policyModel.js";
 async function main(): Promise<void> {
   const includeSnapshots = !process.argv.includes("--without-snapshots");
   const trades = await listJournalTradeDetails(300, {
-    accountMode: "paper",
     status: "closed",
     includeSignalSnapshot: includeSnapshots,
   });
@@ -39,11 +38,13 @@ async function main(): Promise<void> {
     loadedTradeCount: trades.length,
     excludedLearningTrades: learning.excludedLearningTrades,
     closedTradeCount: model.closedTradeCount,
+    sourceCounts: model.sourceCounts,
     experienceCount: model.experienceCount,
     learnedContextCount: Object.keys(model.buckets).length,
     entryRewardModel: {
       generatedAt: entryModel.generatedAt,
       closedTradeCount: entryModel.closedTradeCount,
+      sourceCounts: entryModel.sourceCounts,
       experienceCount: entryModel.experienceCount,
       learnedContextCount: Object.keys(entryModel.buckets).length,
       summary: summarizeEntryRewardModel(entryModel),

@@ -1,4 +1,4 @@
-import type { JournalTradeDetail, TradeDirection } from "../journal/types.js";
+import type { AccountMode, JournalTradeDetail, TradeDirection } from "../journal/types.js";
 import { decideProfitProtection } from "./profitProtection.js";
 
 export type PolicyAction = "hold" | "update_levels" | "exit_now" | "scale_out";
@@ -37,6 +37,12 @@ type PolicyExperience = {
   buckets: PolicyFeatureBuckets;
 };
 
+type ReviewedLearningTrade = JournalTradeDetail & {
+  account_mode: "paper" | "live";
+  status: "closed";
+  review: NonNullable<JournalTradeDetail["review"]>;
+};
+
 type PolicyAggregate = {
   count: number;
   totalRewardR: number;
@@ -54,6 +60,7 @@ export type PolicyActionSummary = Record<PolicyAction, PolicyBucketSummary | nul
 export type LearnedPolicyModel = {
   generatedAt: string;
   closedTradeCount: number;
+  sourceCounts: Record<"paper" | "live", number>;
   experienceCount: number;
   buckets: Record<string, Partial<Record<PolicyAction, PolicyAggregate>>>;
 };
@@ -98,6 +105,23 @@ function readManagementHistory(trade: JournalTradeDetail): PaperTraderManagement
         !!item && typeof item === "object" && !Array.isArray(item)
       )
     : [];
+}
+
+function isLearningAccountMode(accountMode: AccountMode): accountMode is "paper" | "live" {
+  return accountMode === "paper" || accountMode === "live";
+}
+
+function isClosedReviewedLearningTrade(trade: JournalTradeDetail): trade is ReviewedLearningTrade {
+  return isLearningAccountMode(trade.account_mode) && trade.status === "closed" && !!trade.review;
+}
+
+function countLearningSources(trades: JournalTradeDetail[]): Record<"paper" | "live", number> {
+  return trades.reduce<Record<"paper" | "live", number>>((counts, trade) => {
+    if (isClosedReviewedLearningTrade(trade)) {
+      counts[trade.account_mode] += 1;
+    }
+    return counts;
+  }, { paper: 0, live: 0 });
 }
 
 function bucketProgress(progressToTargetPct: number | null): string {
@@ -249,11 +273,7 @@ function extractPolicyExperiences(trades: JournalTradeDetail[]): PolicyExperienc
   const experiences: PolicyExperience[] = [];
 
   for (const trade of trades) {
-    if (
-      trade.account_mode !== "paper"
-      || trade.status !== "closed"
-      || !trade.review
-    ) {
+    if (!isClosedReviewedLearningTrade(trade)) {
       continue;
     }
 
@@ -334,9 +354,8 @@ export function trainPolicyModel(trades: JournalTradeDetail[]): LearnedPolicyMod
 
   return {
     generatedAt: new Date().toISOString(),
-    closedTradeCount: trades.filter(
-      (trade) => trade.account_mode === "paper" && trade.status === "closed" && !!trade.review,
-    ).length,
+    closedTradeCount: trades.filter(isClosedReviewedLearningTrade).length,
+    sourceCounts: countLearningSources(trades),
     experienceCount: experiences.length,
     buckets,
   };

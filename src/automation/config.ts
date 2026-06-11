@@ -1,4 +1,5 @@
 import { DEFAULT_SCAN_PROMPT } from "../config/defaultScanPrompt.js";
+import type { AccountMode } from "../journal/types.js";
 
 const AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV = "AUTO_TRADER_ALLOW_ORDER_PLACEMENT";
 const AUTO_TRADER_MANAGE_ENTRY_ORDERS_ENV = "AUTO_TRADER_MANAGE_ENTRY_ORDERS";
@@ -7,6 +8,10 @@ const AUTO_TRADER_SCAN_PROMPT_ENV = "AUTO_TRADER_SCAN_PROMPT";
 const AUTO_TRADER_API_SECRET_ENV = "AUTO_TRADER_API_SECRET";
 const TRADESTATION_AUTOMATION_BASE_URL_ENV = "TRADESTATION_AUTOMATION_BASE_URL";
 const TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV = "TRADESTATION_AUTOMATION_ACCOUNT_ID";
+export const TRADESTATION_SIM_AUTOMATION_BASE_URL = "https://sim-api.tradestation.com/v3";
+export const TRADESTATION_LIVE_AUTOMATION_BASE_URL = "https://api.tradestation.com/v3";
+
+export type TradeStationEnvironment = "sim" | "live";
 
 export type PaperTraderConfig = {
   enabled: boolean;
@@ -18,6 +23,8 @@ export type PaperTraderConfig = {
   scanPrompt: string;
   apiSecret: string | null;
   automationBaseUrl: string;
+  tradeStationEnvironment: TradeStationEnvironment;
+  accountMode: AccountMode;
   accountId: string | null;
 };
 
@@ -59,7 +66,30 @@ function readPositiveRatioEnv(name: string, fallback: number): number {
 }
 
 export function isTradeStationSimBaseUrl(value: string): boolean {
-  return value.includes("sim-api.tradestation.com");
+  return value.replace(/\/$/, "") === TRADESTATION_SIM_AUTOMATION_BASE_URL;
+}
+
+export function isTradeStationLiveBaseUrl(value: string): boolean {
+  return value.replace(/\/$/, "") === TRADESTATION_LIVE_AUTOMATION_BASE_URL;
+}
+
+export function readTradeStationEnvironment(value: string): TradeStationEnvironment | null {
+  const normalized = value.replace(/\/$/, "");
+  if (normalized === TRADESTATION_SIM_AUTOMATION_BASE_URL) {
+    return "sim";
+  }
+  if (normalized === TRADESTATION_LIVE_AUTOMATION_BASE_URL) {
+    return "live";
+  }
+  return null;
+}
+
+export function isRecognizedTradeStationAutomationBaseUrl(value: string): boolean {
+  return readTradeStationEnvironment(value) !== null;
+}
+
+function accountModeForTradeStationEnvironment(environment: TradeStationEnvironment): AccountMode {
+  return environment === "live" ? "live" : "paper";
 }
 
 export function readPaperTraderApiSecrets(): string[] {
@@ -74,8 +104,14 @@ export function readPaperTraderApiSecrets(): string[] {
 export function readPaperTraderConfig(): PaperTraderConfig {
   const automationBaseUrl = (
     readStringEnv(TRADESTATION_AUTOMATION_BASE_URL_ENV)
-    ?? "https://sim-api.tradestation.com/v3"
+    ?? TRADESTATION_SIM_AUTOMATION_BASE_URL
   ).replace(/\/$/, "");
+  const tradeStationEnvironment = readTradeStationEnvironment(automationBaseUrl);
+  if (!tradeStationEnvironment) {
+    throw new Error(
+      `${TRADESTATION_AUTOMATION_BASE_URL_ENV} must be ${TRADESTATION_SIM_AUTOMATION_BASE_URL} for SIM or ${TRADESTATION_LIVE_AUTOMATION_BASE_URL} for LIVE.`,
+    );
+  }
 
   return {
     enabled: true,
@@ -83,10 +119,12 @@ export function readPaperTraderConfig(): PaperTraderConfig {
     manageEntryOrders: readBooleanEnv(AUTO_TRADER_MANAGE_ENTRY_ORDERS_ENV, false),
     maxOpenTrades: null,
     maxDailyLossUsd: null,
-    maxPositionPct: readPositiveRatioEnv(AUTO_TRADER_MAX_POSITION_PCT_ENV, 0.3),
+    maxPositionPct: readPositiveRatioEnv(AUTO_TRADER_MAX_POSITION_PCT_ENV, 0.1),
     scanPrompt: readStringEnv(AUTO_TRADER_SCAN_PROMPT_ENV) ?? DEFAULT_SCAN_PROMPT,
     apiSecret: readPaperTraderApiSecrets()[0] ?? null,
     automationBaseUrl,
+    tradeStationEnvironment,
+    accountMode: accountModeForTradeStationEnvironment(tradeStationEnvironment),
     accountId:
       readStringEnv(TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV)
       ?? readStringEnv("TRADESTATION_ACCOUNT_ID"),
@@ -96,13 +134,13 @@ export function readPaperTraderConfig(): PaperTraderConfig {
 export function assertPaperTraderConfig(config: PaperTraderConfig): void {
   if (!config.accountId) {
     throw new Error(
-      `Missing ${TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV}. The paper trader requires a dedicated paper account id.`,
+      `Missing ${TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV}. The automation requires a TradeStation account id.`,
     );
   }
 
-  if (!isTradeStationSimBaseUrl(config.automationBaseUrl)) {
+  if (!isRecognizedTradeStationAutomationBaseUrl(config.automationBaseUrl)) {
     throw new Error(
-      `Paper trader base URL must point to the TradeStation SIM environment. Set ${TRADESTATION_AUTOMATION_BASE_URL_ENV}=https://sim-api.tradestation.com/v3.`,
+      `${TRADESTATION_AUTOMATION_BASE_URL_ENV} must be ${TRADESTATION_SIM_AUTOMATION_BASE_URL} for SIM or ${TRADESTATION_LIVE_AUTOMATION_BASE_URL} for LIVE.`,
     );
   }
 

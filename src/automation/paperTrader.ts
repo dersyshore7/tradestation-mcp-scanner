@@ -11,11 +11,13 @@ import {
   updateJournalTrade,
   updateJournalTradeSignalSnapshot,
 } from "../journal/repository.js";
-import type { JournalTradeDetail } from "../journal/types.js";
+import type { AccountMode, JournalTradeDetail } from "../journal/types.js";
 import {
   assertPaperTraderConfig,
-  isTradeStationSimBaseUrl,
+  isRecognizedTradeStationAutomationBaseUrl,
   readPaperTraderConfig,
+  TRADESTATION_LIVE_AUTOMATION_BASE_URL,
+  TRADESTATION_SIM_AUTOMATION_BASE_URL,
   type PaperTraderConfig,
 } from "./config.js";
 import {
@@ -264,11 +266,12 @@ type ExitDecision = {
   note: string;
 };
 
-type EntryPolicyEffectivenessBucket = {
+export type EntryPolicyEffectivenessBucket = {
   policyDecision: string;
   evaluatedCandidates: number;
   enteredCandidates: number;
   closedTrades: number;
+  sourceCounts: Record<"paper" | "live", number>;
   policyBlockedCandidates: number;
   averageRealizedR: number | null;
   winRate: number | null;
@@ -276,11 +279,12 @@ type EntryPolicyEffectivenessBucket = {
   averageActualMinusPolicyR: number | null;
 };
 
-type EntryPolicyEffectivenessSummary = {
+export type EntryPolicyEffectivenessSummary = {
   evaluatedCandidates: number;
   candidatesWithPolicy: number;
   enteredCandidates: number;
   closedCandidates: number;
+  sourceCounts: Record<"paper" | "live", number>;
   policyBlockedCandidates: number;
   shadowTrackedCandidates: number;
   buckets: EntryPolicyEffectivenessBucket[];
@@ -292,6 +296,8 @@ export type PaperTraderStatus = {
   allowOrderPlacement: boolean;
   liveRunReady: boolean;
   automationBaseUrl: string;
+  tradeStationEnvironment: "sim" | "live";
+  accountMode: AccountMode;
   accountIdConfigured: boolean;
   maxOpenTrades: number | null;
   maxDailyLossUsd: number | null;
@@ -328,7 +334,10 @@ export type PaperTraderStatus = {
   learning: {
     learningStartAt: string;
     excludedLearningTrades: number;
+    closedLearningTrades: number;
     closedPaperTrades: number;
+    closedLiveTrades: number;
+    sourceCounts: Record<"paper" | "live", number>;
     managementExperiences: number;
     entryExperiences: number;
     entryLearnedContexts: number;
@@ -365,12 +374,14 @@ type PaperTraderEntryCandidateEvaluation = {
 };
 
 type PaperTraderRunResult = {
-  mode: "paper";
+  mode: AccountMode;
   timestamp: string;
   dryRun: boolean;
   dryRunReason: string | null;
   config: {
     automationBaseUrl: string;
+    tradeStationEnvironment: "sim" | "live";
+    accountMode: AccountMode;
     allowOrderPlacement: boolean;
     accountId: string;
     maxOpenTrades: number | null;
@@ -468,6 +479,7 @@ type PaperTraderRunResult = {
       | "trade_card_blocked"
       | "zero_contract_trade"
       | "preview_only"
+      | "entered_automation_trade"
       | "entered_paper_trade"
       | "monitor_only";
     symbol: string | null;
@@ -619,27 +631,61 @@ function isRegularUsEquitySession(date = new Date()): boolean {
   return minutes >= (8 * 60) + 30 && minutes < 15 * 60;
 }
 
+function formatTradeStationEnvironmentLabel(config: PaperTraderConfig): string {
+  return config.tradeStationEnvironment === "live" ? "LIVE" : "SIM";
+}
+
+function formatAutomationAccountLabel(config: PaperTraderConfig): string {
+  return config.tradeStationEnvironment === "live" ? "live account" : "SIM account";
+}
+
+function formatAutomationTradeLabel(config: PaperTraderConfig): string {
+  return config.accountMode === "live" ? "live trade" : "paper trade";
+}
+
+function isConfiguredAccountModeTrade(
+  config: PaperTraderConfig,
+  trade: JournalTradeDetail,
+): boolean {
+  return trade.account_mode === config.accountMode;
+}
+
+function buildRunResultConfig(config: PaperTraderConfig): PaperTraderRunResult["config"] {
+  return {
+    automationBaseUrl: config.automationBaseUrl,
+    tradeStationEnvironment: config.tradeStationEnvironment,
+    accountMode: config.accountMode,
+    allowOrderPlacement: config.allowOrderPlacement,
+    accountId: config.accountId as string,
+    maxOpenTrades: config.maxOpenTrades,
+    maxDailyLossUsd: config.maxDailyLossUsd,
+    maxPositionPct: config.maxPositionPct,
+    entryOrderManagementEnabled: config.manageEntryOrders,
+  };
+}
+
 function buildPaperTraderConfigurationIssues(config: PaperTraderConfig): string[] {
   const issues: string[] = [];
+  const environmentLabel = formatTradeStationEnvironmentLabel(config);
 
   if (!config.allowOrderPlacement) {
     issues.push(
-      "Set AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1 to allow live SIM order placement; requests stay preview-only until then.",
+      `Set AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1 to allow ${environmentLabel} order placement; requests stay preview-only until then.`,
     );
   }
 
   if (!config.accountId) {
-    issues.push("Set TRADESTATION_AUTOMATION_ACCOUNT_ID to the dedicated SIM paper account id.");
+    issues.push(`Set TRADESTATION_AUTOMATION_ACCOUNT_ID to the TradeStation ${formatAutomationAccountLabel(config)} id.`);
   }
 
-  if (!isTradeStationSimBaseUrl(config.automationBaseUrl)) {
+  if (!isRecognizedTradeStationAutomationBaseUrl(config.automationBaseUrl)) {
     issues.push(
-      "Set TRADESTATION_AUTOMATION_BASE_URL=https://sim-api.tradestation.com/v3 for the paper trader.",
+      `Set TRADESTATION_AUTOMATION_BASE_URL=${TRADESTATION_SIM_AUTOMATION_BASE_URL} for SIM or ${TRADESTATION_LIVE_AUTOMATION_BASE_URL} for LIVE.`,
     );
   }
 
   if (config.allowOrderPlacement && !config.apiSecret) {
-    issues.push("Set AUTO_TRADER_API_SECRET or CRON_SECRET before enabling live SIM order placement.");
+    issues.push(`Set AUTO_TRADER_API_SECRET or CRON_SECRET before enabling ${environmentLabel} order placement.`);
   }
 
   return issues;
@@ -805,7 +851,7 @@ async function loadResumableAutomatedScanState(
     return null;
   } catch (error) {
     console.warn(
-      "paper trader could not load resumable automated scan state",
+      "automation could not load resumable automated scan state",
       error instanceof Error ? error.message : String(error),
     );
     return null;
@@ -915,9 +961,10 @@ function collectRecentDecisionLog(
 
 function buildPaperTradeHistory(
   trades: JournalTradeDetail[],
+  accountMode: AccountMode = "paper",
 ): PaperTraderTradeHistoryItem[] {
   return trades
-    .filter((trade) => trade.account_mode === "paper")
+    .filter((trade) => trade.account_mode === accountMode)
     .map((trade) => {
       const automation = readAutomationSnapshot(trade);
       const activeLevels = automation
@@ -979,16 +1026,26 @@ function formatNonCriticalHistoryError(label: string, error: unknown): string {
   return `${label} is temporarily unavailable: ${message}`;
 }
 
-async function loadJournalTradesForPaperTraderStatus(): Promise<{
+async function loadJournalTradesForPaperTraderStatus(
+  config: PaperTraderConfig,
+): Promise<{
   trades: JournalTradeDetail[];
   warning: string | null;
 }> {
   try {
-    return {
-      trades: await listJournalTradeDetails(250, {
-        accountMode: "paper",
+    const [openTrades, closedTrades] = await Promise.all([
+      listJournalTradeDetails(50, {
+        accountMode: config.accountMode,
+        status: "open",
         includeSignalSnapshot: true,
       }),
+      listJournalTradeDetails(300, {
+        status: "closed",
+        includeSignalSnapshot: true,
+      }),
+    ]);
+    return {
+      trades: [...openTrades, ...closedTrades],
       warning: null,
     };
   } catch (error) {
@@ -999,15 +1056,14 @@ async function loadJournalTradesForPaperTraderStatus(): Promise<{
   }
 }
 
-async function loadPaperTraderCycleTrades(): Promise<JournalTradeDetail[]> {
+async function loadPaperTraderCycleTrades(config: PaperTraderConfig): Promise<JournalTradeDetail[]> {
   const [openTrades, closedTrades] = await Promise.all([
     listJournalTradeDetails(50, {
-      accountMode: "paper",
+      accountMode: config.accountMode,
       status: "open",
       includeSignalSnapshot: true,
     }),
     listJournalTradeDetails(300, {
-      accountMode: "paper",
       status: "closed",
       includeSignalSnapshot: true,
     }),
@@ -1080,6 +1136,7 @@ function buildEntryPolicyEffectivenessSummary(
     candidates: PaperEntryCandidateRecord[];
     realizedR: number[];
     policyPriorR: number[];
+    sourceCounts: Record<"paper" | "live", number>;
   }>();
 
   for (const candidate of candidatesWithPolicy) {
@@ -1088,6 +1145,7 @@ function buildEntryPolicyEffectivenessSummary(
       candidates: [],
       realizedR: [],
       policyPriorR: [],
+      sourceCounts: { paper: 0, live: 0 },
     };
     bucket.candidates.push(candidate);
 
@@ -1101,11 +1159,12 @@ function buildEntryPolicyEffectivenessSummary(
       : null;
     const realizedR = readNumber(linkedTrade?.review?.realized_r_multiple ?? null);
     if (
-      linkedTrade?.account_mode === "paper"
+      (linkedTrade?.account_mode === "paper" || linkedTrade?.account_mode === "live")
       && linkedTrade.status === "closed"
       && realizedR !== null
     ) {
       bucket.realizedR.push(realizedR);
+      bucket.sourceCounts[linkedTrade.account_mode] += 1;
     }
 
     buckets.set(policyDecision, bucket);
@@ -1121,6 +1180,7 @@ function buildEntryPolicyEffectivenessSummary(
         evaluatedCandidates: bucket.candidates.length,
         enteredCandidates,
         closedTrades: bucket.realizedR.length,
+        sourceCounts: { ...bucket.sourceCounts },
         policyBlockedCandidates: bucket.candidates.filter((candidate) => candidate.decision === "policy_blocked").length,
         averageRealizedR: realizedAverage,
         winRate: bucket.realizedR.length > 0
@@ -1142,6 +1202,11 @@ function buildEntryPolicyEffectivenessSummary(
 
   const enteredCandidates = candidatesWithPolicy.filter((candidate) => candidate.paper_trade_id).length;
   const closedCandidates = bucketSummaries.reduce((sum, bucket) => sum + bucket.closedTrades, 0);
+  const sourceCounts = bucketSummaries.reduce<Record<"paper" | "live", number>>((counts, bucket) => {
+    counts.paper += bucket.sourceCounts.paper;
+    counts.live += bucket.sourceCounts.live;
+    return counts;
+  }, { paper: 0, live: 0 });
   const policyBlockedCandidates = candidatesWithPolicy.filter((candidate) => candidate.decision === "policy_blocked").length;
   const shadowTrackedCandidates = candidates.filter((candidate) => !candidate.paper_trade_id).length;
   const bestClosedBucket = bucketSummaries
@@ -1153,13 +1218,21 @@ function buildEntryPolicyEffectivenessSummary(
     candidatesWithPolicy: candidatesWithPolicy.length,
     enteredCandidates,
     closedCandidates,
+    sourceCounts,
     policyBlockedCandidates,
     shadowTrackedCandidates,
     buckets: bucketSummaries,
     summary: bestClosedBucket
-      ? `Policy audit: ${candidatesWithPolicy.length} policy-scored candidate(s), ${closedCandidates} closed linked outcome(s), ${policyBlockedCandidates} policy block(s). Best observed policy bucket so far: ${bestClosedBucket.policyDecision} at ${bestClosedBucket.averageRealizedR?.toFixed(2)}R avg over ${bestClosedBucket.closedTrades}.`
+      ? `Policy audit: ${candidatesWithPolicy.length} policy-scored candidate(s), ${closedCandidates} closed linked outcome(s) (${sourceCounts.paper} paper, ${sourceCounts.live} live), ${policyBlockedCandidates} policy block(s). Best observed policy bucket so far: ${bestClosedBucket.policyDecision} at ${bestClosedBucket.averageRealizedR?.toFixed(2)}R avg over ${bestClosedBucket.closedTrades}.`
       : `Policy audit: ${candidatesWithPolicy.length} policy-scored candidate(s), ${policyBlockedCandidates} policy block(s), ${shadowTrackedCandidates} shadow/audit candidate(s). Closed linked outcomes are still sparse.`,
   };
+}
+
+export function buildEntryPolicyEffectivenessSummaryForTest(
+  trades: JournalTradeDetail[],
+  candidates: PaperEntryCandidateRecord[],
+): EntryPolicyEffectivenessSummary {
+  return buildEntryPolicyEffectivenessSummary(trades, candidates);
 }
 
 function isOptionPositionSymbol(symbol: string): boolean {
@@ -1237,6 +1310,7 @@ function buildPositionSizingSnapshot(
 async function loadPaperTraderSizingSnapshot(
   config: PaperTraderConfig,
 ): Promise<PaperTraderStatus["sizing"]> {
+  const accountLabel = formatAutomationAccountLabel(config);
   if (!config.accountId) {
     return {
       accountValueUsd: null,
@@ -1251,7 +1325,7 @@ async function loadPaperTraderSizingSnapshot(
       openPositionCostUsd: null,
       openPositionMarketValueUsd: null,
       positions: [],
-      error: "Missing paper-trader account id.",
+      error: `Missing TradeStation ${accountLabel} id.`,
     };
   }
 
@@ -1282,7 +1356,7 @@ async function loadPaperTraderSizingSnapshot(
           : null,
       ...positionSizing,
       error: accountValueUsd === null
-        ? "Could not read SIM account value from TradeStation balances."
+        ? `Could not read ${accountLabel} value from TradeStation balances.`
         : null,
     };
   } catch (error) {
@@ -1535,9 +1609,10 @@ function buildDayTradeOpeningBlockReason(params: {
   accountValueUsd: number;
   cashBalanceUsd: number | null;
   optionsBuyingPowerUsd: number | null;
+  accountLabel: string;
 }): string | null {
   if (params.accountValueUsd < TRADESTATION_PDT_OPENING_EQUITY_MIN_USD) {
-    return `TradeStation balance check skipped the entry because SIM account value is ${formatUsdForReason(params.accountValueUsd)}, below the ${formatUsdForReason(TRADESTATION_PDT_OPENING_EQUITY_MIN_USD)} PDT opening threshold.`;
+    return `TradeStation balance check skipped the entry because ${params.accountLabel} value is ${formatUsdForReason(params.accountValueUsd)}, below the ${formatUsdForReason(TRADESTATION_PDT_OPENING_EQUITY_MIN_USD)} PDT opening threshold.`;
   }
 
   const openingBuyingPowerUsd = params.optionsBuyingPowerUsd ?? params.cashBalanceUsd;
@@ -1548,7 +1623,7 @@ function buildDayTradeOpeningBlockReason(params: {
     openingBuyingPowerUsd !== null
     && openingBuyingPowerUsd < TRADESTATION_PDT_OPENING_EQUITY_MIN_USD
   ) {
-    return `TradeStation balance check skipped the entry because ${openingBuyingPowerLabel} is ${formatUsdForReason(openingBuyingPowerUsd)}, below the ${formatUsdForReason(TRADESTATION_PDT_OPENING_EQUITY_MIN_USD)} PDT opening threshold even though SIM net worth is ${formatUsdForReason(params.accountValueUsd)}.`;
+    return `TradeStation balance check skipped the entry because ${openingBuyingPowerLabel} is ${formatUsdForReason(openingBuyingPowerUsd)}, below the ${formatUsdForReason(TRADESTATION_PDT_OPENING_EQUITY_MIN_USD)} PDT opening threshold even though ${params.accountLabel} net worth is ${formatUsdForReason(params.accountValueUsd)}.`;
   }
 
   return null;
@@ -2154,7 +2229,7 @@ function buildPolicyFeedbackSummary(
   const similarClosedTrades = allTrades
     .filter((candidate) =>
       candidate.id !== trade.id
-      && candidate.account_mode === "paper"
+      && (candidate.account_mode === "paper" || candidate.account_mode === "live")
       && candidate.status === "closed"
       && candidate.direction === trade.direction
       && candidate.setup_type === trade.setup_type
@@ -2206,10 +2281,11 @@ function summarizeTrainedPolicyRecommendation(
 function computeTodayRealizedPlUsd(
   trades: JournalTradeDetail[],
   todayChicago: string,
+  accountMode: AccountMode,
 ): number {
   return trades
     .filter((trade) =>
-      trade.account_mode === "paper"
+      trade.account_mode === accountMode
       && trade.status === "closed"
       && trade.latest_exit
       && toChicagoDateString(trade.latest_exit.exit_time) === todayChicago
@@ -2324,7 +2400,7 @@ function formatRejectedOrderReason(order: {
   rejectReason: string | null;
 }): string {
   return [
-    "TradeStation rejected the SIM order",
+    "TradeStation rejected the automation order",
     order.orderId ? ` ${order.orderId}` : "",
     order.status ? ` (${order.status})` : "",
     order.rejectReason ? `: ${order.rejectReason}` : ".",
@@ -2374,7 +2450,7 @@ function formatBuyingPowerAdjustmentNote(params: {
   const sourceLabel = params.source === "confirmation"
     ? "order confirmation"
     : "order placement";
-  return `TradeStation ${sourceLabel} rejected ${params.adjustment.originalQuantity} contracts for buying power, so the paper trader retried ${params.adjustment.quantity} contracts, the closest size inside ${params.adjustment.limitingBuyingPower} buying power (${formatUsdForReason(params.adjustment.limitingCurrentBuyingPowerUsd)} available vs ${formatUsdForReason(params.adjustment.limitingRequiredBuyingPowerUsd)} required).`;
+  return `TradeStation ${sourceLabel} rejected ${params.adjustment.originalQuantity} contracts for buying power, so automation retried ${params.adjustment.quantity} contracts, the closest size inside ${params.adjustment.limitingBuyingPower} buying power (${formatUsdForReason(params.adjustment.limitingCurrentBuyingPowerUsd)} available vs ${formatUsdForReason(params.adjustment.limitingRequiredBuyingPowerUsd)} required).`;
 }
 
 function buildBuyingPowerAdjustedEntryOrder(params: {
@@ -2420,10 +2496,11 @@ async function finalizePaperTraderRunResult(
   tradesForHistory: JournalTradeDetail[],
   includeHistory: boolean,
 ): Promise<PaperTraderRunResult> {
+  const currentModeTrades = tradesForHistory.filter((trade) => trade.account_mode === result.mode);
   const resultWithTradeHistory = {
     ...result,
-    decisionLog: collectRecentDecisionLog(tradesForHistory),
-    paperTradeHistory: buildPaperTradeHistory(tradesForHistory),
+    decisionLog: collectRecentDecisionLog(currentModeTrades),
+    paperTradeHistory: buildPaperTradeHistory(tradesForHistory, result.mode),
     entryCandidateHistory: [],
     entryCandidateHistoryMigrationRequired: false,
     entryCandidateHistoryMigrationMessage: null,
@@ -2472,7 +2549,7 @@ async function finalizePaperTraderRunResult(
 
 export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
   const config = readPaperTraderConfig();
-  const loadedTrades = await loadJournalTradesForPaperTraderStatus();
+  const loadedTrades = await loadJournalTradesForPaperTraderStatus(config);
   const trades = loadedTrades.trades;
   const paperLearning = buildPaperLearningTradeSet(trades);
   const learningTrades = paperLearning.trades;
@@ -2482,8 +2559,9 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
   const runHistory = await loadPaperTraderRunHistory();
   const entryCandidateHistory = await loadPaperEntryCandidateHistory(200);
   const sizing = await loadPaperTraderSizingSnapshot(config);
+  const currentModeTrades = trades.filter((trade) => isConfiguredAccountModeTrade(config, trade));
   const openJournalTrades = trades.filter(
-    (trade) => trade.account_mode === "paper" && trade.status === "open",
+    (trade) => isConfiguredAccountModeTrade(config, trade) && trade.status === "open",
   );
   const liveSimPositions = sizing.openPositionCount;
   const staleOpenJournalTrades =
@@ -2503,6 +2581,8 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
     allowOrderPlacement: config.allowOrderPlacement,
     liveRunReady: configurationIssues.length === 0,
     automationBaseUrl: config.automationBaseUrl,
+    tradeStationEnvironment: config.tradeStationEnvironment,
+    accountMode: config.accountMode,
     accountIdConfigured: config.accountId !== null,
     maxOpenTrades: config.maxOpenTrades,
     maxDailyLossUsd: config.maxDailyLossUsd,
@@ -2518,7 +2598,10 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
     learning: {
       learningStartAt: paperLearning.learningStartAt,
       excludedLearningTrades: paperLearning.excludedLearningTrades,
-      closedPaperTrades: policyModel.closedTradeCount,
+      closedLearningTrades: policyModel.closedTradeCount,
+      closedPaperTrades: policyModel.sourceCounts.paper,
+      closedLiveTrades: policyModel.sourceCounts.live,
+      sourceCounts: policyModel.sourceCounts,
       managementExperiences: policyModel.experienceCount,
       entryExperiences: entryRewardModel.experienceCount,
       entryLearnedContexts: Object.keys(entryRewardModel.buckets).length,
@@ -2528,8 +2611,8 @@ export async function getPaperTraderStatus(): Promise<PaperTraderStatus> {
       entryPolicySummary: summarizeEntryRewardModel(entryRewardModel),
       entryPolicyEffectiveness,
     },
-    recentDecisionLog: collectRecentDecisionLog(trades),
-    paperTradeHistory: buildPaperTradeHistory(trades),
+    recentDecisionLog: collectRecentDecisionLog(currentModeTrades),
+    paperTradeHistory: buildPaperTradeHistory(trades, config.accountMode),
     ...entryCandidateHistory,
     ...runHistory,
   };
@@ -2628,6 +2711,8 @@ async function adoptUnlinkedLiveSimPositions(params: {
   const updates: PaperTraderRunResult["reconciliation"]["updates"] = [];
   const skipped: PaperTraderRunResult["reconciliation"]["skipped"] = [];
   let adopted = 0;
+  const environmentLabel = formatTradeStationEnvironmentLabel(params.config);
+  const tradeLabel = formatAutomationTradeLabel(params.config);
 
   for (const position of livePositions) {
     if (linkedOptionSymbols.has(normalizeOptionSymbolForMatch(position.symbol))) {
@@ -2650,7 +2735,7 @@ async function adoptUnlinkedLiveSimPositions(params: {
       skipped.push({
         tradeId: null,
         symbol: parsed.underlying,
-        reason: `Skipped adopting live SIM position ${position.symbol} because opening order ${liveOpeningOrder.description} is still alive.`,
+        reason: `Skipped adopting ${environmentLabel} position ${position.symbol} because opening order ${liveOpeningOrder.description} is still alive.`,
       });
       continue;
     }
@@ -2673,19 +2758,19 @@ async function adoptUnlinkedLiveSimPositions(params: {
       timestamp: now.toISOString(),
       symbol: parsed.underlying,
       kind: "order_check",
-      action: "adopted_live_sim_position",
-      note: `Adopted live TradeStation SIM position ${position.symbol} into the paper journal because no open journal row was linked to it.`,
+      action: params.config.accountMode === "live" ? "adopted_live_position" : "adopted_sim_position",
+      note: `Adopted TradeStation ${environmentLabel} position ${position.symbol} into the ${params.config.accountMode} journal because no open journal row was linked to it.`,
       optionSymbol: position.symbol,
       quantity,
     }];
 
     const createdTrade = await createJournalTrade({
-      account_mode: "paper",
+      account_mode: params.config.accountMode,
       entry_date: chicagoNow.date,
       entry_time: chicagoNow.time,
       contracts: quantity,
       option_entry_price: optionEntryPrice,
-      entry_notes: "Adopted from live TradeStation SIM position during paper-trader reconciliation.",
+      entry_notes: `Adopted from TradeStation ${environmentLabel} position during automation reconciliation.`,
       planned_trade: {
         symbol: parsed.underlying,
         direction: parsed.direction,
@@ -2694,7 +2779,7 @@ async function adoptUnlinkedLiveSimPositions(params: {
         underlying_entry_price: underlyingEntryPrice,
         planned_risk_usd: null,
         planned_profit_usd: null,
-        setup_type: "adopted_sim_position",
+        setup_type: params.config.tradeStationEnvironment === "live" ? "adopted_live_position" : "adopted_sim_position",
         setup_subtype: "reconciliation",
         confidence_bucket: "adopted",
         intended_stop_underlying: null,
@@ -2719,8 +2804,8 @@ async function adoptUnlinkedLiveSimPositions(params: {
             managementStyle: "ai",
             lastManagementAction: "hold",
             lastManagementConfidence: "medium",
-            lastManagementNote: "Live SIM position adopted. AI management can review it on the next cycle.",
-            lastManagementThesis: "Adopted live SIM position without original scanner thesis.",
+            lastManagementNote: `TradeStation ${environmentLabel} position adopted. AI management can review it on the next cycle.`,
+            lastManagementThesis: `Adopted ${tradeLabel} without original scanner thesis.`,
             lastManagementAt: now.toISOString(),
             managementHistory: [],
             decisionLog,
@@ -2742,7 +2827,7 @@ async function adoptUnlinkedLiveSimPositions(params: {
       requestedQuantity: quantity,
       remainingQuantity: 0,
       averageFillPrice: optionEntryPrice,
-      note: `Adopted live SIM position ${position.symbol} into the paper journal.`,
+      note: `Adopted TradeStation ${environmentLabel} position ${position.symbol} into the ${params.config.accountMode} journal.`,
     });
   }
 
@@ -2755,7 +2840,7 @@ async function reconcileOpenPaperOrders(
   updateJournal: boolean,
 ): Promise<PaperTraderRunResult["reconciliation"]> {
   const openPaperTrades = allTrades.filter(
-    (trade) => trade.account_mode === "paper" && trade.status === "open",
+    (trade) => isConfiguredAccountModeTrade(config, trade) && trade.status === "open",
   );
   const client = await createAutomationTradeStationClient(config.automationBaseUrl);
   if (openPaperTrades.length === 0) {
@@ -2800,7 +2885,7 @@ async function reconcileOpenPaperOrders(
   for (const trade of openPaperTrades) {
     const automation = readAutomationSnapshot(trade);
     if (!automation?.accountId || !automation.optionSymbol) {
-      const reason = "Missing paper-trader order metadata for reconciliation; archived this stale local journal row because TradeStation SIM positions are the source of truth.";
+      const reason = `Missing automation order metadata for reconciliation; archived this stale local journal row because TradeStation ${formatTradeStationEnvironmentLabel(config)} positions are the source of truth.`;
       if (updateJournal) {
         await archiveJournalTradeWithoutReview(trade.id, {
           entry_notes: appendEntryNote(trade.entry_notes, reason),
@@ -2886,7 +2971,7 @@ async function reconcileOpenPaperOrders(
     const missingLivePosition = !position || positionQuantity === null || positionQuantity <= 0;
     if (fillStatus === "unknown" && orderCheckError === null) {
       orderCheckError =
-        `No executions or live SIM position were found for ${automation.optionSymbol}; fill status remains unknown until TradeStation returns order evidence.`;
+        `No executions or TradeStation ${formatTradeStationEnvironmentLabel(config)} position were found for ${automation.optionSymbol}; fill status remains unknown until TradeStation returns order evidence.`;
     }
     const hasLiveOpeningOrder = openingOrderSnapshot?.isAlive === true;
     const shouldArchiveStaleRow = missingLivePosition && !hasLiveOpeningOrder;
@@ -2950,7 +3035,7 @@ async function reconcileOpenPaperOrders(
         await archiveJournalTradeWithoutReview(trade.id, {
           entry_notes: appendEntryNote(
             trade.entry_notes,
-            `Archived by paper-trader reconciliation: no live TradeStation SIM position for ${automation.optionSymbol}.`,
+            `Archived by automation reconciliation: no TradeStation ${formatTradeStationEnvironmentLabel(config)} position for ${automation.optionSymbol}.`,
           ),
         });
         staleArchived += 1;
@@ -3014,7 +3099,7 @@ async function manageWorkingEntryOrders(
 ): Promise<PaperTraderRunResult["entryOrderManagement"]> {
   const result = buildEmptyEntryOrderManagementResult(config.manageEntryOrders);
   const openPaperTrades = allTrades.filter(
-    (trade) => trade.account_mode === "paper" && trade.status === "open",
+    (trade) => isConfiguredAccountModeTrade(config, trade) && trade.status === "open",
   );
   if (openPaperTrades.length === 0) {
     return result;
@@ -3516,7 +3601,7 @@ async function cancelOpeningRemainderBeforeExit(params: {
     };
   } catch (error) {
     const note =
-      `${params.exitNote} Cancel was accepted, but the SIM position re-check failed before sending the closing order: ${error instanceof Error ? error.message : String(error)}`;
+      `${params.exitNote} Cancel was accepted, but the position re-check failed before sending the closing order: ${error instanceof Error ? error.message : String(error)}`;
     return {
       ok: false,
       heldQuantity: null,
@@ -3538,11 +3623,12 @@ async function manageOpenPaperTrades(
   allTrades: JournalTradeDetail[],
 ): Promise<PaperTraderRunResult["management"]> {
   const openPaperTrades = allTrades.filter(
-    (trade) => trade.account_mode === "paper" && trade.status === "open",
+    (trade) => isConfiguredAccountModeTrade(config, trade) && trade.status === "open",
   );
   const learningTrades = filterRecordsForPaperLearning(allTrades);
   const trainedPolicyModel = trainPolicyModel(learningTrades);
   const client = await createAutomationTradeStationClient(config.automationBaseUrl);
+  const environmentLabel = formatTradeStationEnvironmentLabel(config);
   const nowIso = new Date().toISOString();
   const todayChicago = formatChicagoParts(new Date()).date;
   const updates: PaperTraderRunResult["management"]["updates"] = [];
@@ -3573,7 +3659,7 @@ async function manageOpenPaperTrades(
       skipped.push({
         tradeId: trade.id,
         symbol: trade.symbol,
-        reason: `Could not verify live TradeStation SIM position before management: ${error instanceof Error ? error.message : String(error)}`,
+        reason: `Could not verify TradeStation ${environmentLabel} position before management: ${error instanceof Error ? error.message : String(error)}`,
       });
       continue;
     }
@@ -3583,7 +3669,7 @@ async function manageOpenPaperTrades(
       skipped.push({
         tradeId: trade.id,
         symbol: trade.symbol,
-        reason: `No live TradeStation SIM position found for ${automation.optionSymbol}; skipped AI management for this stale journal row.`,
+        reason: `No TradeStation ${environmentLabel} position found for ${automation.optionSymbol}; skipped AI management for this stale journal row.`,
       });
       continue;
     }
@@ -3936,7 +4022,7 @@ async function manageOpenPaperTrades(
           kind: "exit",
           action: "scale_out_position_check_failed",
           reason: "partial_profit",
-          note: `${scaleNote} Scale-out skipped because the SIM position check failed: ${message}`,
+          note: `${scaleNote} Scale-out skipped because the position check failed: ${message}`,
           optionSymbol: automation.optionSymbol,
           orderId: automation.orderId ?? null,
           quantity: plannedScaleQuantity,
@@ -3955,7 +4041,7 @@ async function manageOpenPaperTrades(
           orderId: automation.orderId ?? null,
           optionExitPrice: null,
           quantity: plannedScaleQuantity,
-          note: `${scaleNote} Scale-out skipped because the SIM position check failed: ${message}`,
+          note: `${scaleNote} Scale-out skipped because the position check failed: ${message}`,
         });
         continue;
       }
@@ -4101,7 +4187,7 @@ async function manageOpenPaperTrades(
         quantity_closed: scaleQuantity,
         fees_usd: 0,
         slippage_usd: 0,
-        exit_notes: `Paper trader profit-protection scale-out. ${scaleNote}`,
+        exit_notes: `TradeStation automation profit-protection scale-out. ${scaleNote}`,
         lessons_learned: null,
         review_notes: null,
       });
@@ -4224,7 +4310,7 @@ async function manageOpenPaperTrades(
         kind: "exit",
         action: "exit_position_check_failed",
         reason: decision.reason,
-        note: `${decision.note} Exit skipped because the SIM position check failed: ${message}`,
+        note: `${decision.note} Exit skipped because the position check failed: ${message}`,
         optionSymbol: automation.optionSymbol,
         orderId: automation.orderId ?? null,
         quantity: automation.quantity,
@@ -4242,7 +4328,7 @@ async function manageOpenPaperTrades(
         action: "skipped",
         orderId: automation.orderId ?? null,
         optionExitPrice: null,
-        note: `${decision.note} Exit skipped because the SIM position check failed: ${message}`,
+        note: `${decision.note} Exit skipped because the position check failed: ${message}`,
       });
       continue;
     }
@@ -4395,9 +4481,9 @@ async function manageOpenPaperTrades(
       quantity_closed: exitQuantity,
       fees_usd: 0,
       slippage_usd: 0,
-      exit_notes: `Paper trader auto-exit. ${decision.note}`,
+      exit_notes: `TradeStation automation auto-exit. ${decision.note}`,
       lessons_learned: null,
-      review_notes: `Paper trader auto-managed exit from ${automation.optionSymbol}.`,
+      review_notes: `TradeStation automation auto-managed exit from ${automation.optionSymbol}.`,
     });
 
     exitsTriggered.push({
@@ -4594,7 +4680,7 @@ async function maybeEnterNewPaperTrade(params: {
     const scanSummary = `Scanned ${automatedScan.scannedSymbolCount}/${automatedScan.totalSymbolCount} symbols across ${automatedScan.chunkCount} chunk(s), ranked ${automatedScan.finalistCount} finalist row(s), confirmed ${automatedScan.confirmedCandidates.length} trade-card-ready candidate(s).`;
     const resumeNote = automatedScan.completed
       ? ""
-      : " Partial scan state was saved so the next paper-trader cycle can continue the universe.";
+      : " Partial scan state was saved so the next automation cycle can continue the universe.";
     return {
       attempted: true,
       outcome: "no_trade_today",
@@ -4614,8 +4700,10 @@ async function maybeEnterNewPaperTrade(params: {
 
   try {
     const automation = tradeCard.automationMetadata;
+    const accountLabel = formatAutomationAccountLabel(config);
+    const tradeLabel = formatAutomationTradeLabel(config);
     if (automation.contracts < 1) {
-      const reason = `Trade card sized ${automation.contracts} contracts, so the paper trader skipped the entry.`;
+      const reason = `Trade card sized ${automation.contracts} contracts, so automation skipped the entry.`;
       await recordEntryCandidateAudit({
         scanRunId,
         dryRun,
@@ -4644,7 +4732,7 @@ async function maybeEnterNewPaperTrade(params: {
       return trade.symbol === scan.ticker || existingAutomation?.optionSymbol === automation.optionSymbol;
     });
     if (duplicateOpenTrade) {
-      const reason = `Duplicate-entry guard blocked ${scan.ticker}; an open paper trade already exists for ${duplicateOpenTrade.symbol}.`;
+      const reason = `Duplicate-entry guard blocked ${scan.ticker}; an open ${tradeLabel} already exists for ${duplicateOpenTrade.symbol}.`;
       await recordEntryCandidateAudit({
         scanRunId,
         dryRun,
@@ -4713,7 +4801,7 @@ async function maybeEnterNewPaperTrade(params: {
       entryBuyingPowerUsd = extractEntryBuyingPower(balancesPayload);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const reason = `Could not enforce the ${(config.maxPositionPct * 100).toFixed(0)}% account-value cap from TradeStation balances, so the paper trader skipped the entry. ${message}`;
+      const reason = `Could not enforce the ${(config.maxPositionPct * 100).toFixed(0)}% account-value cap from TradeStation balances, so automation skipped the entry. ${message}`;
       await recordEntryCandidateAudit({
         scanRunId,
         dryRun,
@@ -4738,7 +4826,7 @@ async function maybeEnterNewPaperTrade(params: {
       };
     }
     if (accountValueUsd === null || accountValueUsd <= 0) {
-      const reason = "Could not read a positive SIM account value from TradeStation balances, so the paper trader skipped the entry instead of risking an oversized position.";
+      const reason = `Could not read a positive ${accountLabel} value from TradeStation balances, so automation skipped the entry instead of risking an oversized position.`;
       await recordEntryCandidateAudit({
         scanRunId,
         dryRun,
@@ -4767,6 +4855,7 @@ async function maybeEnterNewPaperTrade(params: {
       accountValueUsd,
       cashBalanceUsd,
       optionsBuyingPowerUsd,
+      accountLabel,
     });
     if (dayTradeOpeningBlockReason) {
       await recordEntryCandidateAudit({
@@ -4880,7 +4969,7 @@ async function maybeEnterNewPaperTrade(params: {
       const capParts = [
         `${(config.maxPositionPct * 100).toFixed(0)}% account-value cap allows $${positionCap.maxPositionCostUsd.toFixed(2)}`,
         positionCap.entryBuyingPowerUsd !== null
-          ? `available SIM buying power allows $${positionCap.entryBuyingPowerUsd.toFixed(2)}`
+          ? `available TradeStation buying power allows $${positionCap.entryBuyingPowerUsd.toFixed(2)}`
           : null,
       ].filter(Boolean);
       const reason = `${capParts.join(" and ")}, which is below one ${automation.optionSymbol} contract at ${entryLimitPrice.toFixed(2)}.`;
@@ -4919,7 +5008,7 @@ async function maybeEnterNewPaperTrade(params: {
         : null,
       initialContracts < automation.contracts && positionCap.entryBuyingPowerUsd !== null
         && positionCap.entryBuyingPowerUsd <= positionCap.maxPositionCostUsd
-        ? "available SIM buying power"
+        ? "available TradeStation buying power"
         : null,
     ].filter((reason): reason is string => reason !== null);
     const buyingPowerAdjustmentNotes: string[] = [];
@@ -5145,8 +5234,8 @@ async function maybeEnterNewPaperTrade(params: {
       timestamp: now.toISOString(),
       symbol: scan.ticker,
       kind: "entry",
-      action: "entered_paper_trade",
-      outcome: "entered_paper_trade",
+      action: "entered_automation_trade",
+      outcome: "entered_automation_trade",
       note: `AI selected ${scan.ticker} and entered ${finalContracts}x ${automation.optionSymbol}.${sizeNote} Entry policy: ${entryPolicyRecommendation.summary}`,
       thesis: entryReasoning.whyThisWon ?? entryReasoning.tradeRationale,
       plainEnglishExplanation: entryReasoning.conciseReasoning,
@@ -5166,12 +5255,12 @@ async function maybeEnterNewPaperTrade(params: {
     }];
 
     const createdTrade = await createJournalTrade({
-      account_mode: "paper",
+      account_mode: config.accountMode,
       entry_date: chicagoNow.date,
       entry_time: chicagoNow.time,
       contracts: finalContracts,
       option_entry_price: optionEntryPrice,
-      entry_notes: "Entered automatically by paper trader module.",
+      entry_notes: `Entered automatically by TradeStation ${formatTradeStationEnvironmentLabel(config)} automation.`,
       planned_trade: {
         ...cappedPlannedJournalFields,
         scan_run_id: scanRunId,
@@ -5243,12 +5332,12 @@ async function maybeEnterNewPaperTrade(params: {
       status: "open",
     });
 
-    const enteredReason = `Entered ${finalContracts}x ${automation.optionSymbol} in the paper account.${sizeNote} Entry policy: ${entryPolicyRecommendation.summary}`;
+    const enteredReason = `Entered ${finalContracts}x ${automation.optionSymbol} in the ${accountLabel}.${sizeNote} Entry policy: ${entryPolicyRecommendation.summary}`;
     await recordEntryCandidateAudit({
       scanRunId,
       dryRun,
       symbol: scan.ticker,
-      decision: "entered_paper_trade",
+      decision: "entered_automation_trade",
       decisionReason: enteredReason,
       paperTradeId: createdTrade.id,
       orderId: orderResult.orderId,
@@ -5261,7 +5350,7 @@ async function maybeEnterNewPaperTrade(params: {
 
     return {
       attempted: true,
-      outcome: "entered_paper_trade",
+      outcome: "entered_automation_trade",
       symbol: scan.ticker,
       reason: enteredReason,
       orderId: orderResult.orderId,
@@ -5314,7 +5403,7 @@ export async function runPaperTraderCycle(
       ? "Dry run was requested explicitly."
       : "AUTO_TRADER_ALLOW_ORDER_PLACEMENT is not enabled, so this run used preview-only mode."
     : null;
-  let allTrades = await loadPaperTraderCycleTrades();
+  let allTrades = await loadPaperTraderCycleTrades(config);
   const shouldReconcileOrders = options.reconcileOrders === true || !dryRun;
   const reconciliation = await reconcileOpenPaperOrders(
     config,
@@ -5322,34 +5411,26 @@ export async function runPaperTraderCycle(
     shouldReconcileOrders,
   );
   if (reconciliation.updated > 0) {
-    allTrades = await loadPaperTraderCycleTrades();
+    allTrades = await loadPaperTraderCycleTrades(config);
   }
 
   let openPaperTrades = allTrades.filter(
-    (trade) => trade.account_mode === "paper" && trade.status === "open",
+    (trade) => isConfiguredAccountModeTrade(config, trade) && trade.status === "open",
   );
   const chicagoNow = formatChicagoParts(new Date());
   const todayChicago = chicagoNow.date;
-  const todayRealizedPlUsd = computeTodayRealizedPlUsd(allTrades, todayChicago);
+  const todayRealizedPlUsd = computeTodayRealizedPlUsd(allTrades, todayChicago, config.accountMode);
 
   const includeHistory = options.includeHistory !== false;
 
   if (options.reconcileOnly) {
     const entryOrderManagement = await manageWorkingEntryOrders(config, true, allTrades, false);
     return await finalizePaperTraderRunResult({
-      mode: "paper",
+      mode: config.accountMode,
       timestamp: new Date().toISOString(),
       dryRun,
       dryRunReason,
-      config: {
-        automationBaseUrl: config.automationBaseUrl,
-        allowOrderPlacement: config.allowOrderPlacement,
-        accountId: config.accountId as string,
-        maxOpenTrades: config.maxOpenTrades,
-        maxDailyLossUsd: config.maxDailyLossUsd,
-        maxPositionPct: config.maxPositionPct,
-        entryOrderManagementEnabled: config.manageEntryOrders,
-      },
+      config: buildRunResultConfig(config),
       guards: {
         openPaperTrades: openPaperTrades.length,
         liveSimPositions: null,
@@ -5369,26 +5450,18 @@ export async function runPaperTraderCycle(
         attempted: false,
         outcome: "monitor_only",
         symbol: null,
-        reason: "Monitor-only run reconciled open paper orders and skipped AI exits plus new entries.",
+        reason: `Monitor-only run reconciled open ${config.accountMode} orders and skipped AI exits plus new entries.`,
       },
     }, allTrades, includeHistory);
   }
 
   if (!dryRun && !isRegularUsEquitySession(new Date())) {
     return await finalizePaperTraderRunResult({
-      mode: "paper",
+      mode: config.accountMode,
       timestamp: new Date().toISOString(),
       dryRun,
       dryRunReason,
-      config: {
-        automationBaseUrl: config.automationBaseUrl,
-        allowOrderPlacement: config.allowOrderPlacement,
-        accountId: config.accountId as string,
-        maxOpenTrades: config.maxOpenTrades,
-        maxDailyLossUsd: config.maxDailyLossUsd,
-        maxPositionPct: config.maxPositionPct,
-        entryOrderManagementEnabled: config.manageEntryOrders,
-      },
+      config: buildRunResultConfig(config),
       guards: {
         openPaperTrades: openPaperTrades.length,
         liveSimPositions: null,
@@ -5408,16 +5481,16 @@ export async function runPaperTraderCycle(
         attempted: false,
         outcome: "outside_market_hours",
         symbol: null,
-        reason: `Skipped live paper-trader cycle outside regular US equity market hours (America/Chicago). Current Chicago time: ${chicagoNow.time}.`,
+        reason: `Skipped ${formatTradeStationEnvironmentLabel(config)} automation cycle outside regular US equity market hours (America/Chicago). Current Chicago time: ${chicagoNow.time}.`,
       },
-	  }, allTrades, includeHistory);
+    }, allTrades, includeHistory);
   }
 
   const entryOrderManagement = await manageWorkingEntryOrders(config, dryRun, allTrades, !dryRun);
   if (entryOrderManagement.updated > 0) {
-    allTrades = await loadPaperTraderCycleTrades();
+    allTrades = await loadPaperTraderCycleTrades(config);
     openPaperTrades = allTrades.filter(
-      (trade) => trade.account_mode === "paper" && trade.status === "open",
+      (trade) => isConfiguredAccountModeTrade(config, trade) && trade.status === "open",
     );
   }
 
@@ -5444,23 +5517,15 @@ export async function runPaperTraderCycle(
       });
 
   const decisionLogTrades = !dryRun || reconciliation.updated > 0
-    ? await loadPaperTraderCycleTrades()
+    ? await loadPaperTraderCycleTrades(config)
     : allTrades;
 
   return await finalizePaperTraderRunResult({
-    mode: "paper",
+    mode: config.accountMode,
     timestamp: new Date().toISOString(),
     dryRun,
     dryRunReason,
-    config: {
-      automationBaseUrl: config.automationBaseUrl,
-      allowOrderPlacement: config.allowOrderPlacement,
-      accountId: config.accountId as string,
-      maxOpenTrades: config.maxOpenTrades,
-      maxDailyLossUsd: config.maxDailyLossUsd,
-      maxPositionPct: config.maxPositionPct,
-      entryOrderManagementEnabled: config.manageEntryOrders,
-    },
+    config: buildRunResultConfig(config),
     guards: {
       openPaperTrades: remainingOpenPaperTrades.length,
       liveSimPositions: null,

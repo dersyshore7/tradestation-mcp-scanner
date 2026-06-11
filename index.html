@@ -801,14 +801,14 @@
         <section class="page-header">
           <div class="page-kicker">Automation</div>
           <h1>Paper Trader</h1>
-          <p class="page-subtitle">Monitor SIM performance, trade outcomes, and paper-trader automation.</p>
+          <p class="page-subtitle">Monitor TradeStation performance, trade outcomes, and automation.</p>
         </section>
 
       <div class="card">
         <div class="panel-header">
           <div>
             <h2>Paper Dashboard</h2>
-            <p class="section-description">Paper-only trade analytics with the SIM account snapshot as the source of truth for unrealized P/L.</p>
+            <p class="section-description">Paper trade analytics with the configured TradeStation account snapshot as the source of truth for unrealized P/L.</p>
           </div>
           <div class="actions">
             <button id="refreshPaperDashboardButton" class="secondary">Refresh Dashboard</button>
@@ -836,7 +836,7 @@
         <div class="panel-header">
           <div>
             <h2>Paper Trader Controls</h2>
-            <p class="section-description">Separate SIM automation lane for status checks, dry runs, and live paper-trader cycles.</p>
+            <p class="section-description">TradeStation automation lane for status checks, dry runs, and live cycles.</p>
           </div>
           <div class="actions">
             <button id="loadPaperTraderStatusButton" class="secondary">Load Status</button>
@@ -853,17 +853,17 @@
           placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET"
           autocomplete="off"
         />
-        <div class="field-note">Required only for protected controls such as status checks and manual paper-trader cycles. The dashboard above loads automatically without this password.</div>
+        <div class="field-note">Required only for protected controls such as status checks and manual automation cycles. The dashboard above loads automatically without this password.</div>
 
         <details>
           <summary>Optional prompt override</summary>
           <div id="paperTraderPromptFields">
             <label for="paperTraderPrompt">Prompt override</label>
-            <input id="paperTraderPrompt" placeholder="Optional custom prompt for this paper-trader cycle" />
+            <input id="paperTraderPrompt" placeholder="Optional custom prompt for this automation cycle" />
           </div>
         </details>
 
-        <div id="paperTraderArea" class="muted">Load status to confirm the SIM paper-trader configuration.</div>
+        <div id="paperTraderArea" class="muted">Load status to confirm the TradeStation automation configuration.</div>
       </div>
       </section>
 
@@ -965,7 +965,7 @@
         <div class="panel-header">
           <div>
             <h2>Journal Insights</h2>
-            <p class="section-description">TradeStation SIM account snapshot plus local journal readouts. The SIM account is the source of truth for net worth.</p>
+            <p class="section-description">Configured TradeStation account snapshot plus local journal readouts. The broker account is the source of truth for net worth.</p>
           </div>
           <div class="actions">
             <button id="refreshInsightsButton" class="secondary">Refresh Insights</button>
@@ -1579,6 +1579,14 @@
         `;
       }
 
+      function formatTradeStationEnvironmentLabel(value) {
+        return value === "live" ? "LIVE" : "SIM";
+      }
+
+      function readRunEnvironment(raw, fallbackMode) {
+        return raw?.config?.tradeStationEnvironment || (fallbackMode === "live" ? "live" : "sim");
+      }
+
       function renderRunTimeline(history, migrationMessage) {
         const runs = sortByTimestampDesc(Array.isArray(history) ? history : [], "created_at");
         if (migrationMessage) {
@@ -1591,6 +1599,7 @@
           const managed = raw.management?.inspected;
           const decisionLog = Array.isArray(raw.decisionLog) ? raw.decisionLog : [];
           const entry = raw.entry || {};
+          const environmentLabel = formatTradeStationEnvironmentLabel(readRunEnvironment(raw, run.mode));
           const entryOrderRows = [
             ...(Array.isArray(raw.entryOrderManagement?.updates) ? raw.entryOrderManagement.updates : []).map((item) =>
               `${item.symbol}: ${item.action} | ${renderMaybe(item.oldLimitPrice)} -> ${renderMaybe(item.newLimitPrice)} | filled ${renderMaybe(item.filledQuantity)} | remaining ${renderMaybe(item.remainingQuantity)}${item.note ? ` - ${item.note}` : ""}`,
@@ -1615,7 +1624,7 @@
 
           return `
             <details class="timeline-item">
-              <summary>${escapeHtml(formatCentralTimestamp(run.created_at))} | ${escapeHtml(run.dry_run ? "Dry" : "Live SIM")} | ${escapeHtml(renderMaybe(run.outcome))}</summary>
+              <summary>${escapeHtml(formatCentralTimestamp(run.created_at))} | ${escapeHtml(run.dry_run ? "Dry" : environmentLabel)} | ${escapeHtml(renderMaybe(run.outcome))}</summary>
               <div class="row"><strong>Symbol:</strong> ${escapeHtml(renderMaybe(run.symbol))} | <strong>Orders checked:</strong> ${escapeHtml(renderMaybe(checked, "0"))} | <strong>Entry orders managed:</strong> ${escapeHtml(renderMaybe(entryManaged, "0"))} | <strong>Managed:</strong> ${escapeHtml(renderMaybe(managed, "0"))}</div>
               <div class="row"><strong>Reason:</strong> ${escapeHtml(renderMaybe(run.reason))}</div>
               <div class="phase-grid">
@@ -1658,6 +1667,7 @@
 
       function formatAutomationEntryOutcome(outcome, symbol) {
         switch (outcome) {
+          case "entered_automation_trade":
           case "entered_paper_trade":
             return `New entry placed${symbol ? `: ${symbol}` : ""}`;
           case "trade_card_blocked":
@@ -1684,6 +1694,8 @@
         const symbol = entry?.symbol || null;
         const reason = compactText(entry?.reason || fallbackReason || "No entry reason saved.");
         switch (outcome) {
+          case "entered_automation_trade":
+            return `Placed a new automation entry${symbol ? ` for ${symbol}` : ""}. ${reason}`;
           case "entered_paper_trade":
             return `Placed a new paper entry${symbol ? ` for ${symbol}` : ""}. ${reason}`;
           case "trade_card_blocked":
@@ -1699,7 +1711,7 @@
           case "preview_only":
             return `The cycle previewed a possible entry but did not send an order. ${reason}`;
           case "monitor_only":
-            return `The cycle only monitored existing paper trades. ${reason}`;
+            return `The cycle only monitored existing automation trades. ${reason}`;
           default:
             return reason;
         }
@@ -1776,15 +1788,16 @@
                     `${item.symbol}: ${item.reason || item.action || "exit triggered"}`,
                   );
                   const entrySummary = describeAutomationEntry(entry, run.reason || raw.dryRunReason);
+                  const environmentLabel = formatTradeStationEnvironmentLabel(readRunEnvironment(raw, run.mode));
                   return `
                     <details class="timeline-item">
-                      <summary>${escapeHtml(formatCentralTimestamp(run.created_at))} | ${escapeHtml(run.dry_run ? "Dry" : "Live SIM")} | ${escapeHtml(entryLabel)}</summary>
+                      <summary>${escapeHtml(formatCentralTimestamp(run.created_at))} | ${escapeHtml(run.dry_run ? "Dry" : environmentLabel)} | ${escapeHtml(entryLabel)}</summary>
                       <div class="row"><strong>Existing trade management:</strong> ${escapeHtml(existingTradeSummary)}</div>
                       <div class="row"><strong>New entry scan:</strong> ${escapeHtml(entrySummary)}</div>
                       <div class="row"><strong>History note:</strong> These are actions from that cycle. A symbol shown here may no longer be open in TradeStation after an exit order fills.</div>
                       <div class="phase-grid" style="margin-top: 12px;">
                         ${renderTradePhaseCard("Order Checks", orderDetails.map((row) => escapeHtml(row)), [], "No existing orders were checked in this cycle.")}
-                        ${renderTradePhaseCard("Management", managementDetails.map((row) => escapeHtml(row)), [], "No existing paper trades were managed in this cycle.")}
+                        ${renderTradePhaseCard("Management", managementDetails.map((row) => escapeHtml(row)), [], "No existing automation trades were managed in this cycle.")}
                         ${renderTradePhaseCard("Exit Triggers", exitDetails.map((row) => escapeHtml(row)), [], "No exits were triggered in this cycle.")}
                       </div>
                     </details>
@@ -2026,15 +2039,15 @@
         if (rows.length === 0) {
           return `
             <div class="comparison-card">
-              <h4>Open SIM Positions</h4>
-              <div class="empty-state">No open SIM positions reported by TradeStation.</div>
+              <h4>Open TradeStation Positions</h4>
+              <div class="empty-state">No open positions reported by TradeStation.</div>
             </div>
           `;
         }
 
         return `
           <div class="comparison-card">
-            <h4>Open SIM Positions</h4>
+            <h4>Open TradeStation Positions</h4>
             <ul class="bucket-list">
               ${rows.map((position) => {
                 const quantity = asNumber(position.quantity);
@@ -2184,11 +2197,11 @@
         const syncWarnings = [
           liveNotJournaled.length > 0
             ? hasArchivedTrades
-              ? `Live SIM position(s) outside the current-epoch journal scope are still shown from TradeStation: ${liveNotJournaled.join(", ")}.`
-              : `Live SIM position(s) without an open journal row: ${liveNotJournaled.join(", ")}.`
+              ? `TradeStation position(s) outside the current-epoch journal scope are still shown: ${liveNotJournaled.join(", ")}.`
+              : `TradeStation position(s) without an open journal row: ${liveNotJournaled.join(", ")}.`
             : null,
           journalNotLive.length > 0
-            ? `Current-epoch open journal row(s) not currently present in SIM positions: ${journalNotLive.join(", ")}.`
+            ? `Current-epoch open journal row(s) not currently present in TradeStation positions: ${journalNotLive.join(", ")}.`
             : null,
         ].filter(Boolean);
         const syncWarningLabel = hasArchivedTrades ? "Position scope note:" : "Position sync warning:";
@@ -2203,11 +2216,11 @@
 
           <div class="stats-grid" style="margin-top: 12px;">
             <div class="stat-card">
-              <div class="stat-label">SIM Net Worth</div>
+              <div class="stat-label">TradeStation Net Worth</div>
               <div class="stat-value">${escapeHtml(formatMoney(simAccount?.accountValueUsd))}</div>
             </div>
             <div class="stat-card ${escapeHtml(unrealizedTone)}">
-              <div class="stat-label">SIM Unrealized P/L</div>
+              <div class="stat-label">TradeStation Unrealized P/L</div>
               <div class="stat-value ${escapeHtml(unrealizedTone)}">${escapeHtml(formatMoney(simAccount?.unrealizedPlUsd))}</div>
             </div>
             <div class="stat-card ${escapeHtml(realizedTone)}">
@@ -2215,11 +2228,11 @@
               <div class="stat-value ${escapeHtml(realizedTone)}">${escapeHtml(journalDataUnavailable ? "unavailable" : formatMoney(totals.total_realized_pl_usd))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Open SIM Positions</div>
+              <div class="stat-label">Open TradeStation Positions</div>
               <div class="stat-value">${escapeHtml(renderMaybe(openSimPositions, "n/a"))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">SIM Open Contracts</div>
+              <div class="stat-label">TradeStation Open Contracts</div>
               <div class="stat-value">${escapeHtml(renderMaybe(openSimContracts, "n/a"))}</div>
             </div>
             <div class="stat-card ${escapeHtml(winRateTone)}">
@@ -2284,7 +2297,7 @@
 
           <div class="empty-state" style="margin-top: 16px;">
             <strong>${escapeHtml(scopeLabel)}:</strong> since ${escapeHtml(learningStartLabel)}. ${escapeHtml(renderMaybe(includedTradeCount, "0"))} current-epoch paper trade(s); ${escapeHtml(renderMaybe(excludedTradeCount, "0"))} archived paper trade(s) kept in journal/history and excluded from current dashboard learning metrics.
-            Open SIM positions, unrealized P/L, and net worth come from read-only TradeStation account data. Epoch realized results and learning analytics come from Supabase journal history, so they can be temporarily unavailable if Supabase times out.
+            Open positions, unrealized P/L, and net worth come from read-only TradeStation account data. Epoch realized results and learning analytics come from Supabase journal history, so they can be temporarily unavailable if Supabase times out.
           </div>
           ${syncWarnings.length > 0
             ? `<div class="empty-state" style="margin-top: 12px;"><strong>${escapeHtml(syncWarningLabel)}</strong>${renderList(syncWarnings)}</div>`
@@ -2388,6 +2401,12 @@
           : [];
         const learning = status?.learning || {};
         const sizing = status?.sizing || {};
+        const environmentLabel = formatTradeStationEnvironmentLabel(status?.tradeStationEnvironment);
+        const accountModeLabel = status?.accountMode === "live" ? "Live" : "Paper";
+        const sourceCounts = learning?.sourceCounts || {};
+        const closedPaperTrades = sourceCounts.paper ?? learning?.closedPaperTrades ?? 0;
+        const closedLiveTrades = sourceCounts.live ?? learning?.closedLiveTrades ?? 0;
+        const closedLearningTrades = learning?.closedLearningTrades ?? (Number(closedPaperTrades) + Number(closedLiveTrades));
 
         paperTraderArea.innerHTML = `
           <div class="stats-grid" style="margin-top: 12px;">
@@ -2397,7 +2416,7 @@
             </div>
             <div class="stat-card">
               <div class="stat-label">Order Placement</div>
-              <div class="stat-value">${escapeHtml(status?.allowOrderPlacement ? "Live SIM" : "Preview Only")}</div>
+              <div class="stat-value">${escapeHtml(status?.allowOrderPlacement ? `${environmentLabel} Orders` : "Preview Only")}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Entry Order Mgmt</div>
@@ -2408,15 +2427,15 @@
               <div class="stat-value">${escapeHtml(status?.liveRunReady ? "Ready" : "Not Ready")}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">SIM Account Configured</div>
+              <div class="stat-label">${escapeHtml(environmentLabel)} Account Configured</div>
               <div class="stat-value">${escapeHtml(formatBoolean(status?.accountIdConfigured))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Open SIM Positions</div>
+              <div class="stat-label">Open ${escapeHtml(environmentLabel)} Positions</div>
               <div class="stat-value">${escapeHtml(renderMaybe(sizing.openPositionCount, "n/a"))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">SIM Open Contracts</div>
+              <div class="stat-label">${escapeHtml(environmentLabel)} Open Contracts</div>
               <div class="stat-value">${escapeHtml(renderMaybe(sizing.openContractCount, "n/a"))}</div>
             </div>
             <div class="stat-card">
@@ -2440,7 +2459,7 @@
               <div class="stat-value">${escapeHtml(formatPercent(status?.maxPositionPct, 0))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">SIM Net Worth</div>
+              <div class="stat-label">${escapeHtml(environmentLabel)} Net Worth</div>
               <div class="stat-value">${escapeHtml(formatMoney(sizing?.accountValueUsd))}</div>
             </div>
             <div class="stat-card">
@@ -2448,7 +2467,7 @@
               <div class="stat-value">${escapeHtml(formatMoney(sizing?.cashBalanceUsd))}</div>
             </div>
             <div class="stat-card ${escapeHtml(numberToneClass(sizing?.unrealizedPlUsd))}">
-              <div class="stat-label">SIM Unrealized P/L</div>
+              <div class="stat-label">${escapeHtml(environmentLabel)} Unrealized P/L</div>
               <div class="stat-value ${escapeHtml(numberToneClass(sizing?.unrealizedPlUsd))}">${escapeHtml(formatMoney(sizing?.unrealizedPlUsd))}</div>
             </div>
             <div class="stat-card">
@@ -2483,19 +2502,20 @@
 
           <div class="journal-trade">
             <div class="row"><strong>Automation base URL:</strong> ${escapeHtml(renderMaybe(status?.automationBaseUrl))}</div>
+            <div class="row"><strong>Account mode:</strong> ${escapeHtml(accountModeLabel)} | <strong>TradeStation environment:</strong> ${escapeHtml(environmentLabel)}</div>
             <div class="row"><strong>Route secret required:</strong> ${escapeHtml(formatBoolean(status?.requiresSecret))}</div>
-            <div class="row"><strong>Configuration checks:</strong> ${configurationIssues.length > 0 ? renderList(configurationIssues) : "<span class=\"muted\">Live SIM configuration is ready.</span>"}</div>
+            <div class="row"><strong>Configuration checks:</strong> ${configurationIssues.length > 0 ? renderList(configurationIssues) : `<span class="muted">${escapeHtml(environmentLabel)} configuration is ready.</span>`}</div>
             ${dataWarnings.length > 0 ? `<div class="row"><strong>Data warnings:</strong> ${renderList(dataWarnings)}</div>` : ""}
-            <div class="row"><strong>Autonomous cron:</strong> Every 5 minutes on weekdays via <code>/api/paper-trader-run?reconcileOrders=true</code>; can reconcile fills, manage exits, and enter new SIM trades when guards allow.</div>
-            <div class="row"><strong>Entry order management:</strong> ${escapeHtml(status?.entryOrderManagementEnabled ? "Enabled for working SIM buy-to-open limits." : "Off; working entry orders are monitored but not repriced/canceled by AI.")}</div>
+            <div class="row"><strong>Autonomous cron:</strong> Every 5 minutes on weekdays via <code>/api/paper-trader-run?reconcileOrders=true</code>; can reconcile fills, manage exits, and enter new ${escapeHtml(accountModeLabel.toLowerCase())} trades when guards allow.</div>
+            <div class="row"><strong>Entry order management:</strong> ${escapeHtml(status?.entryOrderManagementEnabled ? `Enabled for working ${environmentLabel} buy-to-open limits.` : "Off; working entry orders are monitored but not repriced/canceled by AI.")}</div>
             <div class="row"><strong>Entry cadence:</strong> Every full cron cycle can scan for another excellent setup and enter one additional non-duplicate ticker if the trade card passes.</div>
-            <div class="row"><strong>Position size guard:</strong> New SIM entries are capped at ${escapeHtml(formatPercent(status?.maxPositionPct, 0))} of the TradeStation SIM account value${sizing?.maxPositionCostUsd === null || sizing?.maxPositionCostUsd === undefined ? "." : ` (${escapeHtml(formatMoney(sizing.maxPositionCostUsd))}).`}</div>
+            <div class="row"><strong>Position size guard:</strong> New ${escapeHtml(accountModeLabel.toLowerCase())} entries are capped at ${escapeHtml(formatPercent(status?.maxPositionPct, 0))} of the TradeStation ${escapeHtml(environmentLabel)} account value${sizing?.maxPositionCostUsd === null || sizing?.maxPositionCostUsd === undefined ? "." : ` (${escapeHtml(formatMoney(sizing.maxPositionCostUsd))}).`}</div>
             ${sizing?.error ? `<div class="row"><strong>Sizing read:</strong> ${escapeHtml(sizing.error)}</div>` : ""}
-            <div class="row"><strong>Daily loss guard:</strong> Unlimited for paper trading, so the system can keep collecting loss examples and improve its policy memory.</div>
+            <div class="row"><strong>Daily loss guard:</strong> Unlimited for automation learning, so the system can keep collecting loss examples and improve its policy memory.</div>
             <div class="row"><strong>Manual order check:</strong> The Check Orders button still uses read-only monitor mode for diagnostics.</div>
-            <div class="row"><strong>Learning set:</strong> ${escapeHtml(renderMaybe(learning?.closedPaperTrades, "0"))} closed paper trades since ${escapeHtml(formatCentralTimestamp(learning?.learningStartAt))}, ${escapeHtml(renderMaybe(learning?.learnedContexts, "0"))} management contexts, ${escapeHtml(renderMaybe(learning?.entryLearnedContexts, "0"))} entry contexts${Number.isFinite(Number(learning?.excludedLearningTrades)) ? `; ${escapeHtml(renderMaybe(learning?.excludedLearningTrades, "0"))} earlier trade(s) kept in history but excluded from learning` : ""}</div>
+            <div class="row"><strong>Learning set:</strong> ${escapeHtml(renderMaybe(closedLearningTrades, "0"))} closed automation trade(s) since ${escapeHtml(formatCentralTimestamp(learning?.learningStartAt))} (${escapeHtml(renderMaybe(closedPaperTrades, "0"))} paper, ${escapeHtml(renderMaybe(closedLiveTrades, "0"))} live), ${escapeHtml(renderMaybe(learning?.learnedContexts, "0"))} management contexts, ${escapeHtml(renderMaybe(learning?.entryLearnedContexts, "0"))} entry contexts${Number.isFinite(Number(learning?.excludedLearningTrades)) ? `; ${escapeHtml(renderMaybe(learning?.excludedLearningTrades, "0"))} earlier trade(s) kept in history but excluded from learning` : ""}</div>
             <div class="row"><strong>Entry policy:</strong></div>
-            <pre>${escapeHtml(learning?.entryPolicySummary || "No closed paper-entry outcomes yet; new entries use the scanner/trade-card rules and become training data after close.")}</pre>
+            <pre>${escapeHtml(learning?.entryPolicySummary || "No closed automation-entry outcomes yet; new entries use the scanner/trade-card rules and become training data after close.")}</pre>
           </div>
 
           ${renderPaperTraderDecisionWorkspace({
@@ -2535,6 +2555,7 @@
         const entryOrderSkipped = Array.isArray(result?.entryOrderManagement?.skipped)
           ? result.entryOrderManagement.skipped
           : [];
+        const environmentLabel = formatTradeStationEnvironmentLabel(result?.config?.tradeStationEnvironment || (result?.mode === "live" ? "live" : "sim"));
         const reasoning = result?.entry?.reasoning || null;
         const reasoningItems = [
           reasoning?.optionChosen ? `Option: ${reasoning.optionChosen}` : null,
@@ -2545,7 +2566,8 @@
 
         paperTraderArea.innerHTML = `
           <div class="summary-section">
-            <div class="row"><strong>Mode:</strong> <span class="pill">${escapeHtml(renderMaybe(result?.dryRun ? "Dry Run" : "Live SIM"))}</span></div>
+            <div class="row"><strong>Mode:</strong> <span class="pill">${escapeHtml(renderMaybe(result?.dryRun ? "Dry Run" : `${environmentLabel} Orders`))}</span></div>
+            <div class="row"><strong>Account mode:</strong> ${escapeHtml(renderMaybe(result?.mode))} | <strong>TradeStation environment:</strong> ${escapeHtml(environmentLabel)}</div>
             ${result?.dryRunReason ? `<div class="row"><strong>Run note:</strong> ${escapeHtml(result.dryRunReason)}</div>` : ""}
             <div class="row"><strong>Entry outcome:</strong> ${escapeHtml(renderMaybe(result?.entry?.outcome))}</div>
             <div class="row"><strong>Reason:</strong> ${escapeHtml(renderMaybe(result?.entry?.reason))}</div>
@@ -2725,7 +2747,7 @@
           return;
         }
 
-        paperTraderArea.innerHTML = `<div class="muted">${escapeHtml(dryRun ? "Running dry cycle..." : "Running live SIM cycle...")}</div>`;
+        paperTraderArea.innerHTML = `<div class="muted">${escapeHtml(dryRun ? "Running dry cycle..." : "Running live automation cycle...")}</div>`;
 
         try {
           const prompt = paperTraderPromptInput?.value?.trim() || "";
@@ -2751,7 +2773,7 @@
           return;
         }
 
-        paperTraderArea.innerHTML = '<div class="muted">Checking open paper orders...</div>';
+        paperTraderArea.innerHTML = '<div class="muted">Checking open automation orders...</div>';
 
         try {
           const response = await fetch("/api/paper-trader-run?reconcileOnly=true&reconcileOrders=true&skipNewEntry=true", {
@@ -3682,7 +3704,7 @@
           ${simAccount
             ? `<div class="stats-grid">
                 <div class="stat-card ${escapeHtml(simNetWorthTone)}">
-                  <div class="stat-label">SIM Net Worth</div>
+                  <div class="stat-label">TradeStation Net Worth</div>
                   <div class="stat-value ${escapeHtml(simNetWorthTone)}">${escapeHtml(formatMoney(simAccount.accountValueUsd))}</div>
                 </div>
                 <div class="stat-card">
@@ -3690,7 +3712,7 @@
                   <div class="stat-value">${escapeHtml(formatMoney(simAccount.cashBalanceUsd))}</div>
                 </div>
                 <div class="stat-card ${escapeHtml(simUnrealizedTone)}">
-                  <div class="stat-label">SIM Unrealized P/L</div>
+                  <div class="stat-label">TradeStation Unrealized P/L</div>
                   <div class="stat-value ${escapeHtml(simUnrealizedTone)}">${escapeHtml(formatMoney(simAccount.unrealizedPlUsd))}</div>
                 </div>
                 <div class="stat-card">
@@ -3708,8 +3730,8 @@
               </div>
               ${simAccount.error
                 ? `<div class="empty-state" style="margin-top: 12px;">${escapeHtml(simAccount.error)}</div>`
-                : `<div class="empty-state" style="margin-top: 12px;">SIM account cards come directly from TradeStation balances. Journal cards below come from local saved trade rows and can be out of sync until reconciliation/backfill fixes the journal data.</div>`}`
-            : `<div class="empty-state">Enter the paper-trader secret above and refresh insights to include the live TradeStation SIM account snapshot.</div>`}
+                : `<div class="empty-state" style="margin-top: 12px;">TradeStation account cards come directly from broker balances. Journal cards below come from local saved trade rows and can be out of sync until reconciliation/backfill fixes the journal data.</div>`}`
+            : `<div class="empty-state">Enter the paper-trader secret above and refresh insights to include the configured TradeStation account snapshot.</div>`}
 
           <div class="stats-grid">
             <div class="stat-card">
@@ -3751,7 +3773,7 @@
           </div>
 
           <div class="empty-state" style="margin-top: 16px;">
-            Journal closed realized P/L is calculated from local saved journal exits. It is not the same as TradeStation account net worth, and a large disagreement means the journal needs reconciliation rather than the SIM account being wrong.
+            Journal closed realized P/L is calculated from local saved journal exits. It is not the same as TradeStation account net worth, and a large disagreement means the journal needs reconciliation rather than the broker account being wrong.
           </div>
 
           <div class="section-grid" style="margin-top: 16px;">
@@ -4081,7 +4103,7 @@
         runPaperTraderCycle(true);
       });
       runPaperTraderLiveButton?.addEventListener("click", () => {
-        const shouldRun = window.confirm("Run a live SIM paper-trader cycle? This can place or close paper trades if order placement is enabled.");
+        const shouldRun = window.confirm("Run a live automation cycle? This can place or close trades if order placement is enabled.");
         if (!shouldRun) {
           return;
         }

@@ -259,7 +259,7 @@ function buildPrompt(input: AiManagementInput): string {
     "",
     input.trainedPolicySummary
       ? `Trained policy prior:\n${input.trainedPolicySummary}`
-      : "Trained policy prior: not enough closed paper-trade data yet.",
+      : "Trained policy prior: not enough closed automation trade data yet.",
     "",
     input.trainedPolicyRecommendedAction
       ? `If the live state agrees, the current trained-policy recommendation is: ${input.trainedPolicyRecommendedAction}.`

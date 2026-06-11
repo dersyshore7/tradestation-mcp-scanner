@@ -80,7 +80,7 @@ This telemetry is debug-only. The MCP tool response shape stays unchanged:
 - `trade setup OXY`
 - `construct trade OXY`
 
-Trade construction is read-only and returns a first-pass 2:1 trade card with 30% account-equity sizing (or env fallback if account balances are unavailable).
+Trade construction is read-only and returns a first-pass 2:1 trade card; the automation lane applies its configured per-entry account cap before placement.
 
 ### Tool input
 
@@ -214,40 +214,39 @@ This UI is intentionally thin and does not place orders.
 
 The existing scanner workflow remains unchanged and read-only.
 
-A separate SIM-only automation lane now exists for paper trading:
+A separate automation lane supports TradeStation SIM paper trading or LIVE account automation depending on `TRADESTATION_AUTOMATION_BASE_URL`:
 
 - API: `GET /api/paper-trader` for status, `POST /api/paper-trader` to run one automation cycle
 - Cron/manual-run route: `GET /api/paper-trader-run`
-- Full automation cron route: `GET /api/paper-trader-run?reconcileOrders=true` reconciles fills, manages open paper trades, and can enter new SIM trades when guards allow
+- Full automation cron route: `GET /api/paper-trader-run?reconcileOrders=true` reconciles fills, manages open trades for the configured account mode, and can enter new trades when guards allow
 - Read-only monitor mode: `GET /api/paper-trader-run?reconcileOnly=true&reconcileOrders=true&skipNewEntry=true` is still available for manual order checks
 - CLI: `npm run paper-trader:run`
 
-What one paper-trader cycle does:
+What one automation cycle does:
 
-1. Load open paper trades from the journal
-2. Let the AI manager reassess any open paper trades using current quotes, the original thesis, recent management history, and rewarded feedback from similar closed paper trades
-3. Feed the AI manager a first-pass trained policy prior that is learned from closed paper trades and their management outcomes
+1. Load open trades for the configured account mode from the journal
+2. Let the AI manager reassess open trades using current quotes, the original thesis, recent management history, and rewarded feedback from similar closed paper/live trades
+3. Feed the AI manager a first-pass trained policy prior that is learned from closed paper and live trades
 4. Tighten active stop/target levels or exit early when the AI manager decides the thesis has weakened or protecting gains is better than waiting
-5. Train an entry reward model from closed paper entries using realized R as the reward signal
+5. Train an entry reward model from closed paper/live entries using realized R as the reward signal
 6. Run a fresh scan, excluding tickers already open in the paper trader
 7. Build a trade card, then consult the entry reward model before placement
 8. Skip historically poor entry contexts with enough evidence and rescan for another candidate
 9. Preview the TradeStation order
-10. Enforce the configured per-position account-value cap against the SIM account balance
-11. Optionally place the order in TradeStation SIM
-12. Journal the new paper trade with execution metadata, entry-policy context, and the AI decision log for later management
+10. Enforce the configured per-position account-value cap against the configured TradeStation account balance
+11. Optionally place the order in the configured TradeStation environment
+12. Journal the new paper or live trade with execution metadata, entry-policy context, and the AI decision log for later management
 13. Save the evaluated entry candidate to the candidate audit log when the migration is applied
 
-New paper trades now seed AI management state in `signal_snapshot_json`, including active stop/target levels, entry reward-policy context, plus a short decision log so later 5-minute reviews can explain what the AI entered, held, tightened, or exited.
+New automation trades seed AI management state in `signal_snapshot_json`, including active stop/target levels, entry reward-policy context, plus a short decision log so later 5-minute reviews can explain what the AI entered, held, tightened, or exited.
 
 Safety defaults:
 
-- Disabled until you set `AUTO_TRADER_ENABLED=1`
 - Order placement stays off until you set `AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1`
-- The automation module refuses to run unless its base URL points to TradeStation SIM
-- New entries are capped by `AUTO_TRADER_MAX_POSITION_PCT`, defaulting to 30% of the configured SIM account value
-- There is no open-trade-count cap for paper trading; each full 5-minute cron cycle can add one new non-duplicate setup if the scan and trade card both pass
-- Daily paper losses are not capped; the automation keeps collecting paper-trade outcomes so the policy memory can learn from both winners and losers
+- The automation module only accepts official TradeStation SIM (`https://sim-api.tradestation.com/v3`) or LIVE (`https://api.tradestation.com/v3`) base URLs
+- New entries are capped by `AUTO_TRADER_MAX_POSITION_PCT`, defaulting to 10% of the configured TradeStation account value
+- There is no open-trade-count cap; each full 5-minute cron cycle can add one new non-duplicate setup if the scan and trade card both pass
+- Daily losses are not capped; the automation keeps collecting trade outcomes so the policy memory can learn from both winners and losers
 - The API route can be protected with `AUTO_TRADER_API_SECRET` or `CRON_SECRET`
 - Live runs skip themselves outside regular US equity market hours; dry runs still work anytime
 - Vercel Pro cron runs the full paper-trader cycle every 5 minutes on weekdays during the configured UTC window
@@ -255,14 +254,14 @@ Safety defaults:
 Recommended env vars for the separate automation module:
 
 ```bash
-AUTO_TRADER_ENABLED=1
 AUTO_TRADER_ALLOW_ORDER_PLACEMENT=0
-AUTO_TRADER_MAX_POSITION_PCT=0.30
+AUTO_TRADER_MAX_POSITION_PCT=0.10
 AUTO_TRADER_SCAN_PROMPT=Run a new Scan for this week
 AUTO_TRADER_API_SECRET=your_long_random_secret
 
 TRADESTATION_AUTOMATION_BASE_URL=https://sim-api.tradestation.com/v3
-TRADESTATION_AUTOMATION_ACCOUNT_ID=your_sim_account_id
+# For LIVE automation, use https://api.tradestation.com/v3 instead.
+TRADESTATION_AUTOMATION_ACCOUNT_ID=your_account_id
 ```
 
 Dry-run example:
@@ -305,11 +304,11 @@ Notes:
 
 - This module is intentionally separate from `/api/workflow` and the current scanner UI.
 - It is built for long single-leg options entries only.
-- It uses the existing trade-card logic for entry planning and an AI manager for ongoing paper-trade assessment.
-- `vercel.json` schedules `/api/paper-trader-run?reconcileOrders=true`, so the deployed cron can reconcile fills, manage exits, and enter new SIM trades when `AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1`.
+- It uses the existing trade-card logic for entry planning and an AI manager for ongoing trade assessment.
+- `vercel.json` schedules `/api/paper-trader-run?reconcileOrders=true`, so the deployed cron can reconcile fills, manage exits, and enter new trades when `AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1`.
 - Use read-only monitor mode only for manual diagnostics; it reconciles partial fills and saved average entry price, but does not scan for new entries or send exit orders.
-- The current AI manager now includes a first trained contextual policy layer learned from closed paper trades, plus rewarded experience memory in the prompt.
-- New entries now include a separate realized-R entry reward model. It learns which entry contexts have produced better or worse closed paper-trade R multiples, uses a 5R outlier cap to keep bad journal math from dominating, audits feature coverage for missing variables, can block repeatedly poor contexts when enough evidence exists, and then asks the scanner for another non-duplicate candidate.
+- The current AI manager now includes a first trained contextual policy layer learned from closed paper and live trades, plus rewarded experience memory in the prompt.
+- New entries now include a separate realized-R entry reward model. It learns which entry contexts have produced better or worse closed paper/live trade R multiples, uses a 5R outlier cap to keep bad journal math from dominating, audits feature coverage for missing variables, can block repeatedly poor contexts when enough evidence exists, and then asks the scanner for another non-duplicate candidate.
 - The Paper Trader status panel shows durable run history, the AI decision log, and per-trade management history, including entry thesis, order-check changes, management decisions, exits, position size, and account-value cap details.
 - Apply `supabase/migrations/202604290001_paper_trader_runs.sql` to enable persisted cron/manual run history on the website.
 - Apply `supabase/migrations/202604300001_paper_entry_candidates.sql` to enable persisted entry candidate audit history on the website.

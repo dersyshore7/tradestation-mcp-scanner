@@ -2,11 +2,12 @@ import {
   supabaseInsertAndSelectOne,
   supabaseSelect,
 } from "../supabase/serverClient.js";
+import type { AccountMode } from "../journal/types.js";
 
 export type PaperTraderRunRecord = {
   id: string;
   created_at: string;
-  mode: "paper";
+  mode: AccountMode;
   dry_run: boolean;
   outcome: string;
   symbol: string | null;
@@ -15,7 +16,7 @@ export type PaperTraderRunRecord = {
 };
 
 export type PaperTraderRunCreateInput = {
-  mode: "paper";
+  mode: AccountMode;
   dryRun: boolean;
   outcome: string;
   symbol: string | null;

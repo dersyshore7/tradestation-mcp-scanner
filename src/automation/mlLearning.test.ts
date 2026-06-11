@@ -9,7 +9,7 @@ import {
   type ScanResult,
   type Stage3CheckDiagnostic,
 } from "../app/runScan.js";
-import type { JournalTradeDetail } from "../journal/types.js";
+import type { AccountMode, JournalTradeDetail } from "../journal/types.js";
 import {
   calculateAggregateCloseReviewValues,
   calculateCloseReviewValues,
@@ -36,9 +36,11 @@ import { recommendPolicyAction, trainPolicyModel } from "./policyModel.js";
 import { calculateScaleOutQuantity, decideProfitProtection } from "./profitProtection.js";
 import {
   readAutomatedScanStateFromPaperTraderRun,
+  buildEntryPolicyEffectivenessSummaryForTest,
   readOpeningOrderSnapshotForTest,
 } from "./paperTrader.js";
 import type { AutomatedEntryScanState } from "./automatedEntryScan.js";
+import type { PaperEntryCandidateRecord } from "./entryCandidateHistory.js";
 import type { PaperTraderRunRecord } from "./paperTraderHistory.js";
 
 function buildScan(): ScanResult {
@@ -399,6 +401,7 @@ function buildLearningTrade(params: {
   id: string;
   createdAt: string;
   realizedR: number;
+  accountMode?: AccountMode;
   symbol?: string;
   managementOptionReturnPct?: number | null;
 }): JournalTradeDetail {
@@ -415,7 +418,7 @@ function buildLearningTrade(params: {
     id: params.id,
     created_at: params.createdAt,
     updated_at: params.createdAt,
-    account_mode: "paper",
+    account_mode: params.accountMode ?? "paper",
     status: "closed",
     symbol: params.symbol ?? "AAPL",
     direction: "CALL",
@@ -491,6 +494,51 @@ function buildPreferenceMatchBuckets(
   };
 }
 
+function buildEntryCandidate(params: {
+  id: string;
+  paperTradeId?: string | null;
+  policyDecision?: string | null;
+  decision?: string;
+}): PaperEntryCandidateRecord {
+  return {
+    id: params.id,
+    created_at: "2026-05-21T15:00:00.000Z",
+    scan_run_id: "scan-test",
+    source: "paper_trader",
+    dry_run: false,
+    symbol: "AAPL",
+    decision: params.decision ?? "entered_automation_trade",
+    decision_reason: null,
+    paper_trade_id: params.paperTradeId ?? null,
+    order_id: null,
+    direction: "CALL",
+    setup_type: "bullish_continuation",
+    confidence_bucket: "85-92",
+    dte_at_entry: 19,
+    planned_reward_risk: "2",
+    chart_review_score: "8.9",
+    volume_ratio: "1.44",
+    option_spread: "0.11",
+    market_regime: null,
+    scan_tier: "tier1",
+    entry_day: "2026-05-21",
+    entry_time_bucket: "morning",
+    entry_policy_decision: params.policyDecision ?? "favor",
+    entry_policy_sample_size: 2,
+    entry_policy_average_reward_r: "0.8",
+    entry_policy_win_rate: "1",
+    entry_policy_matched_key: "test-key",
+    entry_policy_summary: null,
+    ml_action: null,
+    ml_score_adjustment: null,
+    selected: true,
+    eventual_outcome_trade_id: null,
+    feature_json: {},
+    scan_json: null,
+    trade_card_json: null,
+  };
+}
+
 function buildAiManagementDecision(
   overrides: Partial<AiManagementDecision> = {},
 ): AiManagementDecision {
@@ -534,6 +582,50 @@ test("paper learning cutoff excludes the first 14 days from entry and management
   assert.equal(policyModel.closedTradeCount, 1);
   assert.equal(policyModel.experienceCount, 1);
   assert.ok(Object.values(policyModel.buckets).every((bucket) => bucket.hold?.positiveCount === 1));
+});
+
+test("automation learners include reviewed paper and live trades with source counts", () => {
+  const paperTrade = buildLearningTrade({
+    id: "paper-learning-trade",
+    accountMode: "paper",
+    createdAt: "2026-05-20T15:00:00.000Z",
+    realizedR: 0.5,
+  });
+  const liveTrade = buildLearningTrade({
+    id: "live-learning-trade",
+    accountMode: "live",
+    createdAt: "2026-05-21T15:00:00.000Z",
+    realizedR: 1.25,
+  });
+
+  const entryModel = trainEntryRewardModel([paperTrade, liveTrade]);
+  const policyModel = trainPolicyModel([paperTrade, liveTrade]);
+
+  assert.equal(entryModel.closedTradeCount, 2);
+  assert.deepEqual(entryModel.sourceCounts, { paper: 1, live: 1 });
+  assert.equal(entryModel.experienceCount, 2);
+  assert.equal(policyModel.closedTradeCount, 2);
+  assert.deepEqual(policyModel.sourceCounts, { paper: 1, live: 1 });
+  assert.equal(policyModel.experienceCount, 2);
+
+  const effectiveness = buildEntryPolicyEffectivenessSummaryForTest(
+    [paperTrade, liveTrade],
+    [
+      buildEntryCandidate({ id: "candidate-paper", paperTradeId: paperTrade.id }),
+      buildEntryCandidate({ id: "candidate-live", paperTradeId: liveTrade.id }),
+      buildEntryCandidate({
+        id: "candidate-shadow-block",
+        policyDecision: "block",
+        decision: "policy_blocked",
+      }),
+    ],
+  );
+  const favorBucket = effectiveness.buckets.find((bucket) => bucket.policyDecision === "favor");
+
+  assert.equal(effectiveness.closedCandidates, 2);
+  assert.deepEqual(effectiveness.sourceCounts, { paper: 1, live: 1 });
+  assert.deepEqual(favorBucket?.sourceCounts, { paper: 1, live: 1 });
+  assert.match(effectiveness.summary, /1 paper, 1 live/);
 });
 
 test("any positive R counts as a win without creating a strong scanner boost", () => {
