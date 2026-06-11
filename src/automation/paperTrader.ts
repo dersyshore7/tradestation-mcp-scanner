@@ -1948,6 +1948,43 @@ async function buildDuplicateLiveOpeningOrderBlockReason(params: {
   return null;
 }
 
+async function buildNonPatternDayTraderOpeningLimitBlockReason(params: {
+  client: AutomationTradeStationClient;
+  accountId: string;
+  now?: Date;
+}): Promise<string | null> {
+  const accountsPayload = await params.client.getAccounts();
+  const flags = extractAccountDayTradeFlags(accountsPayload, params.accountId);
+  if (flags.patternDayTrader !== false) {
+    return null;
+  }
+
+  const bodPayload = await params.client.getBeginningOfDayBalances(params.accountId);
+  const beginningDayTrades = extractBeginningDayTrades(bodPayload, params.accountId);
+  if (beginningDayTrades === null) {
+    return null;
+  }
+
+  const allowedOpenings = Math.max(
+    0,
+    NON_PDT_DAILY_OPENING_TRANSACTION_LIMIT - beginningDayTrades,
+  );
+  const usedOpeningsToday = await countFilledOpeningOrdersTodayFromTradeStation({
+    client: params.client,
+    accountId: params.accountId,
+    todayChicagoDate: formatChicagoParts(params.now ?? new Date()).date,
+  });
+
+  if (usedOpeningsToday < allowedOpenings) {
+    return null;
+  }
+
+  const qualifiedNote = flags.dayTradingQualified === true
+    ? " The account is day-trade qualified, but TradeStation still reports it as Non-PDT."
+    : "";
+  return `TradeStation non-PDT opening limit is exhausted: beginning-of-day DayTrades=${beginningDayTrades}, allowed openings today=${allowedOpenings}, filled openings today=${usedOpeningsToday}.${qualifiedNote} Skipped the new entry before sending another order.`;
+}
+
 function computePositionCap(params: {
   requestedContracts: number;
   limitPrice: number;
@@ -4899,6 +4936,74 @@ async function maybeEnterNewPaperTrade(params: {
         outcome: "trade_card_blocked",
         symbol: scan.ticker,
         reason,
+        tradeCard,
+        reasoning: entryReasoning,
+        evaluatedCandidates,
+        scanSummary: entryScanSummary,
+      };
+    }
+
+    const dayTradeOpeningBlockReason = buildDayTradeOpeningBlockReason({
+      accountValueUsd,
+      cashBalanceUsd,
+      optionsBuyingPowerUsd,
+      accountLabel,
+    });
+    if (dayTradeOpeningBlockReason) {
+      await recordEntryCandidateAudit({
+        scanRunId,
+        dryRun,
+        symbol: scan.ticker,
+        decision: "day_trade_opening_blocked",
+        decisionReason: dayTradeOpeningBlockReason,
+        features: entryFeatures,
+        entryPolicy: entryPolicyRecommendation,
+        selected: true,
+        scan,
+        tradeCard,
+      });
+      return {
+        attempted: true,
+        outcome: "trade_card_blocked",
+        symbol: scan.ticker,
+        reason: dayTradeOpeningBlockReason,
+        tradeCard,
+        reasoning: entryReasoning,
+        evaluatedCandidates,
+        scanSummary: entryScanSummary,
+      };
+    }
+
+    let nonPdtOpeningLimitBlockReason: string | null = null;
+    try {
+      nonPdtOpeningLimitBlockReason = await buildNonPatternDayTraderOpeningLimitBlockReason({
+        client,
+        accountId: config.accountId as string,
+      });
+    } catch (error) {
+      console.warn(
+        "non-PDT opening limit check failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    if (nonPdtOpeningLimitBlockReason) {
+      await recordEntryCandidateAudit({
+        scanRunId,
+        dryRun,
+        symbol: scan.ticker,
+        decision: "non_pdt_opening_limit_blocked",
+        decisionReason: nonPdtOpeningLimitBlockReason,
+        features: entryFeatures,
+        entryPolicy: entryPolicyRecommendation,
+        selected: true,
+        scan,
+        tradeCard,
+      });
+      return {
+        attempted: true,
+        outcome: "trade_card_blocked",
+        symbol: scan.ticker,
+        reason: nonPdtOpeningLimitBlockReason,
         tradeCard,
         reasoning: entryReasoning,
         evaluatedCandidates,
