@@ -192,6 +192,16 @@ test("paper trader cancels partial opening remainders before live exit orders", 
   assert.ok(source.includes("cancel_remaining_before_exit"));
 });
 
+test("live automation does not adopt unlinked TradeStation positions", () => {
+  const source = readFileSync(new URL("./paperTrader.ts", import.meta.url), "utf8");
+
+  assert.ok(source.includes('params.config.accountMode === "live"'));
+  assert.ok(source.includes("Skipped adopting unlinked LIVE position"));
+  assert.ok(source.includes("live automation only manages trades it created"));
+  assert.ok(source.includes("avoid merging with a manual TradeStation position"));
+  assert.ok(source.includes("existing TradeStation LIVE position already holds"));
+});
+
 test("AI management allows thesis-dead exit with two invalidation reasons", () => {
   const decision = enforceAiManagementGuardrails(
     "CALL",

@@ -2714,6 +2714,28 @@ async function adoptUnlinkedLiveSimPositions(params: {
   const environmentLabel = formatTradeStationEnvironmentLabel(params.config);
   const tradeLabel = formatAutomationTradeLabel(params.config);
 
+  if (params.config.accountMode === "live") {
+    for (const position of livePositions) {
+      if (linkedOptionSymbols.has(normalizeOptionSymbolForMatch(position.symbol))) {
+        continue;
+      }
+
+      const parsed = parseTradeStationOptionSymbol(position.symbol);
+      const quantity = Math.abs(position.quantity ?? 0);
+      if (!parsed || quantity <= 0) {
+        continue;
+      }
+
+      skipped.push({
+        tradeId: null,
+        symbol: parsed.underlying,
+        reason: `Skipped adopting unlinked LIVE position ${position.symbol}; live automation only manages trades it created and journal-linked automation trades.`,
+      });
+    }
+
+    return { adopted: 0, updates, skipped };
+  }
+
   for (const position of livePositions) {
     if (linkedOptionSymbols.has(normalizeOptionSymbolForMatch(position.symbol))) {
       continue;
@@ -2758,7 +2780,7 @@ async function adoptUnlinkedLiveSimPositions(params: {
       timestamp: now.toISOString(),
       symbol: parsed.underlying,
       kind: "order_check",
-      action: params.config.accountMode === "live" ? "adopted_live_position" : "adopted_sim_position",
+      action: "adopted_sim_position",
       note: `Adopted TradeStation ${environmentLabel} position ${position.symbol} into the ${params.config.accountMode} journal because no open journal row was linked to it.`,
       optionSymbol: position.symbol,
       quantity,
@@ -4789,6 +4811,66 @@ async function maybeEnterNewPaperTrade(params: {
       price: automation.optionLimitPrice,
       tradeAction: automation.entryTradeAction,
     });
+    if (config.accountMode === "live") {
+      let existingLivePosition: TradeStationPositionSnapshot | null = null;
+      try {
+        const positionsPayload = await client.getPositions(config.accountId as string);
+        existingLivePosition = findPositionSnapshot(positionsPayload, automation.optionSymbol);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const reason = `Could not verify existing LIVE positions before entry, so automation skipped ${automation.optionSymbol} to avoid merging with a manual TradeStation position. ${message}`;
+        await recordEntryCandidateAudit({
+          scanRunId,
+          dryRun,
+          symbol: scan.ticker,
+          decision: "duplicate_position_blocked",
+          decisionReason: reason,
+          features: entryFeatures,
+          entryPolicy: entryPolicyRecommendation,
+          selected: true,
+          scan,
+          tradeCard,
+        });
+        return {
+          attempted: true,
+          outcome: "trade_card_blocked",
+          symbol: scan.ticker,
+          reason,
+          tradeCard,
+          reasoning: entryReasoning,
+          evaluatedCandidates,
+          scanSummary: entryScanSummary,
+        };
+      }
+
+      const existingLiveQuantity = Math.abs(existingLivePosition?.quantity ?? 0);
+      if (existingLiveQuantity > 0) {
+        const reason = `Duplicate-entry guard blocked ${scan.ticker}; an existing TradeStation LIVE position already holds ${existingLiveQuantity}x ${automation.optionSymbol}, so automation will not merge with a manual or unlinked broker position.`;
+        await recordEntryCandidateAudit({
+          scanRunId,
+          dryRun,
+          symbol: scan.ticker,
+          decision: "duplicate_position_blocked",
+          decisionReason: reason,
+          features: entryFeatures,
+          entryPolicy: entryPolicyRecommendation,
+          selected: true,
+          scan,
+          tradeCard,
+        });
+        return {
+          attempted: true,
+          outcome: "trade_card_blocked",
+          symbol: scan.ticker,
+          reason,
+          tradeCard,
+          reasoning: entryReasoning,
+          evaluatedCandidates,
+          scanSummary: entryScanSummary,
+        };
+      }
+    }
+
     let accountValueUsd: number | null = null;
     let cashBalanceUsd: number | null = null;
     let optionsBuyingPowerUsd: number | null = null;
