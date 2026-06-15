@@ -1,5 +1,6 @@
 import type { TradeDirection } from "../journal/types.js";
 import { createOpenAiClient } from "../openai/client.js";
+import { buildMidpointLimitCap } from "./entryPricing.js";
 
 export type EntryOrderManagementAction = "wait" | "replace_limit" | "cancel_remaining";
 export type EntryOrderManagementConfidence = "low" | "medium" | "high";
@@ -122,6 +123,7 @@ function buildPrompt(input: EntryOrderManagementContext): string {
     '- "cancel_remaining": cancel the unfilled remainder and manage only the filled position.',
     "Important constraints:",
     "- Do not chase just because price moved. Replace only when the updated option price is still worth the plan.",
+    "- For buy-to-open replacements, improve only toward the option midpoint; do not intentionally pay above midpoint or at the ask when the ask is above midpoint.",
     "- Prefer wait when the thesis is intact and the desired entry may reasonably come back.",
     "- Prefer cancel_remaining when the partial fill is enough exposure or the remaining order no longer has acceptable reward/risk.",
     "- If choosing replace_limit, provide newLimitPrice.",
@@ -280,6 +282,15 @@ export function evaluateEntryOrderManagementDecision(
   }
 
   const isWorsening = newLimitPrice > context.workingLimitPrice;
+  if (context.optionMid === null && isWorsening) {
+    return {
+      allowed: false,
+      action: "wait",
+      limitPrice: null,
+      reason: "Replacement would chase a worse price, but current option midpoint is unavailable.",
+      estimatedRewardRiskR: null,
+    };
+  }
   if (context.optionAsk === null && isWorsening) {
     return {
       allowed: false,
@@ -307,6 +318,20 @@ export function evaluateEntryOrderManagementDecision(
       action: "wait",
       limitPrice: null,
       reason: `Option spread is wider than 20% of mid and replacement limit ${newLimitPrice.toFixed(2)} is above mid ${spreadMid.toFixed(2)}.`,
+      estimatedRewardRiskR: null,
+    };
+  }
+
+  const midpointLimitCap = buildMidpointLimitCap({
+    optionSymbol: context.optionSymbol,
+    mid: context.optionMid,
+  });
+  if (midpointLimitCap !== null && newLimitPrice > midpointLimitCap) {
+    return {
+      allowed: false,
+      action: "wait",
+      limitPrice: null,
+      reason: `Replacement limit ${newLimitPrice.toFixed(2)} is above midpoint cap ${midpointLimitCap.toFixed(2)}.`,
       estimatedRewardRiskR: null,
     };
   }

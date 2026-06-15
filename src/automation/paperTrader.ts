@@ -51,6 +51,7 @@ import {
   type EntryRewardFeatureInput,
 } from "./entryRewardModel.js";
 import { buildLearningOutcomeAudit } from "./learningOutcomeAudit.js";
+import type { BidSideEntryPricingSnapshot } from "./entryPricing.js";
 import { buildPaperLearningPreferences } from "./paperLearningPreferences.js";
 import {
   listRecentPaperEntryCandidates,
@@ -129,6 +130,7 @@ type AutomationSnapshot = {
       entryLimitPrice?: number;
       entryOriginalLimitPrice?: number;
       entryWorkingLimitPrice?: number;
+      entryPricing?: BidSideEntryPricingSnapshot;
       entryRepriceAttempts?: number;
       entryLastRepriceAt?: string | null;
       entryAverageFillPrice?: number | null;
@@ -5181,6 +5183,7 @@ async function maybeEnterNewPaperTrade(params: {
             entryLimitPrice,
             entryOriginalLimitPrice: entryLimitPrice,
             entryWorkingLimitPrice: entryLimitPrice,
+            entryPricing: automation.entryPricing,
             entryRepriceAttempts: 0,
             entryLastRepriceAt: null,
             intendedStopUnderlying: automation.intendedStopUnderlying,

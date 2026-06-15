@@ -69,20 +69,20 @@ test("entry order policy allows wait and cancel decisions", () => {
   );
 });
 
-test("entry order policy allows balanced repricing inside caps", () => {
+test("entry order policy allows balanced repricing up to midpoint", () => {
   const result = evaluateEntryOrderManagementDecision(
     baseContext,
-    decision({ action: "replace_limit", newLimitPrice: 5.9 }),
-    5.9,
+    decision({ action: "replace_limit", newLimitPrice: 5.8 }),
+    5.8,
   );
 
   assert.equal(result.allowed, true);
   assert.equal(result.action, "replace_limit");
-  assert.equal(result.limitPrice, 5.9);
-  assert.equal(result.estimatedRewardRiskR, 2.32);
+  assert.equal(result.limitPrice, 5.8);
+  assert.equal(result.estimatedRewardRiskR, 2.36);
 });
 
-test("entry order policy blocks excessive chase and above-ask replacement", () => {
+test("entry order policy blocks excessive chase, above-ask, and above-midpoint replacements", () => {
   assert.match(
     evaluateEntryOrderManagementDecision(
       baseContext,
@@ -99,6 +99,15 @@ test("entry order policy blocks excessive chase and above-ask replacement", () =
       6.0,
     ).reason,
     /above current ask/,
+  );
+
+  assert.match(
+    evaluateEntryOrderManagementDecision(
+      baseContext,
+      decision({ action: "replace_limit", newLimitPrice: 5.9 }),
+      5.9,
+    ).reason,
+    /above midpoint cap/,
   );
 });
 
@@ -128,11 +137,20 @@ test("entry order policy blocks wide spread, buying power, and low R reprices", 
 
   assert.match(
     evaluateEntryOrderManagementDecision(
-      { ...baseContext, plannedRewardRiskR: 1.54 },
-      decision({ action: "replace_limit", newLimitPrice: 5.9 }),
-      5.9,
+      { ...baseContext, plannedRewardRiskR: 1.52 },
+      decision({ action: "replace_limit", newLimitPrice: 5.8 }),
+      5.8,
     ).reason,
     /below 1.50R/,
+  );
+
+  assert.match(
+    evaluateEntryOrderManagementDecision(
+      { ...baseContext, optionMid: null },
+      decision({ action: "replace_limit", newLimitPrice: 5.8 }),
+      5.8,
+    ).reason,
+    /midpoint is unavailable/,
   );
 });
 

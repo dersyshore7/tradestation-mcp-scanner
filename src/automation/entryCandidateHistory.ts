@@ -170,6 +170,7 @@ function compactTradeCardSnapshot(tradeCard: Record<string, unknown> | null | un
           optionSymbol: automation.optionSymbol ?? null,
           contracts: automation.contracts ?? null,
           optionLimitPrice: automation.optionLimitPrice ?? null,
+          entryPricing: automation.entryPricing ?? null,
           expirationDate: automation.expirationDate ?? null,
           dteAtEntry: automation.dteAtEntry ?? null,
           underlyingEntryPrice: automation.underlyingEntryPrice ?? null,

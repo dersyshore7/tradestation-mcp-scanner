@@ -15,6 +15,10 @@ import {
   runSingleSymbolTradeStationAnalysis,
   summarizeDirectOptionQuoteAttempts,
 } from "./runScan.js";
+import {
+  buildBidSideEntryPricing,
+  type BidSideEntryPricingSnapshot,
+} from "../automation/entryPricing.js";
 
 const TARGET_ALLOCATION_PCT = 0.3;
 const TARGET_DTE_MIN = 14;
@@ -53,6 +57,7 @@ export type TradeCardAutomationMetadata = {
   optionSymbol: string;
   contracts: number;
   optionLimitPrice: number;
+  entryPricing?: BidSideEntryPricingSnapshot;
   expirationDate: string;
   dteAtEntry: number;
   underlyingEntryPrice: number;
@@ -99,6 +104,7 @@ type TradeInputs = {
   dte: number;
   optionSymbol: string;
   optionMid: number;
+  entryPricing: BidSideEntryPricingSnapshot;
   equity: number;
   allocation: number;
   contracts: number;
@@ -607,6 +613,17 @@ async function buildTradeInputs(
     diagnostics.chosenStrike = tradeStrike.strike;
     const optionSymbol = optionQuote.optionSymbol;
     const optionMid = optionQuote.mid;
+    const entryPricingResult = buildBidSideEntryPricing({
+      optionSymbol,
+      bid: optionQuote.bid,
+      ask: optionQuote.ask,
+      mid: optionQuote.mid,
+    });
+    if (!entryPricingResult.pass) {
+      diagnostics.failureReason = `${optionSymbol} entry pricing blocked: ${entryPricingResult.reason}`;
+      throw new TradeCardBlockedAfterConfirmationError(diagnostics.failureReason);
+    }
+    const entryPricing = entryPricingResult.pricing;
 
     const { equity, source } = await resolveAccountEquity(get);
     const allocation = equity * TARGET_ALLOCATION_PCT;
@@ -683,6 +700,7 @@ async function buildTradeInputs(
       dte: targetExpiration.dte,
       optionSymbol,
       optionMid,
+      entryPricing,
       equity,
       allocation,
       contracts,
@@ -761,12 +779,12 @@ export async function constructTradeCard(input: TradeConstructionInput): Promise
     direction,
     confidence,
     expectedTiming: buildExpectedTiming(direction, confidence, trade),
-    buy: `${trade.contracts}x ${trade.optionSymbol} @ ${renderMoney(trade.optionMid)} limit (capital used ${renderMoney(trade.notional)} of 30% allocation target ${renderMoney(trade.allocation)} from equity ${renderMoney(trade.equity)})`,
+    buy: `${trade.contracts}x ${trade.optionSymbol} @ ${renderMoney(trade.entryPricing.finalLimit)} limit (bid+1 tick capped at mid; mid reference ${renderMoney(trade.optionMid)}; sizing reference ${renderMoney(trade.notional)} of 30% allocation target ${renderMoney(trade.allocation)} from equity ${renderMoney(trade.equity)})`,
     invalidationExit: `Exit if ${symbol} breaks ${trade.finalizedTradeGeometry.invalidationLevel.toFixed(2)} (${trade.finalizedTradeGeometry.invalidationReason}; approx option ${renderMoney(trade.optionAtInvalidation)}).`,
     takeProfitExit: `Take profit near ${symbol} ${trade.finalizedTradeGeometry.targetLevel.toFixed(2)} (${trade.finalizedTradeGeometry.targetReason}; approx option ${renderMoney(trade.optionAtTarget)}).`,
-    timeExit: `Exit on Thursday before expiration (${timeExitDate}), or sooner if option value decays by more than 25% from entry premium (${renderMoney(trade.optionMid)}).`,
+    timeExit: `Exit on Thursday before expiration (${timeExitDate}), or sooner if option value decays by more than 25% from entry premium/limit (${renderMoney(trade.entryPricing.finalLimit)}).`,
     rrMath: `Chart-anchored risk ${trade.finalizedTradeGeometry.riskDistance.toFixed(2)} vs reward ${trade.finalizedTradeGeometry.rewardDistance.toFixed(2)} from ${trade.finalizedTradeGeometry.referencePrice.toFixed(2)} implies ~${rrRatio.toFixed(2)}:1 reward:risk. Option approximation: risk/contract ${renderMoney(trade.riskPerContract)}, reward/contract ${renderMoney(trade.rewardPerContract)}; total risk ${renderMoney(trade.totalRisk)} vs total reward ${renderMoney(trade.totalReward)}.`,
-    rationale: `${directionLabel} setup follows confirmed review bias and uses nearest practical ATM ${trade.expirationDate} (${trade.dte} DTE) option. Finalized trade geometry comes from ${trade.finalizedTradeGeometry.geometrySource} at ${trade.finalizedTradeGeometry.referencePrice.toFixed(2)}, with invalidation ${trade.finalizedTradeGeometry.invalidationLevel.toFixed(2)} and target ${trade.finalizedTradeGeometry.targetLevel.toFixed(2)} for ~${rrRatio.toFixed(2)}:1 chart-anchored reward:risk. ${trade.finalizedTradeGeometry.geometryReason} Pricing uses current premium plus a delta-based approximation; equity source: ${trade.equitySource}.`,
+    rationale: `${directionLabel} setup follows confirmed review bias and uses nearest practical ATM ${trade.expirationDate} (${trade.dte} DTE) option. Finalized trade geometry comes from ${trade.finalizedTradeGeometry.geometrySource} at ${trade.finalizedTradeGeometry.referencePrice.toFixed(2)}, with invalidation ${trade.finalizedTradeGeometry.invalidationLevel.toFixed(2)} and target ${trade.finalizedTradeGeometry.targetLevel.toFixed(2)} for ~${rrRatio.toFixed(2)}:1 chart-anchored reward:risk. ${trade.finalizedTradeGeometry.geometryReason} Entry pricing uses bid+1 tick capped at midpoint (${renderMoney(trade.entryPricing.bid)} bid / ${renderMoney(trade.entryPricing.ask)} ask / ${renderMoney(trade.optionMid)} mid); option R math keeps the midpoint reference; equity source: ${trade.equitySource}.`,
     plannedJournalFields: {
       symbol,
       direction: direction === "bullish" ? "CALL" : "PUT",
@@ -784,7 +802,8 @@ export async function constructTradeCard(input: TradeConstructionInput): Promise
     automationMetadata: {
       optionSymbol: trade.optionSymbol,
       contracts: trade.contracts,
-      optionLimitPrice: trade.optionMid,
+      optionLimitPrice: trade.entryPricing.finalLimit,
+      entryPricing: trade.entryPricing,
       expirationDate: trade.expirationDate,
       dteAtEntry: trade.dte,
       underlyingEntryPrice: trade.underlyingPrice,

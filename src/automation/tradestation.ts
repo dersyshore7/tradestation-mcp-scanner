@@ -604,16 +604,28 @@ function roundToIncrement(
   return Number((Math.max(1, units) * increment).toFixed(2));
 }
 
+export function getTradeStationPriceIncrement(symbol: string, price: number): number {
+  return isOptionSymbol(symbol)
+    ? price >= OPTION_STANDARD_INCREMENT_THRESHOLD
+      ? OPTION_STANDARD_INCREMENT
+      : OPTION_SUB_THREE_INCREMENT
+    : DEFAULT_PRICE_INCREMENT;
+}
+
+export function roundTradeStationPriceAtOrBelow(symbol: string, price: number): number {
+  return roundToIncrement(
+    price,
+    getTradeStationPriceIncrement(symbol, price),
+    "down",
+  );
+}
+
 export function normalizeTradeStationOrderPrice(order: {
   symbol: string;
   price: number;
   tradeAction: TradeStationTradeAction;
 }): number {
-  const increment = isOptionSymbol(order.symbol)
-    ? order.price >= OPTION_STANDARD_INCREMENT_THRESHOLD
-      ? OPTION_STANDARD_INCREMENT
-      : OPTION_SUB_THREE_INCREMENT
-    : DEFAULT_PRICE_INCREMENT;
+  const increment = getTradeStationPriceIncrement(order.symbol, order.price);
   const direction = isBuyAction(order.tradeAction) ? "up" : "down";
 
   return roundToIncrement(order.price, increment, direction);
