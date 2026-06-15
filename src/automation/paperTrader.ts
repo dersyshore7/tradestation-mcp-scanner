@@ -93,7 +93,7 @@ import {
 const MAX_TRADESTATION_CONTRACTS_PER_ORDER = 2000;
 // Paper entries are daily/weekly continuation trades, not penny-distance scalps.
 const MIN_AUTOMATED_ENTRY_TARGET_ROOM_PCT = 0.0075;
-const MIN_AUTOMATED_ENTRY_RISK_ROOM_PCT = 0.0025;
+const MIN_AUTOMATED_ENTRY_RISK_ROOM_PCT = 0.0075;
 const MAX_AUTOMATED_SCAN_RESUME_AGE_MS = 6 * 60 * 60 * 1000;
 
 type PaperTraderRunOptions = {
@@ -179,6 +179,9 @@ type PaperTraderManagementHistoryEntry = {
   note: string;
   thesis?: string | null;
   rewardR?: number | null;
+  stopProtectionEligible?: boolean;
+  stopUpdateBlockedReason?: string | null;
+  stopSource?: PaperTraderStopSource;
 };
 
 type PaperTraderEntryOrderManagementHistoryEntry = {
@@ -224,7 +227,12 @@ type PaperTraderDecisionLogEntry = {
   currentOptionMid?: number | null;
   reasoning?: PaperTraderEntryReasoning | null;
   entryPolicy?: EntryPolicyRecommendation | null;
+  stopProtectionEligible?: boolean;
+  stopUpdateBlockedReason?: string | null;
+  stopSource?: PaperTraderStopSource;
 };
+
+type PaperTraderStopSource = "original_chart" | "existing_active" | "ai_update" | "earned_protection";
 
 type PaperTraderTradeHistoryItem = {
   tradeId: string;
@@ -590,6 +598,10 @@ function validateEntryGeometry(tradeCard: TradeConstructionResult): string | nul
   }
 
   return null;
+}
+
+export function validateEntryGeometryForTest(tradeCard: TradeConstructionResult): string | null {
+  return validateEntryGeometry(tradeCard);
 }
 
 function formatChicagoParts(date = new Date()): ChicagoClockParts {
@@ -1992,6 +2004,62 @@ function chooseMoreProtectiveStop(
   return direction === "CALL"
     ? Math.max(currentStop, candidateStop)
     : Math.min(currentStop, candidateStop);
+}
+
+function isStopTightening(
+  direction: JournalTradeDetail["direction"],
+  currentStop: number | null,
+  candidateStop: number | null,
+): boolean {
+  if (candidateStop === null) {
+    return false;
+  }
+  if (currentStop === null) {
+    return true;
+  }
+  return direction === "CALL"
+    ? candidateStop > currentStop
+    : candidateStop < currentStop;
+}
+
+function sameStopPrice(left: number | null, right: number | null): boolean {
+  if (left === null || right === null) {
+    return left === right;
+  }
+  return Math.abs(left - right) < 0.005;
+}
+
+function determineStopSource(params: {
+  selectedStop: number | null;
+  activeStop: number | null;
+  snapshotActiveStop: number | null | undefined;
+  aiStop: number | null;
+  profitProtectionStop: number | null;
+  profitProtectionEarned: boolean;
+}): PaperTraderStopSource {
+  const {
+    selectedStop,
+    activeStop,
+    snapshotActiveStop,
+    aiStop,
+    profitProtectionStop,
+    profitProtectionEarned,
+  } = params;
+  if (
+    selectedStop !== null
+    && profitProtectionStop !== null
+    && !sameStopPrice(profitProtectionStop, activeStop)
+    && sameStopPrice(selectedStop, profitProtectionStop)
+  ) {
+    return "earned_protection";
+  }
+  if (selectedStop !== null && sameStopPrice(selectedStop, aiStop)) {
+    return "ai_update";
+  }
+  if (snapshotActiveStop !== null && snapshotActiveStop !== undefined && sameStopPrice(selectedStop, activeStop)) {
+    return profitProtectionEarned ? "earned_protection" : "existing_active";
+  }
+  return "original_chart";
 }
 
 function computeProgressToTargetPct(params: {
@@ -3672,24 +3740,43 @@ async function manageOpenPaperTrades(
       );
 
       const thesisInvalidationEvidence = formatThesisInvalidationEvidence(aiDecision);
+      const stopProtectionEligible = profitProtectionDecision.diagnostics.protectionEligible;
+      const aiStopTighteningBlockedReason =
+        isStopTightening(trade.direction, activeLevels.stopUnderlying, aiDecision.updatedStopUnderlying)
+        && !stopProtectionEligible
+          ? "AI stop tightening ignored because profit-protection trigger has not been earned."
+          : null;
+      const effectiveAiStopUnderlying = aiStopTighteningBlockedReason === null
+        ? aiDecision.updatedStopUnderlying
+        : null;
       aiDecisionNote = joinNoteParts([
         aiDecision.thesis,
         aiDecision.note,
         thesisInvalidationEvidence,
+        aiStopTighteningBlockedReason,
       ]);
       const nextStopUnderlying = chooseMoreProtectiveStop(
         trade.direction,
-        aiDecision.updatedStopUnderlying ?? activeLevels.stopUnderlying,
+        effectiveAiStopUnderlying ?? activeLevels.stopUnderlying,
         profitProtectionDecision.updatedStopUnderlying,
       );
       const nextTargetUnderlying = aiDecision.updatedTargetUnderlying ?? activeLevels.targetUnderlying;
+      const stopSource = determineStopSource({
+        selectedStop: nextStopUnderlying,
+        activeStop: activeLevels.stopUnderlying,
+        snapshotActiveStop: automation.activeStopUnderlying,
+        aiStop: effectiveAiStopUnderlying,
+        profitProtectionStop: profitProtectionDecision.updatedStopUnderlying,
+        profitProtectionEarned: stopProtectionEligible,
+      });
       const historyNote = profitProtectionDecision.action === "scale_out" && aiDecision.action !== "exit_now"
         ? joinNoteParts([
             aiDecision.note,
             thesisInvalidationEvidence,
+            aiStopTighteningBlockedReason,
             `Profit protection overrides management action: ${profitProtectionDecision.reason}`,
           ])
-        : joinNoteParts([aiDecision.note, thesisInvalidationEvidence]);
+        : joinNoteParts([aiDecision.note, thesisInvalidationEvidence, aiStopTighteningBlockedReason]);
       const historyEntry: PaperTraderManagementHistoryEntry = {
         timestamp: nowIso,
         action:
@@ -3707,6 +3794,9 @@ async function manageOpenPaperTrades(
         optionReturnPct,
         note: historyNote,
         thesis: aiDecision.thesis,
+        stopProtectionEligible,
+        stopUpdateBlockedReason: aiStopTighteningBlockedReason,
+        stopSource,
       };
       managementAction = historyEntry.action;
       const decisionLogEntry: PaperTraderDecisionLogEntry = {
@@ -3728,6 +3818,9 @@ async function manageOpenPaperTrades(
         currentUnderlyingPrice: underlyingQuote.last,
         currentOptionMid: optionQuote.mid,
         positionPct: null,
+        stopProtectionEligible,
+        stopUpdateBlockedReason: aiStopTighteningBlockedReason,
+        stopSource,
       };
       decisionLog = appendDecisionLog(decisionLog, decisionLogEntry);
       currentSnapshotUpdates = {

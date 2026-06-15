@@ -21,6 +21,7 @@ export type ProfitProtectionDecision = {
   state: ProfitProtectionState;
   diagnostics: {
     triggered: boolean;
+    protectionEligible: boolean;
     optionReturnPct: number | null;
     progressToTargetPct: number | null;
     peakOptionReturnPct: number | null;
@@ -147,6 +148,7 @@ export function decideProfitProtection(input: {
       ? roundPct(peakOptionReturnPct - input.optionReturnPct)
       : priorState.givebackFromPeakPct ?? null;
   const triggered = isProfitProtectionTriggered(input);
+  const protectionEligible = triggered || Boolean(priorState.triggeredAt);
   const state: ProfitProtectionState = {
     ...priorState,
     peakOptionReturnPct,
@@ -166,12 +168,16 @@ export function decideProfitProtection(input: {
 
   const diagnostics = {
     triggered,
+    protectionEligible,
     optionReturnPct: input.optionReturnPct,
     progressToTargetPct: input.progressToTargetPct,
     peakOptionReturnPct,
     peakProgressToTargetPct,
     givebackFromPeakPct,
   };
+  const updatedStopUnderlying = protectionEligible
+    ? computeProtectedStopUnderlying(input)
+    : null;
 
   if (!triggered || priorState.scaledOutAt) {
     return {
@@ -179,14 +185,13 @@ export function decideProfitProtection(input: {
       reason: null,
       scaleQuantity: 0,
       remainingQuantity: Math.max(0, Math.floor(input.quantity)),
-      updatedStopUnderlying: computeProtectedStopUnderlying(input),
+      updatedStopUnderlying,
       state,
       diagnostics,
     };
   }
 
   const { scaleQuantity, remainingQuantity } = calculateScaleOutQuantity(input.quantity);
-  const updatedStopUnderlying = computeProtectedStopUnderlying(input);
   const reason = buildTriggerReason(input);
 
   if (input.quantity <= 1) {

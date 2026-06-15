@@ -43,6 +43,7 @@ import {
   readAutomatedScanStateFromPaperTraderRun,
   buildEntryPolicyEffectivenessSummaryForTest,
   readOpeningOrderSnapshotForTest,
+  validateEntryGeometryForTest,
 } from "./paperTrader.js";
 import type { AutomatedEntryScanState } from "./automatedEntryScan.js";
 import type { PaperEntryCandidateRecord } from "./entryCandidateHistory.js";
@@ -106,6 +107,22 @@ function buildScan(): ScanResult {
     reason: "test scan",
     telemetry,
   };
+}
+
+function buildTradeCardWithGeometry(params: {
+  direction: "CALL" | "PUT";
+  entry: number;
+  stop: number;
+  target: number;
+}): Parameters<typeof validateEntryGeometryForTest>[0] {
+  return {
+    plannedJournalFields: {
+      direction: params.direction,
+      underlying_entry_price: params.entry,
+      intended_stop_underlying: params.stop,
+      intended_target_underlying: params.target,
+    },
+  } as Parameters<typeof validateEntryGeometryForTest>[0];
 }
 
 test("paper trader no longer emits scan_in_progress entry outcomes", () => {
@@ -216,6 +233,53 @@ test("live automation does not adopt unlinked TradeStation positions", () => {
   assert.ok(source.includes("live automation only manages trades it created"));
   assert.ok(source.includes("avoid merging with a manual TradeStation position"));
   assert.ok(source.includes("existing TradeStation LIVE position already holds"));
+});
+
+test("automated entry geometry blocks stops tighter than 0.75%", () => {
+  const message = validateEntryGeometryForTest(buildTradeCardWithGeometry({
+    direction: "CALL",
+    entry: 100,
+    stop: 99.5,
+    target: 102,
+  }));
+
+  assert.match(message ?? "", /stop distance is 0\.50%/);
+  assert.match(message ?? "", /0\.75% minimum/);
+});
+
+test("automated entry geometry keeps direction and reward-risk validation", () => {
+  const invalidCall = validateEntryGeometryForTest(buildTradeCardWithGeometry({
+    direction: "CALL",
+    entry: 100,
+    stop: 100.5,
+    target: 102,
+  }));
+  const invalidPut = validateEntryGeometryForTest(buildTradeCardWithGeometry({
+    direction: "PUT",
+    entry: 100,
+    stop: 99.5,
+    target: 98,
+  }));
+  const lowRewardRisk = validateEntryGeometryForTest(buildTradeCardWithGeometry({
+    direction: "CALL",
+    entry: 100,
+    stop: 99,
+    target: 101.2,
+  }));
+
+  assert.match(invalidCall ?? "", /Bullish CALL geometry is invalid/);
+  assert.match(invalidPut ?? "", /Bearish PUT geometry is invalid/);
+  assert.match(lowRewardRisk ?? "", /reward\/risk 1\.20R/);
+});
+
+test("paper trader guards AI stop tightening until protection is earned", () => {
+  const source = readFileSync(new URL("./paperTrader.ts", import.meta.url), "utf8");
+
+  assert.ok(source.includes("AI stop tightening ignored because profit-protection trigger has not been earned."));
+  assert.ok(source.includes("effectiveAiStopUnderlying"));
+  assert.ok(source.includes("stopProtectionEligible"));
+  assert.ok(source.includes("stopUpdateBlockedReason"));
+  assert.ok(source.includes("stopSource"));
 });
 
 test("AI management allows thesis-dead exit with two invalidation reasons", () => {
@@ -1055,6 +1119,67 @@ test("profit protection scales out BKR-style winner before giveback", () => {
   assert.equal(decision.remainingQuantity, 6);
   assert.equal(decision.updatedStopUnderlying, 65.39);
   assert.equal(decision.diagnostics.triggered, true);
+});
+
+test("profit protection keeps original chart stop until a real trigger is earned", () => {
+  const decision = decideProfitProtection({
+    direction: "CALL",
+    quantity: 3,
+    optionReturnPct: 5,
+    progressToTargetPct: 25,
+    currentStopUnderlying: 95,
+    entryUnderlyingPrice: 100,
+    currentUnderlyingPrice: 101,
+    currentOptionMid: 2.1,
+    nowIso: "2026-05-27T19:40:30.426Z",
+  });
+
+  assert.equal(decision.action, "none");
+  assert.equal(decision.updatedStopUnderlying, null);
+  assert.equal(decision.diagnostics.triggered, false);
+  assert.equal(decision.diagnostics.protectionEligible, false);
+});
+
+test("profit protection permits breakeven stop after progress plus option-return trigger", () => {
+  const decision = decideProfitProtection({
+    direction: "CALL",
+    quantity: 3,
+    optionReturnPct: 10,
+    progressToTargetPct: 40,
+    currentStopUnderlying: 95,
+    entryUnderlyingPrice: 100,
+    currentUnderlyingPrice: 101,
+    currentOptionMid: 2.2,
+    nowIso: "2026-05-27T19:45:30.426Z",
+  });
+
+  assert.equal(decision.action, "scale_out");
+  assert.equal(decision.updatedStopUnderlying, 100);
+  assert.equal(decision.diagnostics.triggered, true);
+  assert.equal(decision.diagnostics.protectionEligible, true);
+});
+
+test("profit protection keeps earned stops protective without repeating scale-out", () => {
+  const decision = decideProfitProtection({
+    direction: "CALL",
+    quantity: 2,
+    optionReturnPct: 6,
+    progressToTargetPct: 20,
+    currentState: {
+      triggeredAt: "2026-05-27T19:45:30.426Z",
+      scaledOutAt: "2026-05-27T19:46:30.426Z",
+    },
+    currentStopUnderlying: 101,
+    entryUnderlyingPrice: 100,
+    currentUnderlyingPrice: 102,
+    currentOptionMid: 2.12,
+    nowIso: "2026-05-27T19:55:30.426Z",
+  });
+
+  assert.equal(decision.action, "none");
+  assert.equal(decision.updatedStopUnderlying, 101);
+  assert.equal(decision.diagnostics.triggered, false);
+  assert.equal(decision.diagnostics.protectionEligible, true);
 });
 
 test("BKR replay with scale-out preserves profit instead of learning setup failure", () => {
