@@ -349,18 +349,73 @@ function normalizeCheckState(value: string | null): string | null {
     .replace(/^_+|_+$/g, "") || null;
 }
 
+function readStructuredCheckState(item: Record<string, unknown>): string | null {
+  const direct =
+    readString(item.state) ??
+    readString(item.outcome) ??
+    readString(item.status);
+  if (direct) {
+    return normalizeCheckState(direct);
+  }
+
+  if (typeof item.pass === "boolean") {
+    if (item.pass) {
+      return "pass";
+    }
+    const impact = normalizeCheckState(readString(item.impact));
+    return impact ? `fail_${impact}` : "fail";
+  }
+
+  return null;
+}
+
+function addStructureCheck(
+  checks: Map<string, string>,
+  checkValue: unknown,
+  stateValue: unknown,
+): void {
+  const check = normalizeCheckState(readString(checkValue));
+  const state = normalizeCheckState(readString(stateValue));
+  if (check && state) {
+    checks.set(check, state);
+  }
+}
+
+function parseStructureCheckString(value: string, checks: Map<string, string>): void {
+  for (const part of value.split(",")) {
+    const [checkRaw, stateRaw] = part.trim().split(":", 2);
+    addStructureCheck(checks, checkRaw, stateRaw);
+  }
+}
+
 function parseStructureChecks(value: unknown): Map<string, string> {
   const checks = new Map<string, string>();
-  if (typeof value !== "string") {
+  if (typeof value === "string") {
+    parseStructureCheckString(value, checks);
     return checks;
   }
 
-  for (const part of value.split(",")) {
-    const [checkRaw, stateRaw] = part.trim().split(":", 2);
-    const check = normalizeCheckState(checkRaw ?? null);
-    const state = normalizeCheckState(stateRaw ?? null);
+  if (!Array.isArray(value)) {
+    return checks;
+  }
+
+  for (const item of value) {
+    if (typeof item === "string") {
+      parseStructureCheckString(item, checks);
+      continue;
+    }
+
+    const record = asRecord(item);
+    if (!record) {
+      continue;
+    }
+    const check =
+      readString(record.check) ??
+      readString(record.name) ??
+      readString(record.key);
+    const state = readStructuredCheckState(record);
     if (check && state) {
-      checks.set(check, state);
+      addStructureCheck(checks, check, state);
     }
   }
   return checks;

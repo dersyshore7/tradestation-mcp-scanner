@@ -3,8 +3,15 @@ import type {
   EntryRewardBucketSummary,
   EntryRewardModel,
 } from "./entryRewardModel.js";
+import type {
+  LearningOutcomeAudit,
+  LearningOutcomeSymbolAudit,
+} from "./learningOutcomeAudit.js";
 
 const MIN_PAPER_LEARNING_PENALTY_SAMPLE = 8;
+const MIN_SYMBOL_PENALTY_SAMPLE = 3;
+const MAX_SYMBOL_PENALTY_AVERAGE_OPPORTUNITY_R = -0.25;
+const MAX_SYMBOL_PENALTY_WIN_RATE = 0.25;
 
 function parseEntryRewardContextKey(key: string): Record<string, string> {
   const parsed: Record<string, string> = {};
@@ -138,6 +145,7 @@ function buildPaperLearningPreference(
 
 export function buildPaperLearningPreferences(
   model: EntryRewardModel,
+  learningAudit?: LearningOutcomeAudit | null,
 ): ScanLearningPreference[] {
   const contexts = summarizeEntryRewardBuckets(model);
   const avoided = contexts
@@ -153,7 +161,10 @@ export function buildPaperLearningPreferences(
       && context.winRate >= 0.5
     )
     .sort((left, right) => right.averageRewardR - left.averageRewardR);
-  const preferences = [...avoided, ...preferred]
+  const preferences = [
+    ...avoided,
+    ...preferred,
+  ]
     .map((context) =>
       buildPaperLearningPreference(
         context,
@@ -163,10 +174,12 @@ export function buildPaperLearningPreferences(
     .filter((preference): preference is ScanLearningPreference =>
       preference !== null
     );
+  preferences.push(...buildSymbolLearningPenaltyPreferences(learningAudit));
   const seen = new Set<string>();
 
   return preferences.filter((preference) => {
     const key = [
+      preference.symbol ?? "",
       preference.direction,
       preference.setupType,
       preference.dteBucket,
@@ -192,4 +205,44 @@ export function buildPaperLearningPreferences(
     seen.add(key);
     return true;
   });
+}
+
+function shouldPenalizeSymbol(symbol: LearningOutcomeSymbolAudit): boolean {
+  return (
+    symbol.realizedRCount >= MIN_SYMBOL_PENALTY_SAMPLE &&
+    (symbol.averageOpportunityR ?? Number.POSITIVE_INFINITY) <= MAX_SYMBOL_PENALTY_AVERAGE_OPPORTUNITY_R &&
+    (symbol.winRate ?? 1) <= MAX_SYMBOL_PENALTY_WIN_RATE
+  );
+}
+
+function buildSymbolPenaltyPreference(symbol: LearningOutcomeSymbolAudit): ScanLearningPreference {
+  const averageOpportunityR = symbol.averageOpportunityR ?? -1;
+  const boundedPenalty = Math.max(-3, Math.min(-1, averageOpportunityR));
+  return {
+    symbol: symbol.symbol,
+    direction: "bullish",
+    setupType: "symbol_weak_history",
+    dteBucket: "symbol",
+    rewardRiskBucket: "symbol",
+    chartScoreBucket: "symbol",
+    decision: "avoid",
+    effect: "penalty",
+    scoreAdjustment: Number(boundedPenalty.toFixed(2)),
+    reason: `Weak symbol history for ${symbol.symbol}: avg opportunity ${averageOpportunityR.toFixed(2)}R over ${symbol.realizedRCount} closed current-epoch trade(s), win rate ${(((symbol.winRate ?? 0) * 100)).toFixed(0)}%.`,
+    sampleSize: symbol.realizedRCount,
+    averageRewardR: averageOpportunityR,
+    ...(symbol.winRate !== null ? { winRate: symbol.winRate } : {}),
+  };
+}
+
+export function buildSymbolLearningPenaltyPreferences(
+  learningAudit?: LearningOutcomeAudit | null,
+): ScanLearningPreference[] {
+  if (!learningAudit) {
+    return [];
+  }
+
+  return learningAudit.bySymbol
+    .filter(shouldPenalizeSymbol)
+    .map(buildSymbolPenaltyPreference);
 }

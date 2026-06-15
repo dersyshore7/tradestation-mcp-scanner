@@ -646,6 +646,45 @@ export async function updateJournalTrade(id: string, input: JournalTradeUpdateIn
   return refreshedTrade;
 }
 
+export async function recomputeJournalTradeReviewFromExits(id: string): Promise<JournalTradeDetail> {
+  const trade = await getJournalTradeById(id);
+  if (!trade) {
+    throw new Error("Journal trade not found.");
+  }
+  if (trade.status !== "closed") {
+    throw new Error("Only closed trades can recompute review values.");
+  }
+  if (trade.exits.length === 0) {
+    throw new Error("Closed trade has no exits to recompute from.");
+  }
+
+  const reviewValues = calculateAggregateCloseReviewValues(trade, trade.exits);
+  await supabaseUpsertAndSelectOne<JournalTradeReviewRecord>({
+    table: "journal_reviews",
+    onConflict: "trade_id",
+    values: {
+      trade_id: id,
+      followed_plan: trade.review?.followed_plan ?? null,
+      winner: reviewValues.realizedPlUsd > 0,
+      realized_pl_usd: reviewValues.realizedPlUsd,
+      realized_r_multiple: reviewValues.realizedRMultiple,
+      realized_return_pct: reviewValues.realizedReturnPct,
+      rule_break_tags: trade.review?.rule_break_tags ?? [],
+      review_grade: trade.review?.review_grade ?? null,
+      mistake_category: trade.review?.mistake_category ?? null,
+      lessons_learned: trade.review?.lessons_learned ?? null,
+      review_notes: trade.review?.review_notes ?? null,
+    },
+  });
+
+  const refreshedTrade = await getJournalTradeById(id);
+  if (!refreshedTrade) {
+    throw new Error("Recomputed trade could not be reloaded.");
+  }
+
+  return refreshedTrade;
+}
+
 export async function closeJournalTrade(id: string, input: JournalTradeCloseInput): Promise<JournalTradeDetail> {
   const trade = await getJournalTradeById(id);
   if (!trade) {

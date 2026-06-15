@@ -41,6 +41,7 @@ export type ScanInput = {
 };
 
 export type ScanLearningPreference = {
+  symbol?: string;
   direction: ScanDirection;
   setupType: string;
   dteBucket: string;
@@ -1589,7 +1590,15 @@ function matchesOptionalLearningBucket(
 function matchesPaperLearningPreferenceBuckets(
   candidateBuckets: PaperLearningCandidateBuckets,
   preference: ScanLearningPreference,
+  candidateSymbol?: string,
 ): boolean {
+  if (preference.symbol) {
+    return (
+      typeof candidateSymbol === "string" &&
+      preference.symbol.toUpperCase() === candidateSymbol.toUpperCase()
+    );
+  }
+
   return (
     preference.direction === candidateBuckets.direction
     && preference.setupType === candidateBuckets.setupType
@@ -1615,6 +1624,7 @@ function formatPaperLearningPreferenceContext(
   preference: ScanLearningPreference,
 ): string {
   const parts = [
+    preference.symbol ? `symbol=${preference.symbol}` : null,
     preference.volumeBucket ? `volume=${preference.volumeBucket}` : null,
     preference.bodyWickBucket ? `body_wick=${preference.bodyWickBucket}` : null,
     preference.continuationBucket ? `continuation=${preference.continuationBucket}` : null,
@@ -1668,7 +1678,7 @@ function matchPaperLearningPreference(
     marketRegimeBucket,
   );
   const matches = preferences.filter((preference) =>
-    matchesPaperLearningPreferenceBuckets(candidateBuckets, preference)
+    matchesPaperLearningPreferenceBuckets(candidateBuckets, preference, candidate.symbol)
   );
   const avoided = matches
     .filter((preference) => preference.decision === "avoid")
@@ -1697,8 +1707,9 @@ export function buildPaperLearningChartStructureBucketsForTest(
 export function matchesPaperLearningPreferenceForTest(
   candidateBuckets: PaperLearningCandidateBuckets,
   preference: ScanLearningPreference,
+  candidateSymbol?: string,
 ): boolean {
-  return matchesPaperLearningPreferenceBuckets(candidateBuckets, preference);
+  return matchesPaperLearningPreferenceBuckets(candidateBuckets, preference, candidateSymbol);
 }
 
 function applyPaperLearningSelection(params: {

@@ -22,6 +22,8 @@ import {
   recommendEntryPolicy,
   trainEntryRewardModel,
 } from "./entryRewardModel.js";
+import { buildLearningOutcomeAudit } from "./learningOutcomeAudit.js";
+import { buildLearningReviewRepairPlan } from "./learningRepair.js";
 import {
   enforceAiManagementGuardrails,
   normalizeAiManagementDecisionForTest,
@@ -31,7 +33,10 @@ import {
   buildPaperLearningTradeSet,
   DEFAULT_PAPER_LEARNING_START_AT,
 } from "./paperLearningCutoff.js";
-import { buildPaperLearningPreferences } from "./paperLearningPreferences.js";
+import {
+  buildPaperLearningPreferences,
+  buildSymbolLearningPenaltyPreferences,
+} from "./paperLearningPreferences.js";
 import { recommendPolicyAction, trainPolicyModel } from "./policyModel.js";
 import { calculateScaleOutQuantity, decideProfitProtection } from "./profitProtection.js";
 import {
@@ -107,6 +112,17 @@ test("paper trader no longer emits scan_in_progress entry outcomes", () => {
   const source = readFileSync(new URL("./paperTrader.ts", import.meta.url), "utf8");
 
   assert.equal(source.includes('outcome: "scan_in_progress"'), false);
+});
+
+test("zero-contract entry blocks preserve resumable scan state", () => {
+  const source = readFileSync(new URL("./paperTrader.ts", import.meta.url), "utf8");
+  const zeroContractBlock = source.slice(
+    source.indexOf("if (positionCap.cappedContracts < 1)"),
+    source.indexOf("const initialContracts = positionCap.cappedContracts"),
+  );
+
+  assert.match(zeroContractBlock, /outcome: "zero_contract_trade"/);
+  assert.match(zeroContractBlock, /automatedScanState: remainingAutomatedScanState/);
 });
 
 test("resumable scan state is loaded from non-entry runs", () => {
@@ -372,6 +388,39 @@ test("entry feature extraction stores compact chart learning context", () => {
   assert.ok(JSON.stringify(snapshot).length < 2000);
 });
 
+test("entry feature extraction normalizes array chart check telemetry", () => {
+  const scan = buildScan();
+  const reviewed = scan.telemetry?.reviewedFinalistOutcomes?.[0] as unknown as {
+    stage3Inputs: { structureChecks: unknown };
+  };
+  reviewed.stage3Inputs.structureChecks = [
+    { check: "alignment", pass: true, impact: "downgrader" },
+    { check: "body-wick", pass: false, impact: "blocker" },
+    { check: "continuation", pass: false, impact: "downgrader" },
+    { check: "pullback-volume-control", pass: false, impact: "blocker" },
+    { check: "trigger-zone-flips", pass: true, impact: "downgrader" },
+    { check: "higher-timeframe-2r-viability", pass: false, impact: "blocker" },
+  ];
+
+  const features = buildEntryRewardFeatureInputFromScan({
+    scan,
+    entryTimestamp: new Date("2026-05-20T15:00:00.000Z"),
+  });
+
+  assert.ok(features);
+  assert.equal(features.chartContext?.alignment, "pass");
+  assert.equal(features.chartContext?.bodyWick, "fail_blocker");
+  assert.equal(features.chartContext?.continuation, "fail_downgrader");
+  assert.equal(features.chartContext?.pullbackVolume, "fail_blocker");
+  assert.equal(features.chartContext?.higherTimeframe2R, "fail_blocker");
+  assert.deepEqual(features.chartContext?.failedChecks, [
+    "body_wick",
+    "continuation",
+    "pullback_volume_control",
+    "higher_timeframe_2r_viability",
+  ]);
+});
+
 test("entry reward training uses opportunity R and chart-context buckets", () => {
   const features = buildEntryRewardFeatureInputFromScan({
     scan: buildScan(),
@@ -462,6 +511,66 @@ function buildLearningTrade(params: {
           ],
         },
       },
+    },
+  } as unknown as JournalTradeDetail;
+}
+
+function buildRepairTrade(params: {
+  id: string;
+  createdAt?: string;
+  accountMode?: AccountMode;
+  status?: "open" | "closed";
+  contracts?: number | null;
+  positionCostUsd?: string;
+  optionEntryPrice?: string | null;
+  plannedRiskUsd?: string | null;
+  exits?: {
+    option_exit_price: string;
+    quantity_closed: number;
+    fees_usd?: string;
+    slippage_usd?: string;
+  }[];
+  currentRealizedR?: string | null;
+  currentRealizedPlUsd?: string | null;
+  currentReturnPct?: string | null;
+}): JournalTradeDetail {
+  const createdAt = params.createdAt ?? DEFAULT_PAPER_LEARNING_START_AT;
+  const exits = (params.exits ?? [
+    { option_exit_price: "6", quantity_closed: 2 },
+  ]).map((exit, index) => ({
+    id: `exit-${params.id}-${index}`,
+    trade_id: params.id,
+    exit_time: createdAt,
+    exit_reason: "manual_early_exit",
+    fees_usd: exit.fees_usd ?? "0",
+    slippage_usd: exit.slippage_usd ?? "0",
+    exit_notes: null,
+    ...exit,
+  }));
+
+  return {
+    id: params.id,
+    created_at: createdAt,
+    updated_at: createdAt,
+    account_mode: params.accountMode ?? "paper",
+    entry_date: createdAt.slice(0, 10),
+    entry_time: "10:00:00",
+    entry_day: "Wed",
+    entry_week: "2026-W21",
+    symbol: "RPR",
+    direction: "CALL",
+    setup_type: "bullish_continuation",
+    status: params.status ?? "closed",
+    contracts: params.contracts ?? 2,
+    position_cost_usd: params.positionCostUsd ?? "1000",
+    option_entry_price: params.optionEntryPrice === undefined ? "5" : params.optionEntryPrice,
+    planned_risk_usd: params.plannedRiskUsd === undefined ? "500" : params.plannedRiskUsd,
+    exits,
+    latest_exit: exits[0] ?? null,
+    review: {
+      realized_r_multiple: params.currentRealizedR ?? null,
+      realized_pl_usd: params.currentRealizedPlUsd ?? null,
+      realized_return_pct: params.currentReturnPct ?? null,
     },
   } as unknown as JournalTradeDetail;
 }
@@ -592,6 +701,56 @@ test("paper learning cutoff excludes the first 14 days from entry and management
   assert.equal(policyModel.closedTradeCount, 1);
   assert.equal(policyModel.experienceCount, 1);
   assert.ok(Object.values(policyModel.buckets).every((bucket) => bucket.hold?.positiveCount === 1));
+});
+
+test("learning repair plan recomputes journal R only for current-epoch repairable rows", () => {
+  const fullExit = buildRepairTrade({
+    id: "repair-full",
+    currentRealizedR: null,
+    currentRealizedPlUsd: null,
+    currentReturnPct: null,
+  });
+  const partialExits = buildRepairTrade({
+    id: "repair-partial",
+    exits: [
+      { option_exit_price: "6", quantity_closed: 1 },
+      { option_exit_price: "4.5", quantity_closed: 1 },
+    ],
+  });
+  const missingRisk = buildRepairTrade({
+    id: "missing-risk",
+    plannedRiskUsd: null,
+  });
+  const missingExitPrice = buildRepairTrade({
+    id: "missing-exit-price",
+    exits: [{ option_exit_price: "", quantity_closed: 2 }],
+  });
+  const beforeCutoff = buildRepairTrade({
+    id: "before-repair-cutoff",
+    createdAt: "2026-05-13T18:22:34.660Z",
+  });
+
+  const plan = buildLearningReviewRepairPlan([
+    fullExit,
+    partialExits,
+    missingRisk,
+    missingExitPrice,
+    beforeCutoff,
+  ]);
+  const byId = new Map(plan.items.map((item) => [item.tradeId, item]));
+
+  assert.equal(plan.scannedTradeCount, 5);
+  assert.equal(plan.currentEpochTradeCount, 4);
+  assert.equal(plan.repairableCount, 2);
+  assert.equal(byId.get("repair-full")?.reason, "repairable");
+  assert.equal(byId.get("repair-full")?.repairedRealizedPlUsd, 200);
+  assert.equal(byId.get("repair-full")?.repairedRealizedR, 0.4);
+  assert.equal(byId.get("repair-partial")?.reason, "repairable");
+  assert.equal(byId.get("repair-partial")?.repairedRealizedPlUsd, 50);
+  assert.equal(byId.get("repair-partial")?.repairedRealizedR, 0.1);
+  assert.equal(byId.get("missing-risk")?.reason, "missing_planned_risk");
+  assert.equal(byId.get("missing-exit-price")?.reason, "missing_exit_price");
+  assert.equal(byId.has("before-repair-cutoff"), false);
 });
 
 test("automation learners include reviewed paper and live trades with source counts", () => {
@@ -758,6 +917,51 @@ test("weak candle and volume history creates penalties but not hard blocks", () 
   assert.equal(detailedPenalty.effect, "penalty");
   assert.equal(detailedPenalty.scoreAdjustment, -2);
   assert.equal(preferences.some((preference) => preference.effect === "hard_block"), false);
+});
+
+test("learning audit classifies entry quality and emits soft repeated-symbol penalties", () => {
+  const nkeTrades = [-1.2, -0.7, -0.4].map((realizedR, index) =>
+    buildLearningTrade({
+      id: `nke-weak-${index}`,
+      createdAt: `2026-06-${10 + index}T15:00:00.000Z`,
+      realizedR,
+      symbol: "NKE",
+      managementOptionReturnPct: null,
+    })
+  );
+  const bkr = buildBkrGivebackTrade();
+  const missingRealizedR = buildRepairTrade({ id: "missing-realized-r" });
+  const audit = buildLearningOutcomeAudit([...nkeTrades, bkr, missingRealizedR]);
+  const bkrClassification = audit.tradeClassifications.find((item) => item.symbol === "BKR");
+  const penalties = buildSymbolLearningPenaltyPreferences(audit);
+  const nkePenalty = penalties.find((preference) => preference.symbol === "NKE");
+
+  assert.equal(audit.classificationCounts.bad_or_unproven_entry, 3);
+  assert.equal(audit.classificationCounts.good_entry_major_giveback, 1);
+  assert.equal(audit.missingRealizedRCount, 1);
+  assert.match(audit.dataWarnings.join(" "), /missing realized R/);
+  assert.equal(bkrClassification?.outcomeClass, "good_entry_major_giveback");
+  assert.ok((bkrClassification?.opportunityR ?? 0) > 0);
+  assert.ok(nkePenalty);
+  assert.equal(nkePenalty.effect, "penalty");
+  assert.equal(nkePenalty.decision, "avoid");
+  assert.notEqual(nkePenalty.effect, "hard_block");
+  assert.equal(
+    matchesPaperLearningPreferenceForTest(
+      buildPreferenceMatchBuckets({ direction: "bearish" }),
+      nkePenalty,
+      "NKE",
+    ),
+    true,
+  );
+  assert.equal(
+    matchesPaperLearningPreferenceForTest(
+      buildPreferenceMatchBuckets(),
+      nkePenalty,
+      "AAPL",
+    ),
+    false,
+  );
 });
 
 function buildBkrGivebackTrade(): JournalTradeDetail {

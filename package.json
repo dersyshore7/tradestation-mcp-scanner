@@ -19,6 +19,7 @@
     "scanner:single-review-debug": "tsx src/app/debugSingleSymbolReview.ts",
     "trade:construction-debug": "tsx src/app/debugTradeConstruction.ts",
     "paper-trader:run": "tsx src/automation/runPaperTrader.ts",
+    "learning:repair": "tsx src/automation/repairLearningReviews.ts",
     "policy:train": "tsx src/automation/trainPolicy.ts",
     "ml:test": "node --import tsx --test src/automation/mlLearning.test.ts"
   },

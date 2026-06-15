@@ -50,6 +50,7 @@ import {
   type EntryPolicyRecommendation,
   type EntryRewardFeatureInput,
 } from "./entryRewardModel.js";
+import { buildLearningOutcomeAudit } from "./learningOutcomeAudit.js";
 import { buildPaperLearningPreferences } from "./paperLearningPreferences.js";
 import {
   listRecentPaperEntryCandidates,
@@ -4399,11 +4400,12 @@ async function maybeEnterNewPaperTrade(params: {
 
   const learningTrades = filterRecordsForPaperLearning(allTrades);
   const entryRewardModel = trainEntryRewardModel(learningTrades);
+  const learningOutcomeAudit = buildLearningOutcomeAudit(learningTrades);
   const resumableScanState = await loadResumableAutomatedScanState(config.accountMode, dryRun);
   const scanRunId = resumableScanState?.scanRunId ?? buildScanRunId();
   const paperLearningPreferences =
     resumableScanState?.paperLearningPreferences
-    ?? buildPaperLearningPreferences(entryRewardModel);
+    ?? buildPaperLearningPreferences(entryRewardModel, learningOutcomeAudit);
   const openSymbols = openPaperTrades.map((trade) => trade.symbol);
   const policySkippedSymbols: string[] = [];
   const policySkipReasons: string[] = [];
@@ -4574,6 +4576,7 @@ async function maybeEnterNewPaperTrade(params: {
   const entryReasoning = selectedEntryReasoning;
   const entryPolicyRecommendation = selectedEntryPolicy;
   const entryFeatures = selectedEntryFeatures;
+  const remainingAutomatedScanState = automatedScan.completed ? null : automatedScan.state;
 
   try {
     const automation = tradeCard.automationMetadata;
@@ -4602,6 +4605,7 @@ async function maybeEnterNewPaperTrade(params: {
         reasoning: entryReasoning,
         evaluatedCandidates,
         scanSummary: entryScanSummary,
+        automatedScanState: remainingAutomatedScanState,
       };
     }
     const duplicateOpenTrade = openPaperTrades.find((trade) => {
@@ -4631,6 +4635,7 @@ async function maybeEnterNewPaperTrade(params: {
         reasoning: entryReasoning,
         evaluatedCandidates,
         scanSummary: entryScanSummary,
+        automatedScanState: remainingAutomatedScanState,
       };
     }
 
@@ -4657,6 +4662,7 @@ async function maybeEnterNewPaperTrade(params: {
         reasoning: entryReasoning,
         evaluatedCandidates,
         scanSummary: entryScanSummary,
+        automatedScanState: remainingAutomatedScanState,
       };
     }
 
@@ -4695,6 +4701,7 @@ async function maybeEnterNewPaperTrade(params: {
           reasoning: entryReasoning,
           evaluatedCandidates,
           scanSummary: entryScanSummary,
+          automatedScanState: remainingAutomatedScanState,
         };
       }
 
@@ -4722,6 +4729,7 @@ async function maybeEnterNewPaperTrade(params: {
           reasoning: entryReasoning,
           evaluatedCandidates,
           scanSummary: entryScanSummary,
+          automatedScanState: remainingAutomatedScanState,
         };
       }
     }
@@ -4756,6 +4764,7 @@ async function maybeEnterNewPaperTrade(params: {
         reasoning: entryReasoning,
         evaluatedCandidates,
         scanSummary: entryScanSummary,
+        automatedScanState: remainingAutomatedScanState,
       };
     }
     if (accountValueUsd === null || accountValueUsd <= 0) {
@@ -4781,6 +4790,7 @@ async function maybeEnterNewPaperTrade(params: {
         reasoning: entryReasoning,
         evaluatedCandidates,
         scanSummary: entryScanSummary,
+        automatedScanState: remainingAutomatedScanState,
       };
     }
 
@@ -4820,6 +4830,7 @@ async function maybeEnterNewPaperTrade(params: {
         reasoning: entryReasoning,
         evaluatedCandidates,
         scanSummary: entryScanSummary,
+        automatedScanState: remainingAutomatedScanState,
       };
     }
 
@@ -4859,6 +4870,7 @@ async function maybeEnterNewPaperTrade(params: {
         reasoning: entryReasoning,
         evaluatedCandidates,
         scanSummary: entryScanSummary,
+        automatedScanState: remainingAutomatedScanState,
       };
     }
 
@@ -4938,6 +4950,7 @@ async function maybeEnterNewPaperTrade(params: {
           reasoning: entryReasoning,
           evaluatedCandidates,
           scanSummary: entryScanSummary,
+          automatedScanState: remainingAutomatedScanState,
         };
       }
     }
@@ -4966,6 +4979,7 @@ async function maybeEnterNewPaperTrade(params: {
         reasoning: entryReasoning,
         evaluatedCandidates,
         scanSummary: entryScanSummary,
+        automatedScanState: remainingAutomatedScanState,
       };
     }
 
@@ -5006,6 +5020,7 @@ async function maybeEnterNewPaperTrade(params: {
             reasoning: entryReasoning,
             evaluatedCandidates,
             scanSummary: entryScanSummary,
+            automatedScanState: remainingAutomatedScanState,
           };
         }
 
@@ -5034,6 +5049,7 @@ async function maybeEnterNewPaperTrade(params: {
             reasoning: entryReasoning,
             evaluatedCandidates,
             scanSummary: entryScanSummary,
+            automatedScanState: remainingAutomatedScanState,
           };
         }
       }
@@ -5062,6 +5078,7 @@ async function maybeEnterNewPaperTrade(params: {
         reasoning: entryReasoning,
         evaluatedCandidates,
         scanSummary: entryScanSummary,
+        automatedScanState: remainingAutomatedScanState,
       };
     }
 
@@ -5247,6 +5264,7 @@ async function maybeEnterNewPaperTrade(params: {
       reasoning: buildEntryReasoning(scan, null),
       evaluatedCandidates,
       scanSummary: entryScanSummary,
+      automatedScanState: remainingAutomatedScanState,
     };
   }
 }

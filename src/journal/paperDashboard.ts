@@ -1,5 +1,7 @@
 import { readPaperLearningWindow } from "../automation/paperLearningCutoff.js";
+import { buildLearningOutcomeAudit, type LearningOutcomeAudit } from "../automation/learningOutcomeAudit.js";
 import { buildReasoningSnapshot } from "./insights.js";
+import { listJournalTradeDetails } from "./repository.js";
 import { supabaseCount, supabaseSelect } from "../supabase/serverClient.js";
 import type { AccountMode, JournalReasoningSnapshot } from "./types.js";
 
@@ -124,6 +126,7 @@ export type PaperDashboard = {
   by_setup_type: PaperDashboardBucket[];
   by_symbol: PaperDashboardBucket[];
   by_exit_reason: PaperDashboardBucket[];
+  learning_audit: LearningOutcomeAudit;
   outcome_details: {
     winners: PaperDashboardOutcomeTrade[];
     losers: PaperDashboardOutcomeTrade[];
@@ -396,6 +399,37 @@ async function loadPaperDashboardOutcomeDetails(
   }, new Map<string, PaperDashboardOutcomeDetailRow>());
 }
 
+async function loadPaperDashboardLearningAudit(
+  accountMode: AccountMode,
+  limit: number,
+): Promise<LearningOutcomeAudit> {
+  try {
+    const learningWindow = readPaperLearningWindow();
+    const trades = await listJournalTradeDetails(limit, {
+      accountMode,
+      status: "closed",
+      includeSignalSnapshot: true,
+    });
+    const currentEpochTrades = trades.filter((trade) => {
+      const createdAtMs = Date.parse(trade.created_at);
+      return !Number.isFinite(createdAtMs) || createdAtMs >= learningWindow.learningStartAtMs;
+    });
+    const warnings = trades.length >= limit
+      ? [`Learning audit inspected the latest ${limit} closed ${accountMode} trade(s); older current-epoch rows may be omitted.`]
+      : [];
+    return buildLearningOutcomeAudit(currentEpochTrades, {
+      accountMode,
+      dataWarnings: warnings,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return buildLearningOutcomeAudit([], {
+      accountMode,
+      dataWarnings: [`Learning audit unavailable: ${message}`],
+    });
+  }
+}
+
 export function buildEmptyPaperDashboard(
   dataWarnings: string[] = [],
   accountMode: AccountMode = "paper",
@@ -429,6 +463,7 @@ export function buildEmptyPaperDashboard(
     by_setup_type: [],
     by_symbol: [],
     by_exit_reason: [],
+    learning_audit: buildLearningOutcomeAudit([], { accountMode }),
     outcome_details: {
       winners: [],
       losers: [],
@@ -445,10 +480,11 @@ export async function getPaperDashboard(
   const epochFilter = buildEpochFilter(learningWindow.learningStartAt);
   const archiveFilter = buildArchiveFilter(learningWindow.learningStartAt);
   const metricLimit = Math.max(limit, PAPER_DASHBOARD_METRIC_LIMIT);
-  const [trades, includedTradeCount, excludedTradeCount] = await Promise.all([
+  const [trades, includedTradeCount, excludedTradeCount, learningAudit] = await Promise.all([
     loadPaperDashboardRows(accountMode, metricLimit, [epochFilter]),
     countPaperDashboardRows(accountMode, [epochFilter]),
     countPaperDashboardRows(accountMode, [archiveFilter]),
+    loadPaperDashboardLearningAudit(accountMode, metricLimit),
   ]);
   const closedTrades = toClosedTrades(trades);
   const openTrades = trades.filter((trade) => trade.status === "open");
@@ -530,6 +566,7 @@ export async function getPaperDashboard(
     by_setup_type: bySetup,
     by_symbol: bySymbol,
     by_exit_reason: byExitReason,
+    learning_audit: learningAudit,
     outcome_details: {
       winners: outcomeWinnerTrades.map((trade) =>
         buildOutcomeTrade(trade, outcomeDetailsById.get(trade.id) ?? null)
