@@ -753,6 +753,7 @@
       </div>
       <div class="nav-list">
         <button class="nav-link is-active" type="button" data-page-target="manual-scan">Manual Scan</button>
+        <button class="nav-link" type="button" data-page-target="original-process">Original Process</button>
         <button class="nav-link" type="button" data-page-target="paper-trader">Paper Trader</button>
         <button class="nav-link" type="button" data-page-target="live-trader">Live Trader</button>
         <button class="nav-link" type="button" data-page-target="journal">Journal</button>
@@ -807,6 +808,35 @@
           </div>
         </div>
         <div id="tradeRecommendationsArea" class="muted">Recommendations load on demand. Use Refresh Recommendations when you need recent saved cards.</div>
+      </div>
+      </section>
+
+      <section id="original-process-page" class="page-view" data-page="original-process">
+        <section class="page-header">
+          <div class="page-kicker">Original Process</div>
+          <h1>Prompt-driven trade card</h1>
+          <p class="page-subtitle">Run the original scan, confirmation, and 2:1 card flow with current market data.</p>
+        </section>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Original Process</h2>
+            <p class="section-description">Full-universe prompt workflow for one manually entered trade card.</p>
+          </div>
+        </div>
+        <button id="runOriginalProcessButton">Run Original Process</button>
+        <div id="originalProcessProgress" class="muted" style="margin-top: 12px;">No run yet.</div>
+      </div>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Result</h2>
+            <p class="section-description">Latest prompt-selected setup, server validation, and journal capture.</p>
+          </div>
+        </div>
+        <div id="originalProcessResultArea">No run yet.</div>
       </div>
       </section>
 
@@ -1236,6 +1266,9 @@
       const runScanButton = document.getElementById("runScanButton");
       const promptInput = document.getElementById("prompt");
       const resultArea = document.getElementById("resultArea");
+      const runOriginalProcessButton = document.getElementById("runOriginalProcessButton");
+      const originalProcessProgress = document.getElementById("originalProcessProgress");
+      const originalProcessResultArea = document.getElementById("originalProcessResultArea");
       const defaultPromptText = document.getElementById("defaultPromptText");
       const tradeModal = document.getElementById("tradeModal");
       const closeModalButton = document.getElementById("closeModal");
@@ -1370,6 +1403,7 @@
       };
       const pageTitles = {
         "manual-scan": "Manual Scan",
+        "original-process": "Original Process",
         "paper-trader": "Paper Trader",
         "live-trader": "Live Trader",
         journal: "Journal",
@@ -1887,6 +1921,8 @@
                 ${runs.map((run) => {
                   const raw = run.raw_result_json || {};
                   const reconciliation = raw.reconciliation || {};
+                  const closedExitReconciliation = raw.closedExitReconciliation || {};
+                  const liveDailyAudit = raw.liveDailyAudit || null;
                   const entryOrderManagement = raw.entryOrderManagement || {};
                   const management = raw.management || {};
                   const entry = raw.entry || {};
@@ -1896,6 +1932,8 @@
                   const orderSkipped = Array.isArray(reconciliation.skipped) ? reconciliation.skipped : [];
                   const entryOrderUpdates = Array.isArray(entryOrderManagement.updates) ? entryOrderManagement.updates : [];
                   const entryOrderSkipped = Array.isArray(entryOrderManagement.skipped) ? entryOrderManagement.skipped : [];
+                  const brokerExitUpdates = Array.isArray(closedExitReconciliation.updates) ? closedExitReconciliation.updates : [];
+                  const brokerExitSkipped = Array.isArray(closedExitReconciliation.skippedDetails) ? closedExitReconciliation.skippedDetails : [];
                   const managementSkipped = Array.isArray(management.skipped) ? management.skipped : [];
                   const staleArchived = reconciliation.staleArchived || 0;
                   const adoptedPositions = reconciliation.adoptedPositions || 0;
@@ -1906,6 +1944,8 @@
                     `${entryOrderUpdates.length} entry-order decision(s)`,
                     `${updates.length} ${page.tradeLabel} trade review(s)`,
                     `${exits.length} exit trigger(s)`,
+                    `${closedExitReconciliation.repaired || 0} broker exit repair(s)`,
+                    `${formatMoney(closedExitReconciliation.realizedPlDeltaUsd)} broker repair delta`,
                     `${staleArchived} stale archived`,
                     `${adoptedPositions} ${page.tradeLabel} adopted`,
                     `${orderSkipped.length + entryOrderSkipped.length + managementSkipped.length} skipped row(s)`,
@@ -1918,6 +1958,12 @@
                     ),
                     orderSkipped.slice(0, 5).map((item) => `${item.symbol}: ${item.reason}`),
                     entryOrderSkipped.slice(0, 5).map((item) => `${item.symbol}: ${item.reason}`),
+                  );
+                  const brokerTruthDetails = brokerExitUpdates.slice(0, 5).map((item) =>
+                    `${item.symbol}: order ${renderMaybe(item.orderId)} | ${formatMoney(item.oldExitPrice)} -> ${formatMoney(item.newExitPrice)} | fees ${formatMoney(item.oldFeesUsd)} -> ${formatMoney(item.newFeesUsd)}`,
+                  ).concat(
+                    brokerExitSkipped.slice(0, 5).map((item) => `${item.symbol}: ${item.reason}`),
+                    buildLiveDailyAuditRows(liveDailyAudit).slice(0, 8),
                   );
                   const managementDetails = updates.slice(0, 5).map((item) =>
                     `${item.symbol}: ${item.action}${item.note ? ` - ${item.note}` : ""}`,
@@ -1937,6 +1983,7 @@
                       <div class="row"><strong>History note:</strong> These are actions from that cycle. A symbol shown here may no longer be open in TradeStation after an exit order fills.</div>
                       <div class="phase-grid" style="margin-top: 12px;">
                         ${renderTradePhaseCard("Order Checks", orderDetails.map((row) => escapeHtml(row)), [], "No existing orders were checked in this cycle.")}
+                        ${renderTradePhaseCard("Broker Truth", brokerTruthDetails.map((row) => escapeHtml(row)), [], "No broker exit repairs or live daily audit rows in this cycle.")}
                         ${renderTradePhaseCard("Management", managementDetails.map((row) => escapeHtml(row)), [], "No existing automation trades were managed in this cycle.")}
                         ${renderTradePhaseCard("Exit Triggers", exitDetails.map((row) => escapeHtml(row)), [], "No exits were triggered in this cycle.")}
                       </div>
@@ -1986,6 +2033,51 @@
           <details class="comparison-card">
             <summary>${escapeHtml(title)}</summary>
             ${renderList(rows)}
+          </details>
+        `;
+      }
+
+      function buildClosedExitReconciliationRows(reconciliation) {
+        if (!reconciliation) {
+          return [];
+        }
+        const updates = Array.isArray(reconciliation.updates) ? reconciliation.updates : [];
+        const skipped = Array.isArray(reconciliation.skippedDetails) ? reconciliation.skippedDetails : [];
+        const warnings = Array.isArray(reconciliation.warnings) ? reconciliation.warnings : [];
+        return [
+          `Inspected ${renderMaybe(reconciliation.inspected, "0")} closed exit(s); repaired ${renderMaybe(reconciliation.repaired, "0")}; skipped ${renderMaybe(reconciliation.skipped, "0")}.`,
+          `Broker-confirmed P/L ${formatMoney(reconciliation.brokerConfirmedRealizedPlUsd)} | journal before ${formatMoney(reconciliation.journalRealizedPlUsdBefore)} | journal after ${formatMoney(reconciliation.journalRealizedPlUsdAfter)} | delta ${formatMoney(reconciliation.realizedPlDeltaUsd)}.`,
+          ...updates.map((item) => `${renderMaybe(item.symbol)}: exit ${renderMaybe(item.exitId)} order ${renderMaybe(item.orderId)} | ${formatMoney(item.oldExitPrice)} -> ${formatMoney(item.newExitPrice)} | fees ${formatMoney(item.oldFeesUsd)} -> ${formatMoney(item.newFeesUsd)} | qty ${renderMaybe(item.quantityClosed, "n/a")}`),
+          ...skipped.map((item) => `${renderMaybe(item.symbol)}: ${renderMaybe(item.reason)}`),
+          ...warnings.map((warning) => `Warning: ${warning}`),
+        ];
+      }
+
+      function buildLiveDailyAuditRows(audit) {
+        if (!audit) {
+          return [];
+        }
+        const biggestLosers = Array.isArray(audit.biggestLosers) ? audit.biggestLosers : [];
+        const winnersExitedBeforeTarget = Array.isArray(audit.winnersExitedBeforeTarget) ? audit.winnersExitedBeforeTarget : [];
+        const openPositions = Array.isArray(audit.openPositions) ? audit.openPositions : [];
+        const warnings = Array.isArray(audit.warnings) ? audit.warnings : [];
+        return [
+          `Date ${renderMaybe(audit.date)} | journal realized ${formatMoney(audit.journalRealizedPlUsd)} | broker-confirmed realized ${formatMoney(audit.brokerConfirmedRealizedPlUsd)} | open unrealized ${formatMoney(audit.openUnrealizedPlUsd)}.`,
+          ...biggestLosers.map((item) => `Loser ${renderMaybe(item.symbol)}: ${formatMoney(item.realizedPlUsd)}${item.exitReason ? ` | ${item.exitReason}` : ""}`),
+          ...winnersExitedBeforeTarget.map((item) => `Winner before TP ${renderMaybe(item.symbol)}: progress ${formatPercent(item.progressToTargetPct, 1)}${item.exitReason ? ` | ${item.exitReason}` : ""}`),
+          ...openPositions.map((item) => `Open ${renderMaybe(item.symbol)}${item.unlinked ? " [unlinked]" : " [bot]"}: qty ${renderMaybe(item.quantity, "n/a")} | avg ${formatMoney(item.averagePrice)} | value ${formatMoney(item.marketValueUsd)} | P/L ${formatMoney(item.unrealizedPlUsd)}`),
+          ...warnings.map((warning) => `Warning: ${warning}`),
+        ];
+      }
+
+      function renderLiveDailyAuditCard(audit) {
+        if (!audit) {
+          return "";
+        }
+        return `
+          <details class="comparison-card" style="margin-top: 16px;">
+            <summary>Daily Live Audit</summary>
+            ${renderList(buildLiveDailyAuditRows(audit))}
           </details>
         `;
       }
@@ -2228,11 +2320,17 @@
           || trade.intended_target_underlying !== null && trade.intended_target_underlying !== undefined
             ? `${formatMoney(trade.intended_stop_underlying)} / ${formatMoney(trade.intended_target_underlying)}`
             : null;
+        const brokerTruthFlags = [
+          trade.broker_confirmed_exit ? "broker-confirmed" : null,
+          trade.provisional_exit ? "provisional quote" : null,
+          trade.broker_repaired_exit ? "repaired" : null,
+        ].filter(Boolean).join(" | ");
         const rows = [
           `<strong>Contracts:</strong> ${escapeHtml(renderMaybe(trade.contracts))} | <strong>Closed:</strong> ${escapeHtml(renderMaybe(trade.quantity_closed))}`,
           `<strong>Option entry / exit:</strong> ${escapeHtml(formatMoney(trade.option_entry_price))} / ${escapeHtml(formatMoney(trade.option_exit_price))}`,
           `<strong>Underlying entry:</strong> ${escapeHtml(formatMoney(trade.underlying_entry_price))}`,
           `<strong>Sold for:</strong> ${escapeHtml(formatMoney(trade.sold_for_usd))} | <strong>Cost:</strong> ${escapeHtml(formatMoney(trade.position_cost_usd))}`,
+          brokerTruthFlags ? `<strong>Broker truth:</strong> ${escapeHtml(brokerTruthFlags)}` : null,
           plannedLevels ? `<strong>Planned stop / target:</strong> ${escapeHtml(plannedLevels)}` : null,
           activeLevels ? `<strong>Active stop / target:</strong> ${escapeHtml(activeLevels)}` : null,
           trade.entry_notes ? `<strong>Entry notes:</strong> ${escapeHtml(trade.entry_notes)}` : null,
@@ -2385,6 +2483,7 @@
         const bestDay = journalDataUnavailable ? null : bestBucketByRealizedPl(insights.by_day_of_week);
         const bestTime = journalDataUnavailable ? null : bestBucketByRealizedPl(insights.by_entry_hour);
         const bestSetup = journalDataUnavailable ? null : bestBucketByRealizedPl(insights.by_setup_type);
+        const brokerAudit = insights.broker_audit || {};
         const realizedTone = journalDataUnavailable ? "" : numberToneClass(totals.total_realized_pl_usd);
         const unrealizedTone = numberToneClass(accountSnapshot?.unrealizedPlUsd);
         const winRateTone = journalDataUnavailable ? "" : winRateToneClass(totals.win_rate);
@@ -2444,6 +2543,14 @@
             <div class="stat-card ${escapeHtml(realizedTone)}">
               <div class="stat-label">Epoch Realized P/L</div>
               <div class="stat-value ${escapeHtml(realizedTone)}">${escapeHtml(journalDataUnavailable ? "unavailable" : formatMoney(totals.total_realized_pl_usd))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Broker-Confirmed Exits</div>
+              <div class="stat-value">${escapeHtml(journalDataUnavailable ? "unavailable" : renderMaybe(brokerAudit.broker_confirmed_exit_count, "0"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Provisional Exits</div>
+              <div class="stat-value">${escapeHtml(journalDataUnavailable ? "unavailable" : renderMaybe(brokerAudit.provisional_exit_count, "0"))}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Open TradeStation Positions</div>
@@ -2625,6 +2732,9 @@
         const closedPaperTrades = sourceCounts.paper ?? learning?.closedPaperTrades ?? 0;
         const closedLiveTrades = sourceCounts.live ?? learning?.closedLiveTrades ?? 0;
         const closedLearningTrades = learning?.closedLearningTrades ?? (Number(closedPaperTrades) + Number(closedLiveTrades));
+        const liveDailyAudit = status?.liveDailyAudit || null;
+        const biggestLoserCount = Array.isArray(liveDailyAudit?.biggestLosers) ? liveDailyAudit.biggestLosers.length : 0;
+        const earlyWinnerCount = Array.isArray(liveDailyAudit?.winnersExitedBeforeTarget) ? liveDailyAudit.winnersExitedBeforeTarget.length : 0;
 
         page.traderArea.innerHTML = `
           <div class="stats-grid" style="margin-top: 12px;">
@@ -2688,6 +2798,22 @@
               <div class="stat-label">${escapeHtml(environmentLabel)} Unrealized P/L</div>
               <div class="stat-value ${escapeHtml(numberToneClass(sizing?.unrealizedPlUsd))}">${escapeHtml(formatMoney(sizing?.unrealizedPlUsd))}</div>
             </div>
+            <div class="stat-card ${escapeHtml(numberToneClass(liveDailyAudit?.brokerConfirmedRealizedPlUsd))}">
+              <div class="stat-label">Broker Realized Today</div>
+              <div class="stat-value ${escapeHtml(numberToneClass(liveDailyAudit?.brokerConfirmedRealizedPlUsd))}">${escapeHtml(formatMoney(liveDailyAudit?.brokerConfirmedRealizedPlUsd))}</div>
+            </div>
+            <div class="stat-card ${escapeHtml(numberToneClass(liveDailyAudit?.journalRealizedPlUsd))}">
+              <div class="stat-label">Journal Realized Today</div>
+              <div class="stat-value ${escapeHtml(numberToneClass(liveDailyAudit?.journalRealizedPlUsd))}">${escapeHtml(formatMoney(liveDailyAudit?.journalRealizedPlUsd))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Early Winners Today</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(earlyWinnerCount, "0"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Big Losers Today</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(biggestLoserCount, "0"))}</div>
+            </div>
             <div class="stat-card">
               <div class="stat-label">Max Position $</div>
               <div class="stat-value">${escapeHtml(formatMoney(sizing?.maxPositionCostUsd))}</div>
@@ -2736,6 +2862,8 @@
             <pre>${escapeHtml(learning?.entryPolicySummary || "No closed automation-entry outcomes yet; new entries use the scanner/trade-card rules and become training data after close.")}</pre>
           </div>
 
+          ${renderLiveDailyAuditCard(liveDailyAudit)}
+
           ${renderPaperTraderDecisionWorkspace({
             runHistory: status?.runHistory,
             runHistoryMigrationMessage: status?.runHistoryMigrationMessage,
@@ -2773,6 +2901,9 @@
         const entryOrderSkipped = Array.isArray(result?.entryOrderManagement?.skipped)
           ? result.entryOrderManagement.skipped
           : [];
+        const closedExitReconciliation = result?.closedExitReconciliation || null;
+        const liveDailyAudit = result?.liveDailyAudit || null;
+        const earlyWinnerCount = Array.isArray(liveDailyAudit?.winnersExitedBeforeTarget) ? liveDailyAudit.winnersExitedBeforeTarget.length : 0;
         const environmentLabel = formatTradeStationEnvironmentLabel(result?.config?.tradeStationEnvironment || (result?.mode === "live" ? "live" : "sim"));
         const reasoning = result?.entry?.reasoning || null;
         const reasoningItems = [
@@ -2808,6 +2939,22 @@
             <div class="stat-card">
               <div class="stat-label">Today Realized P/L</div>
               <div class="stat-value ${escapeHtml(numberToneClass(result?.guards?.todayRealizedPlUsd))}">${escapeHtml(formatMoney(result?.guards?.todayRealizedPlUsd))}</div>
+            </div>
+            <div class="stat-card ${escapeHtml(numberToneClass(closedExitReconciliation?.brokerConfirmedRealizedPlUsd))}">
+              <div class="stat-label">Broker-Confirmed Closed P/L</div>
+              <div class="stat-value ${escapeHtml(numberToneClass(closedExitReconciliation?.brokerConfirmedRealizedPlUsd))}">${escapeHtml(formatMoney(closedExitReconciliation?.brokerConfirmedRealizedPlUsd))}</div>
+            </div>
+            <div class="stat-card ${escapeHtml(numberToneClass(closedExitReconciliation?.realizedPlDeltaUsd))}">
+              <div class="stat-label">Broker Repair Delta</div>
+              <div class="stat-value ${escapeHtml(numberToneClass(closedExitReconciliation?.realizedPlDeltaUsd))}">${escapeHtml(formatMoney(closedExitReconciliation?.realizedPlDeltaUsd))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Broker Exit Repairs</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(closedExitReconciliation?.repaired, "0"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Early Winners Today</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(earlyWinnerCount, "0"))}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">New Entries Allowed</div>
@@ -2853,6 +3000,14 @@
                 ...entryOrderUpdates.map((item) => `${item.symbol}: ${item.action} | ${renderMaybe(item.oldLimitPrice)} -> ${renderMaybe(item.newLimitPrice)} | filled ${renderMaybe(item.filledQuantity)} | remaining ${renderMaybe(item.remainingQuantity)}${item.note ? ` - ${item.note}` : ""}`),
                 ...entryOrderSkipped.map((item) => `${item.symbol}: ${item.reason}`),
               ],
+            )}
+            ${renderRunSection(
+              "Closed Exit Broker Truth",
+              buildClosedExitReconciliationRows(closedExitReconciliation),
+            )}
+            ${renderRunSection(
+              "Daily Live Audit",
+              buildLiveDailyAuditRows(liveDailyAudit),
             )}
             ${renderRunSection(
               "Management Decisions This Run",
@@ -4153,6 +4308,180 @@
       setActivePage(readPageFromHash(), false);
 
       const manualScanStateStorageKey = "manual-scan-active-state";
+      const originalProcessStateStorageKey = "original-process-active-state";
+
+      function saveOriginalProcessState(state) {
+        try {
+          if (state) {
+            window.localStorage.setItem(originalProcessStateStorageKey, JSON.stringify(state));
+          }
+        } catch {
+          // Local progress persistence is best-effort; the scan still continues in memory.
+        }
+      }
+
+      function clearOriginalProcessState() {
+        try {
+          window.localStorage.removeItem(originalProcessStateStorageKey);
+        } catch {
+          // Ignore storage failures.
+        }
+      }
+
+      function loadOriginalProcessState() {
+        try {
+          const raw = window.localStorage.getItem(originalProcessStateStorageKey);
+          if (!raw) {
+            return null;
+          }
+          const state = JSON.parse(raw);
+          return state?.status === "running" ? state : null;
+        } catch {
+          return null;
+        }
+      }
+
+      function renderOriginalProcessProgress(data) {
+        if (!originalProcessProgress) {
+          return;
+        }
+        const progress = data?.progress || {};
+        const scanned = renderMaybe(progress.scannedSymbolCount, "0");
+        const total = renderMaybe(progress.totalSymbolCount, "0");
+        const candidates = renderMaybe(progress.candidateRowCount, "0");
+        originalProcessProgress.innerHTML = `
+          <div class="row">${escapeHtml(renderMaybe(progress.text, "Original Process running..."))}</div>
+          <div class="row"><strong>Scanned:</strong> ${escapeHtml(scanned)} / ${escapeHtml(total)} | <strong>Candidate rows:</strong> ${escapeHtml(candidates)} | <strong>Chunks:</strong> ${escapeHtml(renderMaybe(progress.chunkCount, "0"))}</div>
+        `;
+      }
+
+      function renderOriginalProcessDetails(originalProcess) {
+        if (!originalProcess) {
+          return "";
+        }
+        const selection = originalProcess.selection || null;
+        const confirmation = originalProcess.confirmation || null;
+        const selectedContext = originalProcess.selectedContext || null;
+        const rows = Array.isArray(originalProcess.marketRows) ? originalProcess.marketRows : [];
+        const topRows = rows.slice(0, 8);
+
+        return `
+          <details>
+            <summary>Original Process Details</summary>
+            <div class="summary-section">
+              <h3>Prompt stages</h3>
+              <div class="row"><strong>Scan:</strong> ${escapeHtml(renderMaybe(originalProcess.promptStages?.scan))}</div>
+              <div class="row"><strong>Confirmation:</strong> ${escapeHtml(renderMaybe(originalProcess.promptStages?.confirmation))}</div>
+              <div class="row"><strong>Trade card:</strong> ${escapeHtml(renderMaybe(originalProcess.promptStages?.tradeCard))}</div>
+            </div>
+            <div class="summary-section">
+              <h3>AI selection</h3>
+              <pre>${escapeHtml(JSON.stringify(selection, null, 2))}</pre>
+            </div>
+            <div class="summary-section">
+              <h3>AI confirmation</h3>
+              <pre>${escapeHtml(JSON.stringify(confirmation, null, 2))}</pre>
+            </div>
+            <div class="summary-section">
+              <h3>Selected ticker context</h3>
+              <pre>${escapeHtml(JSON.stringify(selectedContext, null, 2))}</pre>
+            </div>
+            <div class="summary-section">
+              <h3>Top compact rows</h3>
+              <pre>${escapeHtml(JSON.stringify(topRows, null, 2))}</pre>
+            </div>
+          </details>
+        `;
+      }
+
+      function renderOriginalProcessNoTrade(data) {
+        if (!originalProcessResultArea) {
+          return;
+        }
+        originalProcessResultArea.innerHTML = `
+          ${renderPresentationSummary(data?.presentationSummary || null)}
+          <hr class="hr" />
+          <div class="row"><strong>Original Process result:</strong> ${escapeHtml(renderMaybe(data?.scan?.reason, "No trade today."))}</div>
+          ${renderOriginalProcessDetails(data?.originalProcess || null)}
+        `;
+      }
+
+      function renderOriginalProcessTrade(data) {
+        if (!originalProcessResultArea) {
+          return;
+        }
+        const planned = data?.journalPlannedTrade || null;
+        const contractsFromCard = readContractsFromTradeCard(data);
+        const quantityInput = document.getElementById("quantity");
+        if (quantityInput && !quantityInput.value) {
+          quantityInput.value = contractsFromCard;
+        }
+
+        originalProcessResultArea.innerHTML = `
+          ${renderPresentationSummary(data?.presentationSummary || null)}
+
+          <hr class="hr" />
+          <div style="margin-top: 12px;">
+            <button id="originalProcessTookTradeButton">I took this trade</button>
+          </div>
+          ${planned ? `<div class="muted">Prefilled plan: ${escapeHtml(planned.symbol)} ${escapeHtml(planned.direction)} / ${escapeHtml(planned.setup_type)}</div>` : ""}
+          <div id="originalProcessLocalTradeCapture"></div>
+          ${renderOriginalProcessDetails(data?.originalProcess || null)}
+        `;
+
+        const tookTradeButton = document.getElementById("originalProcessTookTradeButton");
+        tookTradeButton?.addEventListener("click", () => {
+          openTradeEntryModal(data, data?.tradeRecommendation?.id || null);
+        });
+      }
+
+      async function runOriginalProcessWorkflow() {
+        if (!runOriginalProcessButton || !originalProcessResultArea) {
+          return;
+        }
+        runOriginalProcessButton.disabled = true;
+        originalProcessResultArea.textContent = "Running Original Process...";
+        if (originalProcessProgress) {
+          originalProcessProgress.textContent = "Starting full-universe scan...";
+        }
+        latestBackendData = null;
+        latestTradeLog = null;
+
+        try {
+          let state = loadOriginalProcessState();
+          for (;;) {
+            const response = await fetch("/api/original-process", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ state }),
+            });
+            const data = await parseJsonWorkflowResponse(response);
+            renderOriginalProcessProgress(data);
+
+            if (data.status === "running") {
+              state = data.state || null;
+              saveOriginalProcessState(state);
+              originalProcessResultArea.textContent = data?.progress?.text || "Original Process is still running...";
+              await new Promise((resolve) => window.setTimeout(resolve, 300));
+              continue;
+            }
+
+            clearOriginalProcessState();
+            latestBackendData = data;
+            if (!data.tradeCard) {
+              renderOriginalProcessNoTrade(data);
+            } else {
+              renderOriginalProcessTrade(data);
+              await loadTradeRecommendations();
+            }
+            return;
+          }
+        } catch (error) {
+          originalProcessResultArea.textContent = error instanceof Error ? error.message : "Original Process failed.";
+        } finally {
+          runOriginalProcessButton.disabled = false;
+        }
+      }
 
       function shouldUseChunkedManualScan(customPrompt) {
         if (customPrompt.length === 0) {
@@ -4295,6 +4624,8 @@
           runScanButton.disabled = false;
         }
       });
+
+      runOriginalProcessButton?.addEventListener("click", runOriginalProcessWorkflow);
 
       closeModalButton.addEventListener("click", closeTradeEntryModal);
       tradeModal.addEventListener("click", (event) => {
@@ -4455,6 +4786,7 @@
               tradeCard: sourceData?.tradeCard || null,
               presentationSummary: sourceData?.presentationSummary || null,
               recommendation: recommendationId ? { id: recommendationId } : null,
+              originalProcess: sourceData?.originalProcess || null,
               reasoningSnapshot: buildSavedReasoningSnapshot(sourceData),
             },
           };
@@ -4483,6 +4815,10 @@
           const holder = document.getElementById("localTradeCapture");
           if (holder) {
             holder.innerHTML = `<h4>Journal entry</h4><pre>${escapeHtml(JSON.stringify(latestTradeLog, null, 2))}</pre>`;
+          }
+          const originalProcessHolder = document.getElementById("originalProcessLocalTradeCapture");
+          if (originalProcessHolder) {
+            originalProcessHolder.innerHTML = `<h4>Journal entry</h4><pre>${escapeHtml(JSON.stringify(latestTradeLog, null, 2))}</pre>`;
           }
         } catch (error) {
           if (tradeModalStatus) {

@@ -60,6 +60,15 @@ type JournalInsightsOptions = {
   accountMode?: AccountMode;
 };
 
+export type JournalExitBrokerFillUpdateInput = {
+  exitId: string;
+  optionExitPrice: number;
+  quantityClosed?: number | null;
+  feesUsd?: number | null;
+  slippageUsd?: number | null;
+  appendExitNote?: string | null;
+};
+
 function buildEntryWeek(entryDate: string): string {
   const date = new Date(`${entryDate}T00:00:00Z`);
   const day = date.getUTCDay() || 7;
@@ -122,6 +131,22 @@ function buildSoldForUsd(latestExit: JournalTradeExitRecord | null): string | nu
   }
 
   return formatMoneyString(optionExitPrice * latestExit.quantity_closed * 100);
+}
+
+function appendJournalNote(existing: string | null, note: string | null | undefined): string | null {
+  const normalizedNote = note?.trim();
+  if (!normalizedNote) {
+    return existing;
+  }
+
+  const normalizedExisting = existing?.trim() ?? "";
+  if (!normalizedExisting) {
+    return normalizedNote;
+  }
+  if (normalizedExisting.includes(normalizedNote)) {
+    return normalizedExisting;
+  }
+  return `${normalizedExisting} ${normalizedNote}`;
 }
 
 function readActiveManagementLevels(trade: JournalTradeRecord): {
@@ -682,6 +707,66 @@ export async function recomputeJournalTradeReviewFromExits(id: string): Promise<
     throw new Error("Recomputed trade could not be reloaded.");
   }
 
+  return refreshedTrade;
+}
+
+export async function updateJournalExitWithBrokerFill(
+  input: JournalExitBrokerFillUpdateInput,
+): Promise<JournalTradeDetail> {
+  const existingExitRows = await supabaseSelect<JournalTradeExitRecord>({
+    table: "journal_exits",
+    select: "*",
+    filters: [`id=eq.${input.exitId}`],
+    single: "maybeSingle",
+  });
+  const existingExit = existingExitRows[0] ?? null;
+  if (!existingExit) {
+    throw new Error("Journal exit not found.");
+  }
+
+  const trade = await getJournalTradeById(existingExit.trade_id);
+  if (!trade) {
+    throw new Error("Journal trade not found for exit update.");
+  }
+
+  const updatedExit = await supabaseUpdateAndSelectOne<JournalTradeExitRecord>({
+    table: "journal_exits",
+    filters: [`id=eq.${existingExit.id}`],
+    values: {
+      option_exit_price: input.optionExitPrice,
+      quantity_closed: input.quantityClosed ?? existingExit.quantity_closed,
+      fees_usd: input.feesUsd ?? toNumber(existingExit.fees_usd) ?? 0,
+      slippage_usd: input.slippageUsd ?? toNumber(existingExit.slippage_usd) ?? 0,
+      exit_notes: appendJournalNote(existingExit.exit_notes, input.appendExitNote),
+    },
+  });
+
+  const exitsForReview = trade.exits.map((exit) =>
+    exit.id === updatedExit.id ? updatedExit : exit
+  );
+  const reviewValues = calculateAggregateCloseReviewValues(trade, exitsForReview);
+  await supabaseUpsertAndSelectOne<JournalTradeReviewRecord>({
+    table: "journal_reviews",
+    onConflict: "trade_id",
+    values: {
+      trade_id: trade.id,
+      followed_plan: trade.review?.followed_plan ?? null,
+      winner: reviewValues.realizedPlUsd > 0,
+      realized_pl_usd: reviewValues.realizedPlUsd,
+      realized_r_multiple: reviewValues.realizedRMultiple,
+      realized_return_pct: reviewValues.realizedReturnPct,
+      rule_break_tags: trade.review?.rule_break_tags ?? [],
+      review_grade: trade.review?.review_grade ?? null,
+      mistake_category: trade.review?.mistake_category ?? null,
+      lessons_learned: trade.review?.lessons_learned ?? null,
+      review_notes: trade.review?.review_notes ?? null,
+    },
+  });
+
+  const refreshedTrade = await getJournalTradeById(trade.id);
+  if (!refreshedTrade) {
+    throw new Error("Broker-fill exit update could not be reloaded.");
+  }
   return refreshedTrade;
 }
 

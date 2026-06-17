@@ -9,6 +9,7 @@ import {
   listJournalTradeDetails,
   recordPartialJournalExit,
   updateJournalTrade,
+  updateJournalExitWithBrokerFill,
   updateJournalTradeSignalSnapshot,
 } from "../journal/repository.js";
 import type { AccountMode, JournalTradeDetail } from "../journal/types.js";
@@ -298,6 +299,15 @@ type TradeStationCloseOrderFillSnapshot = {
   description: string;
 };
 
+type TradeStationOrderFillSummary = {
+  orderId: string | null;
+  status: string | null;
+  filledQuantity: number | null;
+  averageFillPrice: number | null;
+  commissionFee: number;
+  description: string;
+};
+
 type JournalExitPriceSource = TradeStationCloseFillSource | "provisional_quote";
 
 export type EntryPolicyEffectivenessBucket = {
@@ -365,6 +375,7 @@ export type PaperTraderStatus = {
   };
   configurationIssues: string[];
   dataWarnings: string[];
+  liveDailyAudit: PaperTraderRunResult["liveDailyAudit"];
   learning: {
     learningStartAt: string;
     excludedLearningTrades: number;
@@ -454,6 +465,61 @@ type PaperTraderRunResult = {
       reason: string;
     }[];
   };
+  closedExitReconciliation: {
+    inspected: number;
+    repaired: number;
+    skipped: number;
+    brokerConfirmedRealizedPlUsd: number;
+    journalRealizedPlUsdBefore: number;
+    journalRealizedPlUsdAfter: number;
+    realizedPlDeltaUsd: number;
+    updates: {
+      tradeId: string;
+      symbol: string;
+      exitId: string;
+      orderId: string;
+      oldExitPrice: number | null;
+      newExitPrice: number;
+      oldFeesUsd: number | null;
+      newFeesUsd: number;
+      quantityClosed: number | null;
+      note: string;
+    }[];
+    skippedDetails: {
+      tradeId: string | null;
+      symbol: string;
+      reason: string;
+    }[];
+    warnings: string[];
+  };
+  liveDailyAudit: {
+    date: string;
+    journalRealizedPlUsd: number;
+    brokerConfirmedRealizedPlUsd: number | null;
+    openUnrealizedPlUsd: number | null;
+    biggestLosers: {
+      tradeId: string;
+      symbol: string;
+      realizedPlUsd: number;
+      exitReason: string | null;
+    }[];
+    winnersExitedBeforeTarget: {
+      tradeId: string;
+      symbol: string;
+      progressToTargetPct: number | null;
+      exitReason: string | null;
+    }[];
+    openPositions: {
+      symbol: string;
+      quantity: number | null;
+      averagePrice: number | null;
+      marketValueUsd: number | null;
+      unrealizedPlUsd: number | null;
+      linkedJournalTradeId: string | null;
+      unlinked: boolean;
+    }[];
+    warnings: string[];
+  } | null;
   entryOrderManagement: {
     enabled: boolean;
     inspected: number;
@@ -1804,6 +1870,35 @@ function buildOpeningOrderSnapshot(
   };
 }
 
+function readTradeStationOrderCommissionFee(order: Record<string, unknown>): number {
+  return readNumberFromRecord(order, [
+    "CommissionFee",
+    "Commission",
+    "CommissionAmount",
+    "Fees",
+  ]) ?? 0;
+}
+
+function buildOpeningOrderFillSummary(
+  order: Record<string, unknown>,
+  optionSymbol: string,
+  underlyingSymbol: string,
+): TradeStationOrderFillSummary | null {
+  const snapshot = buildOpeningOrderSnapshot(order, optionSymbol, underlyingSymbol);
+  if (!snapshot) {
+    return null;
+  }
+
+  return {
+    orderId: snapshot.orderId,
+    status: snapshot.status,
+    filledQuantity: snapshot.filledQuantity,
+    averageFillPrice: snapshot.averageFillPrice,
+    commissionFee: readTradeStationOrderCommissionFee(order),
+    description: snapshot.description,
+  };
+}
+
 function readCloseOrderLegForSymbol(
   order: Record<string, unknown>,
   optionSymbol: string,
@@ -1863,6 +1958,22 @@ function buildCloseOrderFillSnapshot(
     filledQuantity,
     averageFillPrice: topLevelFillPrice ?? legFillPrice,
     description: describeTradeStationCloseOrder(order),
+  };
+}
+
+function buildCloseOrderFillSummary(
+  order: Record<string, unknown>,
+  optionSymbol: string,
+  underlyingSymbol: string,
+): TradeStationOrderFillSummary | null {
+  const snapshot = buildCloseOrderFillSnapshot(order, optionSymbol, underlyingSymbol);
+  if (!snapshot) {
+    return null;
+  }
+
+  return {
+    ...snapshot,
+    commissionFee: readTradeStationOrderCommissionFee(order),
   };
 }
 
@@ -2586,6 +2697,416 @@ async function getCloseOrderFillSnapshotIfAvailable(params: {
     : null;
 }
 
+type MatchedExitOrderDecision = {
+  orderId: string;
+  timestampMs: number | null;
+  reason: "partial_profit" | ExitDecision["reason"];
+  quantity: number | null;
+};
+
+function readExitOrderDecisions(trade: JournalTradeDetail): MatchedExitOrderDecision[] {
+  const automation = readAutomationSnapshot(trade);
+  return readDecisionLog(automation)
+    .filter((entry) =>
+      entry.kind === "exit"
+      && (entry.action === "closed" || entry.action === "scaled_out")
+      && typeof entry.orderId === "string"
+      && entry.orderId.trim().length > 0
+    )
+    .map((entry) => ({
+      orderId: entry.orderId as string,
+      timestampMs: Number.isFinite(Date.parse(entry.timestamp))
+        ? Date.parse(entry.timestamp)
+        : null,
+      reason: entry.action === "scaled_out"
+        ? "partial_profit"
+        : (entry.reason as ExitDecision["reason"] | null) ?? "manual_early_exit",
+      quantity: typeof entry.quantity === "number" && Number.isFinite(entry.quantity)
+        ? entry.quantity
+        : null,
+    }));
+}
+
+function findJournalExitForOrderDecision(params: {
+  trade: JournalTradeDetail;
+  decision: MatchedExitOrderDecision;
+  usedExitIds: Set<string>;
+}): JournalTradeDetail["exits"][number] | null {
+  const candidates = params.trade.exits.filter((exit) =>
+    !params.usedExitIds.has(exit.id)
+    && exit.exit_reason === params.decision.reason
+  );
+  const fallbackCandidates = candidates.length > 0
+    ? candidates
+    : params.trade.exits.filter((exit) => !params.usedExitIds.has(exit.id));
+  if (fallbackCandidates.length === 0) {
+    return null;
+  }
+
+  if (params.decision.timestampMs === null) {
+    return fallbackCandidates[0] ?? null;
+  }
+
+  return fallbackCandidates
+    .map((exit) => ({
+      exit,
+      deltaMs: Math.abs(Date.parse(exit.exit_time) - (params.decision.timestampMs as number)),
+    }))
+    .sort((left, right) => left.deltaMs - right.deltaMs)[0]?.exit ?? null;
+}
+
+function calculateExitRealizedPl(params: {
+  entryPrice: number | null;
+  exitPrice: number | null;
+  quantity: number | null;
+  feesUsd: number | null;
+  slippageUsd: number | null;
+}): number | null {
+  if (
+    params.entryPrice === null
+    || params.exitPrice === null
+    || params.quantity === null
+    || params.quantity <= 0
+  ) {
+    return null;
+  }
+
+  return Number((
+    ((params.exitPrice - params.entryPrice) * params.quantity * 100)
+    - (params.feesUsd ?? 0)
+    - (params.slippageUsd ?? 0)
+  ).toFixed(2));
+}
+
+function buildBrokerFillNote(params: {
+  orderId: string;
+  fill: TradeStationOrderFillSummary;
+  entryCommissionAllocatedUsd: number;
+  closeCommissionUsd: number;
+}): string {
+  const quantityText = params.fill.filledQuantity !== null
+    ? `${params.fill.filledQuantity}x`
+    : "filled";
+  const priceText = params.fill.averageFillPrice !== null
+    ? ` @ ${params.fill.averageFillPrice.toFixed(4)}`
+    : "";
+  const feeText = params.entryCommissionAllocatedUsd > 0 || params.closeCommissionUsd > 0
+    ? ` Broker commissions included: close $${params.closeCommissionUsd.toFixed(2)}, entry allocation $${params.entryCommissionAllocatedUsd.toFixed(2)}.`
+    : "";
+  return `Broker-confirmed TradeStation fill ${params.orderId}: ${quantityText}${priceText}.${feeText}`;
+}
+
+async function reconcileClosedLiveJournalExits(
+  config: PaperTraderConfig,
+  allTrades: JournalTradeDetail[],
+  updateJournal: boolean,
+): Promise<PaperTraderRunResult["closedExitReconciliation"]> {
+  if (config.accountMode !== "live") {
+    return buildEmptyClosedExitReconciliationResult();
+  }
+
+  const result = buildEmptyClosedExitReconciliationResult();
+  const client = await createAutomationTradeStationClient(config.automationBaseUrl);
+  const orderCache = new Map<string, Record<string, unknown> | null>();
+  const closedTrades = allTrades.filter((trade) =>
+    isConfiguredAccountModeTrade(config, trade)
+    && trade.status === "closed"
+    && readAutomationSnapshot(trade)?.accountId
+    && readAutomationSnapshot(trade)?.optionSymbol
+  );
+
+  async function readOrder(accountId: string, orderId: string): Promise<Record<string, unknown> | null> {
+    const cacheKey = `${accountId}:${orderId}`;
+    if (!orderCache.has(cacheKey)) {
+      orderCache.set(cacheKey, await findTradeStationOrderById({ client, accountId, orderId }));
+    }
+    return orderCache.get(cacheKey) ?? null;
+  }
+
+  for (const trade of closedTrades) {
+    const automation = readAutomationSnapshot(trade);
+    if (!automation?.accountId || !automation.optionSymbol) {
+      continue;
+    }
+
+    const decisions = readExitOrderDecisions(trade);
+    if (decisions.length === 0) {
+      result.skipped += 1;
+      result.skippedDetails.push({
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        reason: "Closed automation trade has no exit order id in decision log.",
+      });
+      continue;
+    }
+
+    let entryFill: TradeStationOrderFillSummary | null = null;
+    if (automation.orderId) {
+      try {
+        const entryOrder = await readOrder(automation.accountId, automation.orderId);
+        entryFill = entryOrder
+          ? buildOpeningOrderFillSummary(entryOrder, automation.optionSymbol, trade.symbol)
+          : null;
+      } catch (error) {
+        result.warnings.push(`Entry order lookup failed for ${trade.symbol} ${automation.orderId}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    const entryPrice =
+      entryFill?.averageFillPrice
+      ?? automation.entryAverageFillPrice
+      ?? readNumber(trade.option_entry_price)
+      ?? null;
+    const entryQuantity =
+      entryFill?.filledQuantity
+      ?? automation.filledQuantity
+      ?? readAutomationQuantity(trade, automation)
+      ?? null;
+    const entryCommission = entryFill?.commissionFee ?? 0;
+    const usedExitIds = new Set<string>();
+
+    for (const decision of decisions) {
+      const exit = findJournalExitForOrderDecision({ trade, decision, usedExitIds });
+      if (!exit) {
+        result.skipped += 1;
+        result.skippedDetails.push({
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          reason: `No journal exit matched TradeStation close order ${decision.orderId}.`,
+        });
+        continue;
+      }
+      usedExitIds.add(exit.id);
+      result.inspected += 1;
+
+      let order: Record<string, unknown> | null = null;
+      try {
+        order = await readOrder(automation.accountId, decision.orderId);
+      } catch (error) {
+        result.skipped += 1;
+        result.skippedDetails.push({
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          reason: `Close order lookup failed for ${decision.orderId}: ${error instanceof Error ? error.message : String(error)}`,
+        });
+        continue;
+      }
+
+      const closeFill = order
+        ? buildCloseOrderFillSummary(order, automation.optionSymbol, trade.symbol)
+        : null;
+      if (
+        !closeFill
+        || closeFill.averageFillPrice === null
+        || closeFill.averageFillPrice <= 0
+      ) {
+        result.skipped += 1;
+        result.skippedDetails.push({
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          reason: `TradeStation close order ${decision.orderId} had no usable broker fill price.`,
+        });
+        continue;
+      }
+
+      const quantityClosed = closeFill.filledQuantity ?? decision.quantity ?? exit.quantity_closed;
+      const entryCommissionAllocated =
+        entryQuantity !== null && entryQuantity > 0 && quantityClosed !== null && quantityClosed > 0
+          ? Number(((entryCommission * Math.min(quantityClosed, entryQuantity)) / entryQuantity).toFixed(2))
+          : 0;
+      const brokerFees = Number((closeFill.commissionFee + entryCommissionAllocated).toFixed(2));
+      const oldExitPrice = readNumber(exit.option_exit_price);
+      const oldFees = readNumber(exit.fees_usd);
+      const oldSlippage = readNumber(exit.slippage_usd);
+      const beforePl = calculateExitRealizedPl({
+        entryPrice,
+        exitPrice: oldExitPrice,
+        quantity: exit.quantity_closed,
+        feesUsd: oldFees,
+        slippageUsd: oldSlippage,
+      });
+      const afterPl = calculateExitRealizedPl({
+        entryPrice,
+        exitPrice: closeFill.averageFillPrice,
+        quantity: quantityClosed,
+        feesUsd: brokerFees,
+        slippageUsd: oldSlippage,
+      });
+      if (beforePl !== null) {
+        result.journalRealizedPlUsdBefore = Number((result.journalRealizedPlUsdBefore + beforePl).toFixed(2));
+      }
+      if (afterPl !== null) {
+        result.journalRealizedPlUsdAfter = Number((result.journalRealizedPlUsdAfter + afterPl).toFixed(2));
+        result.brokerConfirmedRealizedPlUsd = Number((result.brokerConfirmedRealizedPlUsd + afterPl).toFixed(2));
+      }
+
+      const priceChanged = numbersDiffer(oldExitPrice, closeFill.averageFillPrice);
+      const quantityChanged = numbersDiffer(exit.quantity_closed, quantityClosed);
+      const feesChanged = numbersDiffer(oldFees, brokerFees);
+      if (!priceChanged && !quantityChanged && !feesChanged) {
+        continue;
+      }
+
+      const note = buildBrokerFillNote({
+        orderId: decision.orderId,
+        fill: closeFill,
+        entryCommissionAllocatedUsd: entryCommissionAllocated,
+        closeCommissionUsd: closeFill.commissionFee,
+      });
+      if (updateJournal) {
+        await updateJournalExitWithBrokerFill({
+          exitId: exit.id,
+          optionExitPrice: closeFill.averageFillPrice,
+          quantityClosed,
+          feesUsd: brokerFees,
+          slippageUsd: oldSlippage ?? 0,
+          appendExitNote: note,
+        });
+      }
+
+      result.repaired += 1;
+      result.updates.push({
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        exitId: exit.id,
+        orderId: decision.orderId,
+        oldExitPrice,
+        newExitPrice: closeFill.averageFillPrice,
+        oldFeesUsd: oldFees,
+        newFeesUsd: brokerFees,
+        quantityClosed,
+        note,
+      });
+    }
+  }
+
+  result.realizedPlDeltaUsd = Number((
+    result.journalRealizedPlUsdAfter - result.journalRealizedPlUsdBefore
+  ).toFixed(2));
+  return result;
+}
+
+function readLatestExitDecision(trade: JournalTradeDetail): PaperTraderDecisionLogEntry | null {
+  const automation = readAutomationSnapshot(trade);
+  const exits = readDecisionLog(automation).filter((entry) => entry.kind === "exit");
+  return exits[exits.length - 1] ?? null;
+}
+
+function tradeHasExitOnDate(trade: JournalTradeDetail, todayChicago: string): boolean {
+  return trade.exits.some((exit) => exit.exit_time.startsWith(todayChicago));
+}
+
+async function buildLiveDailyAudit(
+  config: PaperTraderConfig,
+  allTrades: JournalTradeDetail[],
+  todayChicago: string,
+  closedExitReconciliation: PaperTraderRunResult["closedExitReconciliation"],
+): Promise<PaperTraderRunResult["liveDailyAudit"]> {
+  if (config.accountMode !== "live") {
+    return null;
+  }
+
+  const warnings = [...closedExitReconciliation.warnings];
+  let openPositions: NonNullable<PaperTraderRunResult["liveDailyAudit"]>["openPositions"] = [];
+  let openUnrealizedPlUsd: number | null = null;
+  const openTradeByOptionSymbol = new Map<string, JournalTradeDetail>();
+  for (const trade of allTrades) {
+    const automation = readAutomationSnapshot(trade);
+    if (
+      isConfiguredAccountModeTrade(config, trade)
+      && trade.status === "open"
+      && automation?.optionSymbol
+    ) {
+      openTradeByOptionSymbol.set(automation.optionSymbol, trade);
+    }
+  }
+  if (config.accountId) {
+    try {
+      const client = await createAutomationTradeStationClient(config.automationBaseUrl);
+      const positionsPayload = await client.getPositions(config.accountId);
+      openPositions = extractPositionSnapshots(positionsPayload).map((position) => {
+        const linkedTrade = openTradeByOptionSymbol.get(position.symbol) ?? null;
+        return {
+          symbol: position.symbol,
+          quantity: position.quantity,
+          averagePrice: position.averagePrice,
+          marketValueUsd: position.marketValue,
+          unrealizedPlUsd: position.unrealizedPl,
+          linkedJournalTradeId: linkedTrade?.id ?? null,
+          unlinked: linkedTrade === null,
+        };
+      });
+      openUnrealizedPlUsd = extractPositionsUnrealizedPl(positionsPayload);
+    } catch (error) {
+      warnings.push(`Live daily audit position read failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  const todayClosedTrades = allTrades.filter((trade) =>
+    isConfiguredAccountModeTrade(config, trade)
+    && trade.status === "closed"
+    && tradeHasExitOnDate(trade, todayChicago)
+  );
+  const biggestLosers: NonNullable<PaperTraderRunResult["liveDailyAudit"]>["biggestLosers"] = todayClosedTrades
+    .flatMap((trade) => {
+      const realizedPlUsd = readNumber(trade.review?.realized_pl_usd ?? null);
+      if (realizedPlUsd === null || realizedPlUsd >= 0) {
+        return [];
+      }
+      return [{
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        realizedPlUsd,
+        exitReason: trade.latest_exit?.exit_reason ?? null,
+      }];
+    })
+    .sort((left, right) => left.realizedPlUsd - right.realizedPlUsd)
+    .slice(0, 5);
+  const winnersExitedBeforeTarget: NonNullable<PaperTraderRunResult["liveDailyAudit"]>["winnersExitedBeforeTarget"] = todayClosedTrades
+    .flatMap((trade) => {
+      const realizedPlUsd = readNumber(trade.review?.realized_pl_usd ?? null);
+      if (realizedPlUsd === null || realizedPlUsd <= 0) {
+        return [];
+      }
+      const latestExit = readLatestExitDecision(trade);
+      const progressToTargetPct =
+        typeof latestExit?.currentUnderlyingPrice === "number"
+          ? computeProgressToTargetPct({
+              direction: trade.direction,
+              entryUnderlyingPrice: readNumber(trade.underlying_entry_price),
+              currentUnderlyingPrice: latestExit.currentUnderlyingPrice,
+              targetUnderlyingPrice:
+                readAutomationSnapshot(trade)?.activeTargetUnderlying
+                ?? readAutomationSnapshot(trade)?.intendedTargetUnderlying
+                ?? readNumber(trade.intended_target_underlying),
+            })
+          : null;
+      if (progressToTargetPct !== null && progressToTargetPct >= 100) {
+        return [];
+      }
+      return [{
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        progressToTargetPct,
+        exitReason: trade.latest_exit?.exit_reason ?? null,
+      }];
+    })
+    .slice(0, 5);
+
+  return {
+    date: todayChicago,
+    journalRealizedPlUsd: computeTodayRealizedPlUsd(allTrades, todayChicago, "live"),
+    brokerConfirmedRealizedPlUsd: closedExitReconciliation.inspected > 0
+      ? closedExitReconciliation.brokerConfirmedRealizedPlUsd
+      : null,
+    openUnrealizedPlUsd,
+    biggestLosers,
+    winnersExitedBeforeTarget,
+    openPositions,
+    warnings,
+  };
+}
+
 async function readCloseOrderFillPrice(params: {
   client: AutomationTradeStationClient;
   getExecutions: AutomationTradeStationClient["getExecutions"];
@@ -2735,6 +3256,21 @@ function buildEmptyEntryOrderManagementResult(
   };
 }
 
+function buildEmptyClosedExitReconciliationResult(): PaperTraderRunResult["closedExitReconciliation"] {
+  return {
+    inspected: 0,
+    repaired: 0,
+    skipped: 0,
+    brokerConfirmedRealizedPlUsd: 0,
+    journalRealizedPlUsdBefore: 0,
+    journalRealizedPlUsdAfter: 0,
+    realizedPlDeltaUsd: 0,
+    updates: [],
+    skippedDetails: [],
+    warnings: [],
+  };
+}
+
 function readOrderAgeSeconds(openedAt: string | null, nowIso: string): number | null {
   if (!openedAt) {
     return null;
@@ -2872,6 +3408,12 @@ export async function getPaperTraderStatus(mode: AutomationLane = "paper"): Prom
   const runHistory = await loadPaperTraderRunHistory(config.accountMode);
   const entryCandidateHistory = await loadPaperEntryCandidateHistory(200);
   const sizing = await loadPaperTraderSizingSnapshot(config);
+  const liveDailyAudit = await buildLiveDailyAudit(
+    config,
+    trades,
+    formatChicagoParts(new Date()).date,
+    buildEmptyClosedExitReconciliationResult(),
+  );
   const currentModeTrades = trades.filter((trade) => isConfiguredAccountModeTrade(config, trade));
   const openJournalTrades = trades.filter(
     (trade) => isConfiguredAccountModeTrade(config, trade) && trade.status === "open",
@@ -2908,6 +3450,7 @@ export async function getPaperTraderStatus(mode: AutomationLane = "paper"): Prom
     sizing,
     configurationIssues,
     dataWarnings: loadedTrades.warning ? [loadedTrades.warning] : [],
+    liveDailyAudit,
     learning: {
       learningStartAt: paperLearning.learningStartAt,
       excludedLearningTrades: paperLearning.excludedLearningTrades,
@@ -4157,7 +4700,30 @@ async function manageOpenPaperTrades(
         profitProtectionStop: profitProtectionDecision.updatedStopUnderlying,
         profitProtectionEarned: stopProtectionEligible,
       });
-      const historyNote = profitProtectionDecision.action === "scale_out" && aiDecision.action !== "exit_now"
+      const preserveFinalRunner =
+        liveQuantity <= 1
+        && (
+          profitProtectionDecision.action === "exit_full"
+          || aiDecision.action === "scale_out"
+        );
+      const preserveScaledRunnerBundle =
+        liveQuantity > 1
+        && Boolean(profitProtectionDecision.state.scaledOutAt)
+        && aiDecision.action === "scale_out";
+      const preserveRunnerPosition =
+        aiDecision.action !== "exit_now"
+        && (preserveFinalRunner || preserveScaledRunnerBundle);
+      const historyNote = preserveRunnerPosition
+        ? joinNoteParts([
+            aiDecision.note,
+            thesisInvalidationEvidence,
+            aiStopTighteningBlockedReason,
+            profitProtectionDecision.reason,
+            preserveScaledRunnerBundle
+              ? "Prior scale-out already protected this winner; remaining runner position preserved until hard target, stop, time exit, or validated dead-thesis exit."
+              : "Final runner preserved until hard target, stop, time exit, or validated dead-thesis exit.",
+          ])
+        : profitProtectionDecision.action === "scale_out" && aiDecision.action !== "exit_now"
         ? joinNoteParts([
             aiDecision.note,
             thesisInvalidationEvidence,
@@ -4168,7 +4734,9 @@ async function manageOpenPaperTrades(
       const historyEntry: PaperTraderManagementHistoryEntry = {
         timestamp: nowIso,
         action:
-          profitProtectionDecision.action === "scale_out" && aiDecision.action !== "exit_now"
+          preserveRunnerPosition
+            ? "hold"
+            : profitProtectionDecision.action === "scale_out" && aiDecision.action !== "exit_now"
             ? "scale_out"
             : aiDecision.action,
         confidence: aiDecision.confidence,
@@ -4283,18 +4851,8 @@ async function manageOpenPaperTrades(
       });
     }
 
-    if (
-      !decision
-      && liveQuantity <= 1
-      && (profitProtectionDecision.action === "exit_full" || managementAction === "scale_out")
-    ) {
-      decision = {
-        reason: "manual_early_exit",
-        note: `Profit protection chose full exit for a single-contract winner. ${profitProtectionDecision.reason ?? "AI manager requested scale-out, but there is no runner to leave open."}`,
-      };
-    }
-
-    const aiOrRuleScaleOut = !decision && liveQuantity > 1 && (
+    const alreadyScaledOut = Boolean(profitProtectionDecision.state.scaledOutAt);
+    const aiOrRuleScaleOut = !decision && liveQuantity > 1 && !alreadyScaledOut && (
       profitProtectionDecision.action === "scale_out"
       || managementAction === "scale_out"
     );
@@ -4585,13 +5143,6 @@ async function manageOpenPaperTrades(
         note: joinNoteParts([scaleNote, journalExitPrice.note]),
       });
       continue;
-    }
-
-    if (!decision && profitProtectionDecision.action === "exit_full") {
-      decision = {
-        reason: "manual_early_exit",
-        note: `Profit protection chose full exit for a single-contract winner. ${profitProtectionDecision.reason}`,
-      };
     }
 
     if (!decision) {
@@ -5853,12 +6404,27 @@ export async function runPaperTraderCycle(
     allTrades = await loadPaperTraderCycleTrades(config);
   }
 
+  const closedExitReconciliation = await reconcileClosedLiveJournalExits(
+    config,
+    allTrades,
+    shouldReconcileOrders,
+  );
+  if (closedExitReconciliation.repaired > 0) {
+    allTrades = await loadPaperTraderCycleTrades(config);
+  }
+
   let openPaperTrades = allTrades.filter(
     (trade) => isConfiguredAccountModeTrade(config, trade) && trade.status === "open",
   );
   const chicagoNow = formatChicagoParts(new Date());
   const todayChicago = chicagoNow.date;
   const todayRealizedPlUsd = computeTodayRealizedPlUsd(allTrades, todayChicago, config.accountMode);
+  const liveDailyAudit = await buildLiveDailyAudit(
+    config,
+    allTrades,
+    todayChicago,
+    closedExitReconciliation,
+  );
 
   const includeHistory = options.includeHistory !== false;
 
@@ -5878,6 +6444,8 @@ export async function runPaperTraderCycle(
         newEntriesAllowed: false,
       },
       reconciliation,
+      closedExitReconciliation,
+      liveDailyAudit,
       entryOrderManagement,
       management: {
         inspected: 0,
@@ -5909,6 +6477,8 @@ export async function runPaperTraderCycle(
         newEntriesAllowed: false,
       },
       reconciliation,
+      closedExitReconciliation,
+      liveDailyAudit,
       entryOrderManagement: buildEmptyEntryOrderManagementResult(config.manageEntryOrders),
       management: {
         inspected: 0,
@@ -5973,6 +6543,8 @@ export async function runPaperTraderCycle(
       newEntriesAllowed: true,
     },
     reconciliation,
+    closedExitReconciliation,
+    liveDailyAudit,
     entryOrderManagement,
     management,
     entry,

@@ -311,6 +311,57 @@ test("journal exit pricing prefers broker fills and marks quote fallback provisi
   assert.match(provisionalPrice.note ?? "", /provisional/i);
 });
 
+test("broker fill repair recomputes ORCL-style stale exit P/L with fees", () => {
+  const staleReview = calculateAggregateCloseReviewValues({
+    contracts: 1,
+    option_entry_price: "8.10",
+    position_cost_usd: "810",
+    planned_risk_usd: "89.50",
+  }, [{
+    option_exit_price: "7.625",
+    quantity_closed: 1,
+    fees_usd: "0",
+    slippage_usd: "0",
+  }]);
+  const brokerReview = calculateAggregateCloseReviewValues({
+    contracts: 1,
+    option_entry_price: "8.10",
+    position_cost_usd: "810",
+    planned_risk_usd: "89.50",
+  }, [{
+    option_exit_price: "5.65",
+    quantity_closed: 1,
+    fees_usd: "2.40",
+    slippage_usd: "0",
+  }]);
+
+  assert.equal(staleReview.realizedPlUsd, -47.5);
+  assert.equal(brokerReview.realizedPlUsd, -247.4);
+  assert.equal(Number((brokerReview.realizedPlUsd - staleReview.realizedPlUsd).toFixed(2)), -199.9);
+});
+
+test("paper trader wires closed-exit broker reconciliation without new order placement", () => {
+  const source = readFileSync(new URL("./paperTrader.ts", import.meta.url), "utf8");
+  const repositorySource = readFileSync(new URL("../journal/repository.ts", import.meta.url), "utf8");
+
+  assert.ok(source.includes("reconcileClosedLiveJournalExits"));
+  assert.ok(source.includes("findTradeStationOrderById({ client, accountId, orderId })"));
+  assert.ok(source.includes("buildCloseOrderFillSummary"));
+  assert.ok(source.includes("Broker-confirmed TradeStation fill"));
+  assert.ok(source.includes("closedExitReconciliation"));
+  assert.ok(repositorySource.includes("updateJournalExitWithBrokerFill"));
+  assert.ok(repositorySource.includes("calculateAggregateCloseReviewValues"));
+});
+
+test("paper trader preserves final winner runners until hard exits or dead thesis", () => {
+  const source = readFileSync(new URL("./paperTrader.ts", import.meta.url), "utf8");
+
+  assert.ok(source.includes("Final runner preserved until hard target, stop, time exit, or validated dead-thesis exit."));
+  assert.ok(source.includes("Prior scale-out already protected this winner; remaining runner position preserved"));
+  assert.ok(source.includes("const aiOrRuleScaleOut = !decision && liveQuantity > 1 && !alreadyScaledOut"));
+  assert.equal(source.includes("Profit protection chose full exit for a single-contract winner"), false);
+});
+
 test("live opening exit guard suppresses ordinary early stop breaches", () => {
   const guarded = evaluateOpeningExitGuardForTest({
     accountMode: "live",

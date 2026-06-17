@@ -95,6 +95,9 @@ export type PaperDashboardOutcomeTrade = {
   entry_notes: string | null;
   exit_notes: string | null;
   review_notes: string | null;
+  provisional_exit: boolean;
+  broker_confirmed_exit: boolean;
+  broker_repaired_exit: boolean;
   reasoning: JournalReasoningSnapshot | null;
 };
 
@@ -127,6 +130,11 @@ export type PaperDashboard = {
   by_symbol: PaperDashboardBucket[];
   by_exit_reason: PaperDashboardBucket[];
   learning_audit: LearningOutcomeAudit;
+  broker_audit: {
+    provisional_exit_count: number;
+    broker_confirmed_exit_count: number;
+    broker_repaired_exit_count: number;
+  };
   outcome_details: {
     winners: PaperDashboardOutcomeTrade[];
     losers: PaperDashboardOutcomeTrade[];
@@ -278,6 +286,8 @@ function buildOutcomeTrade(
   detail: PaperDashboardOutcomeDetailRow | null,
 ): PaperDashboardOutcomeTrade {
   const signalSnapshot = asRecord(detail?.signal_snapshot_json);
+  const exitNotes = trade.latest_exit?.exit_notes ?? null;
+  const normalizedExitNotes = exitNotes?.toLowerCase() ?? "";
   return {
     id: trade.id,
     symbol: trade.symbol,
@@ -303,8 +313,11 @@ function buildOutcomeTrade(
     realized_r_multiple: asNumber(trade.review?.realized_r_multiple),
     realized_return_pct: asNumber(trade.review?.realized_return_pct),
     entry_notes: trade.entry_notes,
-    exit_notes: trade.latest_exit?.exit_notes ?? null,
+    exit_notes: exitNotes,
     review_notes: trade.review?.review_notes ?? null,
+    provisional_exit: normalizedExitNotes.includes("provisional"),
+    broker_confirmed_exit: normalizedExitNotes.includes("broker-confirmed tradestation fill"),
+    broker_repaired_exit: normalizedExitNotes.includes("broker-confirmed tradestation fill"),
     reasoning: buildReasoningSnapshot(signalSnapshot, trade.symbol),
   };
 }
@@ -464,6 +477,11 @@ export function buildEmptyPaperDashboard(
     by_symbol: [],
     by_exit_reason: [],
     learning_audit: buildLearningOutcomeAudit([], { accountMode }),
+    broker_audit: {
+      provisional_exit_count: 0,
+      broker_confirmed_exit_count: 0,
+      broker_repaired_exit_count: 0,
+    },
     outcome_details: {
       winners: [],
       losers: [],
@@ -529,6 +547,21 @@ export async function getPaperDashboard(
   const outcomeDetailsById = await loadPaperDashboardOutcomeDetails(
     [...outcomeWinnerTrades, ...outcomeLoserTrades].map((trade) => trade.id),
   );
+  const brokerAudit = closedTrades.reduce((audit, trade) => {
+    const normalizedExitNotes = trade.latest_exit?.exit_notes?.toLowerCase() ?? "";
+    if (normalizedExitNotes.includes("provisional")) {
+      audit.provisional_exit_count += 1;
+    }
+    if (normalizedExitNotes.includes("broker-confirmed tradestation fill")) {
+      audit.broker_confirmed_exit_count += 1;
+      audit.broker_repaired_exit_count += 1;
+    }
+    return audit;
+  }, {
+    provisional_exit_count: 0,
+    broker_confirmed_exit_count: 0,
+    broker_repaired_exit_count: 0,
+  });
 
   return {
     dataWarnings: includedTradeCount > trades.length
@@ -567,6 +600,7 @@ export async function getPaperDashboard(
     by_symbol: bySymbol,
     by_exit_reason: byExitReason,
     learning_audit: learningAudit,
+    broker_audit: brokerAudit,
     outcome_details: {
       winners: outcomeWinnerTrades.map((trade) =>
         buildOutcomeTrade(trade, outcomeDetailsById.get(trade.id) ?? null)

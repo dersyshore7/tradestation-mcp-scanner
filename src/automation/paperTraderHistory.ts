@@ -49,6 +49,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function buildCompactRunResult(rawResult: Record<string, unknown>): Record<string, unknown> {
   const reconciliation = asRecord(rawResult.reconciliation);
+  const closedExitReconciliation = asRecord(rawResult.closedExitReconciliation);
   const entryOrderManagement = asRecord(rawResult.entryOrderManagement);
   const management = asRecord(rawResult.management);
   const entry = asRecord(rawResult.entry);
@@ -73,6 +74,27 @@ function buildCompactRunResult(rawResult: Record<string, unknown>): Record<strin
             : [],
         }
       : null,
+    closedExitReconciliation: closedExitReconciliation
+      ? {
+          inspected: closedExitReconciliation.inspected ?? null,
+          repaired: closedExitReconciliation.repaired ?? null,
+          skipped: closedExitReconciliation.skipped ?? null,
+          brokerConfirmedRealizedPlUsd: closedExitReconciliation.brokerConfirmedRealizedPlUsd ?? null,
+          journalRealizedPlUsdBefore: closedExitReconciliation.journalRealizedPlUsdBefore ?? null,
+          journalRealizedPlUsdAfter: closedExitReconciliation.journalRealizedPlUsdAfter ?? null,
+          realizedPlDeltaUsd: closedExitReconciliation.realizedPlDeltaUsd ?? null,
+          updates: Array.isArray(closedExitReconciliation.updates)
+            ? closedExitReconciliation.updates.slice(0, 20)
+            : [],
+          skippedDetails: Array.isArray(closedExitReconciliation.skippedDetails)
+            ? closedExitReconciliation.skippedDetails.slice(0, 20)
+            : [],
+          warnings: Array.isArray(closedExitReconciliation.warnings)
+            ? closedExitReconciliation.warnings.slice(0, 20)
+            : [],
+        }
+      : null,
+    liveDailyAudit: rawResult.liveDailyAudit ?? null,
     entryOrderManagement: entryOrderManagement
       ? {
           enabled: entryOrderManagement.enabled ?? null,
