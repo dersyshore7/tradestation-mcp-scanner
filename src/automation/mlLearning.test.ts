@@ -42,6 +42,9 @@ import { calculateScaleOutQuantity, decideProfitProtection } from "./profitProte
 import {
   readAutomatedScanStateFromPaperTraderRun,
   buildEntryPolicyEffectivenessSummaryForTest,
+  chooseJournalExitPriceForTest,
+  evaluateOpeningExitGuardForTest,
+  readCloseOrderFillSnapshotForTest,
   readOpeningOrderSnapshotForTest,
   validateEntryGeometryForTest,
 } from "./paperTrader.js";
@@ -214,6 +217,198 @@ test("paper trader recognizes alive partial opening orders", () => {
   }, "PLTR 260626P135", "PLTR");
 
   assert.equal(sellToClose, null);
+});
+
+test("paper trader extracts broker fill prices from close orders", () => {
+  const topLevelFill = readCloseOrderFillSnapshotForTest({
+    OrderID: "1276059268",
+    Status: "FLL",
+    StatusDescription: "Filled",
+    FilledPrice: "5.65",
+    Legs: [{
+      Symbol: "ORCL 260702C190",
+      Underlying: "ORCL",
+      OpenOrClose: "Close",
+      BuyOrSell: "Sell",
+      ExecQuantity: "1",
+      QuantityRemaining: "0",
+      ExecutionPrice: "5.60",
+    }],
+  }, "ORCL 260702C190", "ORCL");
+
+  assert.equal(topLevelFill?.averageFillPrice, 5.65);
+  assert.equal(topLevelFill?.filledQuantity, 1);
+  assert.match(topLevelFill?.description ?? "", /1276059268/);
+
+  const legFill = readCloseOrderFillSnapshotForTest({
+    OrderID: "1276059269",
+    StatusDescription: "Filled",
+    Legs: [{
+      Symbol: "ORCL 260702C190",
+      Underlying: "ORCL",
+      OpenOrClose: "Close",
+      BuyOrSell: "Sell",
+      ExecQuantity: "1",
+      ExecutionPrice: "5.55",
+    }],
+  }, "ORCL 260702C190", "ORCL");
+
+  assert.equal(legFill?.averageFillPrice, 5.55);
+
+  const openOrder = readCloseOrderFillSnapshotForTest({
+    OrderID: "1275956679",
+    StatusDescription: "Filled",
+    Legs: [{
+      Symbol: "ORCL 260702C190",
+      Underlying: "ORCL",
+      OpenOrClose: "Open",
+      BuyOrSell: "Buy",
+      ExecQuantity: "1",
+      ExecutionPrice: "8.10",
+    }],
+  }, "ORCL 260702C190", "ORCL");
+
+  assert.equal(openOrder, null);
+});
+
+test("journal exit pricing prefers broker fills and marks quote fallback provisional", () => {
+  const brokerPrice = chooseJournalExitPriceForTest({
+    brokerAverageFillPrice: 5.65,
+    brokerFillSource: "orders",
+    optionMid: 7.625,
+    optionBid: 7.25,
+    entryOptionPrice: 8.1,
+  });
+
+  assert.equal(brokerPrice.optionExitPrice, 5.65);
+  assert.equal(brokerPrice.source, "orders");
+  assert.equal(brokerPrice.note, null);
+  assert.equal(
+    calculateAggregateCloseReviewValues({
+      contracts: 1,
+      option_entry_price: "8.10",
+      position_cost_usd: "810",
+      planned_risk_usd: "89.50",
+    }, [{
+      option_exit_price: String(brokerPrice.optionExitPrice),
+      quantity_closed: 1,
+      fees_usd: "0",
+      slippage_usd: "0",
+    }]).realizedPlUsd,
+    -245,
+  );
+
+  const provisionalPrice = chooseJournalExitPriceForTest({
+    brokerAverageFillPrice: null,
+    brokerFillSource: null,
+    optionMid: 7.625,
+    optionBid: 7.25,
+    entryOptionPrice: 8.1,
+  });
+
+  assert.equal(provisionalPrice.optionExitPrice, 7.625);
+  assert.equal(provisionalPrice.source, "provisional_quote");
+  assert.match(provisionalPrice.note ?? "", /provisional/i);
+});
+
+test("live opening exit guard suppresses ordinary early stop breaches", () => {
+  const guarded = evaluateOpeningExitGuardForTest({
+    accountMode: "live",
+    nowIso: "2026-06-17T13:35:00.000Z",
+    decision: {
+      reason: "stop_hit",
+      note: "Underlying fell to 187.50 at/below stop 187.66.",
+    },
+    direction: "CALL",
+    entryUnderlyingPrice: 189.45,
+    currentUnderlyingPrice: 187.5,
+    stopUnderlying: 187.66,
+    targetUnderlying: 192.14,
+    originalStopUnderlying: 187.66,
+    entryOptionPrice: 8.1,
+    currentOptionMid: 7.5,
+  });
+
+  assert.equal(guarded.blocked, true);
+  assert.match(guarded.note ?? "", /Opening exit guard/);
+
+  const afterWindow = evaluateOpeningExitGuardForTest({
+    accountMode: "live",
+    nowIso: "2026-06-17T13:40:00.000Z",
+    decision: {
+      reason: "stop_hit",
+      note: "Underlying fell to 187.50 at/below stop 187.66.",
+    },
+    direction: "CALL",
+    entryUnderlyingPrice: 189.45,
+    currentUnderlyingPrice: 187.5,
+    stopUnderlying: 187.66,
+    targetUnderlying: 192.14,
+    originalStopUnderlying: 187.66,
+    entryOptionPrice: 8.1,
+    currentOptionMid: 7.5,
+  });
+
+  assert.equal(afterWindow.blocked, false);
+
+  const paperLane = evaluateOpeningExitGuardForTest({
+    accountMode: "paper",
+    nowIso: "2026-06-17T13:35:00.000Z",
+    decision: {
+      reason: "stop_hit",
+      note: "Underlying fell to 187.50 at/below stop 187.66.",
+    },
+    direction: "CALL",
+    entryUnderlyingPrice: 189.45,
+    currentUnderlyingPrice: 187.5,
+    stopUnderlying: 187.66,
+    targetUnderlying: 192.14,
+    originalStopUnderlying: 187.66,
+    entryOptionPrice: 8.1,
+    currentOptionMid: 7.5,
+  });
+
+  assert.equal(paperLane.blocked, false);
+});
+
+test("live opening exit guard allows severe gap or option crash exits", () => {
+  const severeGap = evaluateOpeningExitGuardForTest({
+    accountMode: "live",
+    nowIso: "2026-06-17T13:35:00.000Z",
+    decision: {
+      reason: "stop_hit",
+      note: "Underlying fell hard through the stop.",
+    },
+    direction: "CALL",
+    entryUnderlyingPrice: 189.45,
+    currentUnderlyingPrice: 184,
+    stopUnderlying: 187.66,
+    targetUnderlying: 192.14,
+    originalStopUnderlying: 187.66,
+    entryOptionPrice: 8.1,
+    currentOptionMid: 6,
+  });
+
+  assert.equal(severeGap.blocked, false);
+
+  const optionCrash = evaluateOpeningExitGuardForTest({
+    accountMode: "live",
+    nowIso: "2026-06-17T13:35:00.000Z",
+    decision: {
+      reason: "manual_early_exit",
+      note: "Option premium decayed.",
+    },
+    direction: "CALL",
+    entryUnderlyingPrice: 189.45,
+    currentUnderlyingPrice: 187.5,
+    stopUnderlying: 187.66,
+    targetUnderlying: 192.14,
+    originalStopUnderlying: 187.66,
+    entryOptionPrice: 8.1,
+    currentOptionMid: 4.05,
+  });
+
+  assert.equal(optionCrash.blocked, false);
 });
 
 test("paper trader cancels partial opening remainders before live exit orders", () => {

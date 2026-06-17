@@ -95,6 +95,10 @@ const MAX_TRADESTATION_CONTRACTS_PER_ORDER = 2000;
 const MIN_AUTOMATED_ENTRY_TARGET_ROOM_PCT = 0.0075;
 const MIN_AUTOMATED_ENTRY_RISK_ROOM_PCT = 0.0075;
 const MAX_AUTOMATED_SCAN_RESUME_AGE_MS = 6 * 60 * 60 * 1000;
+const OPENING_EXIT_GUARD_START_MINUTES_CT = (8 * 60) + 30;
+const OPENING_EXIT_GUARD_END_MINUTES_CT = (8 * 60) + 40;
+const OPENING_EXIT_GUARD_SEVERE_STOP_DISTANCE_MULTIPLE = 2;
+const OPENING_EXIT_GUARD_OPTION_CRASH_RETURN_PCT = -50;
 
 type PaperTraderRunOptions = {
   mode?: AutomationLane;
@@ -227,6 +231,8 @@ type PaperTraderDecisionLogEntry = {
   currentOptionMid?: number | null;
   reasoning?: PaperTraderEntryReasoning | null;
   entryPolicy?: EntryPolicyRecommendation | null;
+  exitPriceSource?: JournalExitPriceSource | null;
+  exitPriceLookupWarnings?: string[];
   stopProtectionEligible?: boolean;
   stopUpdateBlockedReason?: string | null;
   stopSource?: PaperTraderStopSource;
@@ -276,6 +282,23 @@ type ExitDecision = {
   reason: "target_hit" | "stop_hit" | "time_exit" | "manual_early_exit";
   note: string;
 };
+
+type OpeningExitGuardDecision = {
+  blocked: boolean;
+  note: string | null;
+};
+
+type TradeStationCloseFillSource = "order_response" | "executions" | "orders";
+
+type TradeStationCloseOrderFillSnapshot = {
+  orderId: string | null;
+  status: string | null;
+  filledQuantity: number | null;
+  averageFillPrice: number | null;
+  description: string;
+};
+
+type JournalExitPriceSource = TradeStationCloseFillSource | "provisional_quote";
 
 export type EntryPolicyEffectivenessBucket = {
   policyDecision: string;
@@ -1627,6 +1650,28 @@ function readNumberFromRecord(record: Record<string, unknown> | null, keys: stri
   return null;
 }
 
+function readOrderById(order: Record<string, unknown>, orderId: string): boolean {
+  return readStringFromRecord(order, ["OrderID", "OrderId", "orderId"]) === orderId;
+}
+
+function readOrderLegForSymbol(
+  order: Record<string, unknown>,
+  optionSymbol: string,
+  underlyingSymbol: string,
+): Record<string, unknown> | null {
+  const targetOption = normalizeOrderSymbolForMatch(optionSymbol);
+  const targetUnderlying = underlyingSymbol.toUpperCase();
+  const legs = objectArrayFromPayload(order.Legs, ["Legs"]);
+  return legs.find((leg) => {
+    const legSymbol = readStringFromRecord(leg, ["Symbol", "OptionSymbol"]);
+    const underlying = readStringFromRecord(leg, ["Underlying"]);
+    return (
+      (legSymbol ? normalizeOrderSymbolForMatch(legSymbol) === targetOption : false) ||
+      (underlying ? underlying.toUpperCase() === targetUnderlying : false)
+    );
+  }) ?? null;
+}
+
 function isLiveOpeningOrderStatus(order: Record<string, unknown>): boolean {
   const status = [
     readStringFromRecord(order, ["Status"]),
@@ -1663,23 +1708,10 @@ function readOpeningOrderLegForSymbol(
   optionSymbol: string,
   underlyingSymbol: string,
 ): Record<string, unknown> | null {
-  const targetOption = normalizeOrderSymbolForMatch(optionSymbol);
-  const targetUnderlying = underlyingSymbol.toUpperCase();
-  const legs = objectArrayFromPayload(order.Legs, ["Legs"]);
-  return legs.find((leg) => {
-    const legSymbol = readStringFromRecord(leg, ["Symbol", "OptionSymbol"]);
-    const underlying = readStringFromRecord(leg, ["Underlying"]);
-    const symbolMatches =
-      (legSymbol ? normalizeOrderSymbolForMatch(legSymbol) === targetOption : false) ||
-      (underlying ? underlying.toUpperCase() === targetUnderlying : false);
-    if (!symbolMatches) {
-      return false;
-    }
-
-    const openOrClose = (readStringFromRecord(leg, ["OpenOrClose"]) ?? "").toLowerCase();
-    const buyOrSell = (readStringFromRecord(leg, ["BuyOrSell"]) ?? "").toLowerCase();
-    return openOrClose === "open" && buyOrSell === "buy";
-  }) ?? null;
+  const leg = readOrderLegForSymbol(order, optionSymbol, underlyingSymbol);
+  const openOrClose = (readStringFromRecord(leg, ["OpenOrClose"]) ?? "").toLowerCase();
+  const buyOrSell = (readStringFromRecord(leg, ["BuyOrSell"]) ?? "").toLowerCase();
+  return openOrClose === "open" && buyOrSell === "buy" ? leg : null;
 }
 
 function orderHasOpeningLegForSymbol(
@@ -1702,6 +1734,24 @@ function describeLiveOpeningOrder(order: Record<string, unknown>): string {
   const remaining = readStringFromRecord(leg, ["QuantityRemaining"]);
   const fillText = ordered || executed || remaining
     ? `, filled ${executed ?? "?"}/${ordered ?? "?"}${remaining ? ` with ${remaining} remaining` : ""}`
+    : "";
+  return `${orderId} (${status}${fillText})`;
+}
+
+function describeTradeStationCloseOrder(order: Record<string, unknown>): string {
+  const orderId = readStringFromRecord(order, ["OrderID", "OrderId", "orderId"]) ?? "unknown order";
+  const status =
+    readStringFromRecord(order, ["StatusDescription"]) ??
+    readStringFromRecord(order, ["Status"]) ??
+    "status unavailable";
+  const leg = objectArrayFromPayload(order.Legs, ["Legs"])[0] ?? null;
+  const ordered = readStringFromRecord(leg, ["QuantityOrdered", "Quantity"]);
+  const executed = readStringFromRecord(leg, ["ExecQuantity", "FilledQuantity", "QuantityFilled"]);
+  const fillPrice =
+    readStringFromRecord(order, ["FilledPrice", "AveragePrice", "AvgFilledPrice"]) ??
+    readStringFromRecord(leg, ["ExecutionPrice", "AveragePrice", "AvgFilledPrice"]);
+  const fillText = ordered || executed || fillPrice
+    ? `, filled ${executed ?? "?"}/${ordered ?? "?"}${fillPrice ? ` @ ${fillPrice}` : ""}`
     : "";
   return `${orderId} (${status}${fillText})`;
 }
@@ -1754,6 +1804,68 @@ function buildOpeningOrderSnapshot(
   };
 }
 
+function readCloseOrderLegForSymbol(
+  order: Record<string, unknown>,
+  optionSymbol: string,
+  underlyingSymbol: string,
+): Record<string, unknown> | null {
+  const leg = readOrderLegForSymbol(order, optionSymbol, underlyingSymbol);
+  if (!leg) {
+    return null;
+  }
+
+  const openOrClose = (readStringFromRecord(leg, ["OpenOrClose"]) ?? "").toLowerCase();
+  const buyOrSell = (readStringFromRecord(leg, ["BuyOrSell"]) ?? "").toLowerCase();
+  if (openOrClose && openOrClose !== "close") {
+    return null;
+  }
+  if (buyOrSell && buyOrSell !== "sell") {
+    return null;
+  }
+
+  return leg;
+}
+
+function buildCloseOrderFillSnapshot(
+  order: Record<string, unknown>,
+  optionSymbol: string,
+  underlyingSymbol: string,
+): TradeStationCloseOrderFillSnapshot | null {
+  const leg = readCloseOrderLegForSymbol(order, optionSymbol, underlyingSymbol);
+  if (!leg) {
+    return null;
+  }
+
+  const status =
+    readStringFromRecord(order, ["StatusDescription"]) ??
+    readStringFromRecord(order, ["Status"]);
+  const topLevelFillPrice = readNumberFromRecord(order, [
+    "AvgFilledPrice",
+    "AveragePrice",
+    "FilledPrice",
+    "ExecutionPrice",
+    "Price",
+  ]);
+  const legFillPrice = readNumberFromRecord(leg, [
+    "ExecutionPrice",
+    "AveragePrice",
+    "AvgFilledPrice",
+    "FilledPrice",
+    "Price",
+  ]);
+  const filledQuantity =
+    readNumberFromRecord(leg, ["ExecQuantity", "QuantityFilled", "FilledQuantity"])
+    ?? readNumberFromRecord(order, ["FilledQuantity", "QuantityFilled", "ExecQuantity"]);
+
+  return {
+    orderId: readStringFromRecord(order, ["OrderID", "OrderId", "orderId"]),
+    status,
+    filledQuantity,
+    averageFillPrice: topLevelFillPrice ?? legFillPrice,
+    description: describeTradeStationCloseOrder(order),
+  };
+}
+
 export function readOpeningOrderSnapshotForTest(
   order: Record<string, unknown>,
   optionSymbol: string,
@@ -1762,13 +1874,19 @@ export function readOpeningOrderSnapshotForTest(
   return buildOpeningOrderSnapshot(order, optionSymbol, underlyingSymbol);
 }
 
-async function findOpeningOrderSnapshotById(params: {
+export function readCloseOrderFillSnapshotForTest(
+  order: Record<string, unknown>,
+  optionSymbol: string,
+  underlyingSymbol: string,
+): TradeStationCloseOrderFillSnapshot | null {
+  return buildCloseOrderFillSnapshot(order, optionSymbol, underlyingSymbol);
+}
+
+async function findTradeStationOrderById(params: {
   client: AutomationTradeStationClient;
   accountId: string;
   orderId: string;
-  optionSymbol: string;
-  underlyingSymbol: string;
-}): Promise<OpeningOrderSnapshot | null> {
+}): Promise<Record<string, unknown> | null> {
   let nextToken: string | null = null;
 
   for (let page = 0; page < 6; page += 1) {
@@ -1777,15 +1895,9 @@ async function findOpeningOrderSnapshotById(params: {
       nextToken ?? undefined,
     );
     const orders = objectArrayFromPayload(ordersPayload, ["Orders"]);
-    const matchingOrder = orders.find((order) =>
-      readStringFromRecord(order, ["OrderID", "OrderId", "orderId"]) === params.orderId
-    );
+    const matchingOrder = orders.find((order) => readOrderById(order, params.orderId));
     if (matchingOrder) {
-      return buildOpeningOrderSnapshot(
-        matchingOrder,
-        params.optionSymbol,
-        params.underlyingSymbol,
-      );
+      return matchingOrder;
     }
 
     nextToken = readOrdersNextToken(ordersPayload);
@@ -1795,6 +1907,23 @@ async function findOpeningOrderSnapshotById(params: {
   }
 
   return null;
+}
+
+async function findOpeningOrderSnapshotById(params: {
+  client: AutomationTradeStationClient;
+  accountId: string;
+  orderId: string;
+  optionSymbol: string;
+  underlyingSymbol: string;
+}): Promise<OpeningOrderSnapshot | null> {
+  const matchingOrder = await findTradeStationOrderById(params);
+  return matchingOrder
+    ? buildOpeningOrderSnapshot(
+        matchingOrder,
+        params.optionSymbol,
+        params.underlyingSymbol,
+      )
+    : null;
 }
 
 async function findLiveOpeningOrderSnapshotForSymbol(params: {
@@ -1913,15 +2042,20 @@ async function placeSellToCloseOrders(params: {
   getExecutions: AutomationTradeStationClient["getExecutions"];
   accountId: string;
   optionSymbol: string;
+  underlyingSymbol: string;
   quantity: number;
 }): Promise<{
   orderIds: string[];
   averageFillPrice: number | null;
+  fillSource: TradeStationCloseFillSource | null;
+  fillLookupWarnings: string[];
   rejectedOrder: TradeStationOrderResult | null;
 }> {
   const orderIds: string[] = [];
   let weightedFillTotal = 0;
   let pricedQuantity = 0;
+  let fillSource: TradeStationCloseFillSource | null = null;
+  const fillLookupWarnings: string[] = [];
 
   for (const chunkQuantity of splitOrderQuantity(params.quantity)) {
     const orderResult = await params.client.placeOrder({
@@ -1941,23 +2075,35 @@ async function placeSellToCloseOrders(params: {
       return {
         orderIds,
         averageFillPrice: null,
+        fillSource: null,
+        fillLookupWarnings,
         rejectedOrder: orderResult,
       };
     }
 
-    const fillPrice = orderResult.averageFillPrice ?? (
-      orderResult.orderId
-        ? await getAverageFillPriceIfAvailable({
-            getExecutions: params.getExecutions,
-            accountId: params.accountId,
-            orderId: orderResult.orderId,
-          })
-        : null
-    );
+    const fillLookup = orderResult.orderId
+      ? await readCloseOrderFillPrice({
+          client: params.client,
+          getExecutions: params.getExecutions,
+          accountId: params.accountId,
+          orderId: orderResult.orderId,
+          optionSymbol: params.optionSymbol,
+          underlyingSymbol: params.underlyingSymbol,
+          orderResponseAverageFillPrice: orderResult.averageFillPrice,
+        })
+      : {
+          averageFillPrice: orderResult.averageFillPrice,
+          source: orderResult.averageFillPrice !== null ? "order_response" as const : null,
+          warning: null,
+        };
+    if (fillLookup.warning) {
+      fillLookupWarnings.push(fillLookup.warning);
+    }
 
-    if (fillPrice !== null && fillPrice > 0) {
-      weightedFillTotal += fillPrice * chunkQuantity;
+    if (fillLookup.averageFillPrice !== null && fillLookup.averageFillPrice > 0) {
+      weightedFillTotal += fillLookup.averageFillPrice * chunkQuantity;
       pricedQuantity += chunkQuantity;
+      fillSource ??= fillLookup.source;
     }
   }
 
@@ -1967,6 +2113,8 @@ async function placeSellToCloseOrders(params: {
       pricedQuantity > 0
         ? Number((weightedFillTotal / pricedQuantity).toFixed(4))
         : null,
+    fillSource,
+    fillLookupWarnings,
     rejectedOrder: null,
   };
 }
@@ -2222,6 +2370,114 @@ function computeTodayRealizedPlUsd(
     );
 }
 
+function isOpeningExitGuardWindow(nowIso: string): boolean {
+  const chicago = formatChicagoParts(new Date(nowIso));
+  const minutes = (chicago.hour * 60) + chicago.minute;
+  return minutes >= OPENING_EXIT_GUARD_START_MINUTES_CT
+    && minutes < OPENING_EXIT_GUARD_END_MINUTES_CT;
+}
+
+function isGuardedOpeningExitReason(reason: ExitDecision["reason"]): boolean {
+  return reason === "stop_hit" || reason === "target_hit" || reason === "manual_early_exit";
+}
+
+function isSevereOpeningStopBreach(params: {
+  direction: JournalTradeDetail["direction"];
+  entryUnderlyingPrice: number | null;
+  stopUnderlying: number | null;
+  originalStopUnderlying: number | null;
+  currentUnderlyingPrice: number | null;
+}): boolean {
+  const {
+    direction,
+    entryUnderlyingPrice,
+    stopUnderlying,
+    originalStopUnderlying,
+    currentUnderlyingPrice,
+  } = params;
+  if (
+    entryUnderlyingPrice === null
+    || stopUnderlying === null
+    || originalStopUnderlying === null
+    || currentUnderlyingPrice === null
+  ) {
+    return false;
+  }
+
+  const originalStopDistance = Math.abs(entryUnderlyingPrice - originalStopUnderlying);
+  if (!Number.isFinite(originalStopDistance) || originalStopDistance <= 0) {
+    return false;
+  }
+
+  const severeDistance = originalStopDistance * OPENING_EXIT_GUARD_SEVERE_STOP_DISTANCE_MULTIPLE;
+  return direction === "CALL"
+    ? currentUnderlyingPrice <= stopUnderlying - severeDistance
+    : currentUnderlyingPrice >= stopUnderlying + severeDistance;
+}
+
+function isOpeningOptionCrash(params: {
+  entryOptionPrice: number | null;
+  currentOptionMid: number | null;
+}): boolean {
+  if (
+    params.entryOptionPrice === null
+    || params.entryOptionPrice <= 0
+    || params.currentOptionMid === null
+  ) {
+    return false;
+  }
+
+  const optionReturnPct = ((params.currentOptionMid - params.entryOptionPrice) / params.entryOptionPrice) * 100;
+  return optionReturnPct <= OPENING_EXIT_GUARD_OPTION_CRASH_RETURN_PCT;
+}
+
+function evaluateOpeningExitGuard(params: {
+  accountMode: AccountMode;
+  nowIso: string;
+  decision: ExitDecision | null;
+  direction: JournalTradeDetail["direction"];
+  entryUnderlyingPrice: number | null;
+  currentUnderlyingPrice: number | null;
+  stopUnderlying: number | null;
+  targetUnderlying: number | null;
+  originalStopUnderlying: number | null;
+  entryOptionPrice: number | null;
+  currentOptionMid: number | null;
+}): OpeningExitGuardDecision {
+  if (
+    params.accountMode !== "live"
+    || params.decision === null
+    || !isGuardedOpeningExitReason(params.decision.reason)
+    || !isOpeningExitGuardWindow(params.nowIso)
+  ) {
+    return { blocked: false, note: null };
+  }
+
+  const severeStopBreach = isSevereOpeningStopBreach(params);
+  const optionCrash = isOpeningOptionCrash(params);
+  if (severeStopBreach || optionCrash) {
+    return { blocked: false, note: null };
+  }
+
+  const stopText = params.stopUnderlying !== null ? params.stopUnderlying.toFixed(2) : "n/a";
+  const targetText = params.targetUnderlying !== null ? params.targetUnderlying.toFixed(2) : "n/a";
+  const underlyingText = params.currentUnderlyingPrice !== null ? params.currentUnderlyingPrice.toFixed(2) : "n/a";
+  const optionText = params.currentOptionMid !== null ? params.currentOptionMid.toFixed(2) : "n/a";
+  return {
+    blocked: true,
+    note:
+      `Opening exit guard suppressed ${params.decision.reason} during the first 10 market minutes. `
+      + `Underlying=${underlyingText}, option_mid=${optionText}, stop=${stopText}, target=${targetText}. `
+      + "Emergency thresholds were not met.",
+  };
+}
+
+export function evaluateOpeningExitGuardForTest(
+  params: Parameters<typeof evaluateOpeningExitGuard>[0],
+): ReturnType<typeof evaluateOpeningExitGuard> {
+  return evaluateOpeningExitGuard(params);
+}
+
 function inferExitDecision(params: {
   trade: JournalTradeDetail;
   automation: NonNullable<ReturnType<typeof readAutomationSnapshot>>;
@@ -2311,6 +2567,137 @@ async function getAverageFillPriceIfAvailable(params: {
 
     throw error;
   }
+}
+
+async function getCloseOrderFillSnapshotIfAvailable(params: {
+  client: AutomationTradeStationClient;
+  accountId: string;
+  orderId: string;
+  optionSymbol: string;
+  underlyingSymbol: string;
+}): Promise<TradeStationCloseOrderFillSnapshot | null> {
+  const order = await findTradeStationOrderById({
+    client: params.client,
+    accountId: params.accountId,
+    orderId: params.orderId,
+  });
+  return order
+    ? buildCloseOrderFillSnapshot(order, params.optionSymbol, params.underlyingSymbol)
+    : null;
+}
+
+async function readCloseOrderFillPrice(params: {
+  client: AutomationTradeStationClient;
+  getExecutions: AutomationTradeStationClient["getExecutions"];
+  accountId: string;
+  orderId: string;
+  optionSymbol: string;
+  underlyingSymbol: string;
+  orderResponseAverageFillPrice: number | null;
+}): Promise<{
+  averageFillPrice: number | null;
+  source: TradeStationCloseFillSource | null;
+  warning: string | null;
+}> {
+  if (params.orderResponseAverageFillPrice !== null && params.orderResponseAverageFillPrice > 0) {
+    return {
+      averageFillPrice: params.orderResponseAverageFillPrice,
+      source: "order_response",
+      warning: null,
+    };
+  }
+
+  try {
+    const executionFillPrice = await getAverageFillPriceIfAvailable({
+      getExecutions: params.getExecutions,
+      accountId: params.accountId,
+      orderId: params.orderId,
+    });
+    if (executionFillPrice !== null && executionFillPrice > 0) {
+      return {
+        averageFillPrice: executionFillPrice,
+        source: "executions",
+        warning: null,
+      };
+    }
+  } catch (error) {
+    return {
+      averageFillPrice: null,
+      source: null,
+      warning: `Execution fill lookup failed for close order ${params.orderId}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  try {
+    const orderSnapshot = await getCloseOrderFillSnapshotIfAvailable(params);
+    if (orderSnapshot?.averageFillPrice !== null && orderSnapshot?.averageFillPrice !== undefined && orderSnapshot.averageFillPrice > 0) {
+      return {
+        averageFillPrice: orderSnapshot.averageFillPrice,
+        source: "orders",
+        warning: null,
+      };
+    }
+  } catch (error) {
+    return {
+      averageFillPrice: null,
+      source: null,
+      warning: `Order-history fill lookup failed for close order ${params.orderId}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  return {
+    averageFillPrice: null,
+    source: null,
+    warning: null,
+  };
+}
+
+function chooseJournalExitPrice(params: {
+  brokerAverageFillPrice: number | null;
+  brokerFillSource: TradeStationCloseFillSource | null;
+  optionMid: number | null;
+  optionBid: number | null;
+  entryOptionPrice: number | null;
+}): {
+  optionExitPrice: number | null;
+  source: JournalExitPriceSource | null;
+  note: string | null;
+} {
+  if (params.brokerAverageFillPrice !== null && params.brokerAverageFillPrice > 0) {
+    return {
+      optionExitPrice: params.brokerAverageFillPrice,
+      source: params.brokerFillSource ?? "orders",
+      note: null,
+    };
+  }
+
+  const fallbackPrice =
+    params.optionMid
+    ?? params.optionBid
+    ?? params.entryOptionPrice;
+  if (fallbackPrice === null || fallbackPrice <= 0) {
+    return {
+      optionExitPrice: null,
+      source: null,
+      note: null,
+    };
+  }
+
+  const fallbackLabel =
+    params.optionMid !== null ? "option mid"
+      : params.optionBid !== null ? "option bid"
+        : "entry option price";
+  return {
+    optionExitPrice: fallbackPrice,
+    source: "provisional_quote",
+    note: `Journal exit price is provisional: TradeStation fill price was unavailable, so automation used ${fallbackLabel} ${fallbackPrice.toFixed(4)}.`,
+  };
+}
+
+export function chooseJournalExitPriceForTest(
+  params: Parameters<typeof chooseJournalExitPrice>[0],
+): ReturnType<typeof chooseJournalExitPrice> {
+  return chooseJournalExitPrice(params);
 }
 
 function isRejectedOrderResult(order: {
@@ -3698,6 +4085,7 @@ async function manageOpenPaperTrades(
     let aiDecisionNote: string | null = null;
     let managementAction: PaperTraderManagementHistoryEntry["action"] | null = null;
     let decision = null as ExitDecision | null;
+    let inferredExitDecision = false;
 
     try {
       const managementHistory = readManagementHistory(automation);
@@ -4058,6 +4446,7 @@ async function manageOpenPaperTrades(
         getExecutions: client.getExecutions,
         accountId: automation.accountId,
         optionSymbol: automation.optionSymbol,
+        underlyingSymbol: trade.symbol,
         quantity: scaleQuantity,
       });
       const orderIds = orderPlacement.orderIds.join(", ");
@@ -4093,13 +4482,14 @@ async function manageOpenPaperTrades(
         continue;
       }
 
-      let optionExitPrice = orderPlacement.averageFillPrice;
-      if (optionExitPrice === null) {
-        optionExitPrice =
-          optionQuote.mid
-          ?? optionQuote.bid
-          ?? readNumber(trade.option_entry_price);
-      }
+      const journalExitPrice = chooseJournalExitPrice({
+        brokerAverageFillPrice: orderPlacement.averageFillPrice,
+        brokerFillSource: orderPlacement.fillSource,
+        optionMid: optionQuote.mid,
+        optionBid: optionQuote.bid,
+        entryOptionPrice: readNumber(trade.option_entry_price),
+      });
+      const optionExitPrice = journalExitPrice.optionExitPrice;
       if (optionExitPrice === null || optionExitPrice <= 0) {
         decisionLog = appendDecisionLog(decisionLog, {
           timestamp: nowIso,
@@ -4144,13 +4534,15 @@ async function manageOpenPaperTrades(
         kind: "exit",
         action: "scaled_out",
         reason: "partial_profit",
-        note: scaleNote,
+        note: joinNoteParts([scaleNote, journalExitPrice.note, ...orderPlacement.fillLookupWarnings]),
         optionSymbol: automation.optionSymbol,
         orderId: orderIds || null,
         quantity: scaleQuantity,
         positionCostUsd: readNumber(trade.position_cost_usd),
         currentUnderlyingPrice: underlyingQuote.last,
         currentOptionMid: optionQuote.mid,
+        exitPriceSource: journalExitPrice.source,
+        exitPriceLookupWarnings: orderPlacement.fillLookupWarnings,
       });
 
       await recordPartialJournalExit(trade.id, {
@@ -4160,7 +4552,11 @@ async function manageOpenPaperTrades(
         quantity_closed: scaleQuantity,
         fees_usd: 0,
         slippage_usd: 0,
-        exit_notes: `TradeStation automation profit-protection scale-out. ${scaleNote}`,
+        exit_notes: joinNoteParts([
+          `TradeStation automation profit-protection scale-out. ${scaleNote}`,
+          journalExitPrice.note,
+          ...orderPlacement.fillLookupWarnings,
+        ]),
         lessons_learned: null,
         review_notes: null,
       });
@@ -4186,7 +4582,7 @@ async function manageOpenPaperTrades(
         orderId: orderIds || null,
         optionExitPrice,
         quantity: scaleQuantity,
-        note: scaleNote,
+        note: joinNoteParts([scaleNote, journalExitPrice.note]),
       });
       continue;
     }
@@ -4199,13 +4595,17 @@ async function manageOpenPaperTrades(
     }
 
     if (!decision) {
-      decision = inferExitDecision({
+      const inferredDecision = inferExitDecision({
         trade,
         automation: effectiveAutomation,
         todayChicago,
         underlyingLast: underlyingQuote.last,
         optionMid: optionQuote.mid,
       });
+      if (inferredDecision) {
+        decision = inferredDecision;
+        inferredExitDecision = true;
+      }
     }
 
     if (!decision) {
@@ -4213,6 +4613,58 @@ async function manageOpenPaperTrades(
         tradeId: trade.id,
         symbol: trade.symbol,
         reason: aiDecisionNote ?? "No stop, target, time, or premium-decay exit trigger fired.",
+      });
+      continue;
+    }
+
+    const openingExitGuard = inferredExitDecision
+      ? evaluateOpeningExitGuard({
+          accountMode: config.accountMode,
+          nowIso,
+          decision,
+          direction: trade.direction,
+          entryUnderlyingPrice: readNumber(trade.underlying_entry_price),
+          currentUnderlyingPrice: underlyingQuote.last,
+          stopUnderlying: effectiveAutomation.activeStopUnderlying ?? activeLevels.stopUnderlying,
+          targetUnderlying: effectiveAutomation.activeTargetUnderlying ?? activeLevels.targetUnderlying,
+          originalStopUnderlying:
+            automation.intendedStopUnderlying
+            ?? readNumber(trade.intended_stop_underlying),
+          entryOptionPrice: readNumber(trade.option_entry_price),
+          currentOptionMid: optionQuote.mid,
+        })
+      : { blocked: false, note: null };
+    if (openingExitGuard.blocked) {
+      decisionLog = appendDecisionLog(decisionLog, {
+        timestamp: nowIso,
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        kind: "exit",
+        action: "skipped",
+        reason: "opening_exit_guard",
+        note: openingExitGuard.note ?? "Opening exit guard suppressed this exit.",
+        optionSymbol: automation.optionSymbol,
+        orderId: automation.orderId ?? null,
+        quantity: automation.quantity,
+        stopUnderlying: effectiveAutomation.activeStopUnderlying ?? activeLevels.stopUnderlying,
+        targetUnderlying: effectiveAutomation.activeTargetUnderlying ?? activeLevels.targetUnderlying,
+        currentUnderlyingPrice: underlyingQuote.last,
+        currentOptionMid: optionQuote.mid,
+      });
+      if (!dryRun) {
+        await updateJournalTradeSignalSnapshot(
+          trade.id,
+          buildUpdatedSignalSnapshot(trade, { ...currentSnapshotUpdates, decisionLog }),
+        );
+      }
+      exitsTriggered.push({
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        reason: decision.reason,
+        action: "skipped",
+        orderId: automation.orderId ?? null,
+        optionExitPrice: null,
+        note: openingExitGuard.note ?? "Opening exit guard suppressed this exit.",
       });
       continue;
     }
@@ -4355,6 +4807,7 @@ async function manageOpenPaperTrades(
       getExecutions: client.getExecutions,
       accountId: automation.accountId,
       optionSymbol: automation.optionSymbol,
+      underlyingSymbol: trade.symbol,
       quantity: exitQuantity,
     });
     const orderIds = orderPlacement.orderIds.join(", ");
@@ -4389,13 +4842,14 @@ async function manageOpenPaperTrades(
       continue;
     }
 
-    let optionExitPrice = orderPlacement.averageFillPrice;
-    if (optionExitPrice === null) {
-      optionExitPrice =
-        optionQuote.mid
-        ?? optionQuote.bid
-        ?? readNumber(trade.option_entry_price);
-    }
+    const journalExitPrice = chooseJournalExitPrice({
+      brokerAverageFillPrice: orderPlacement.averageFillPrice,
+      brokerFillSource: orderPlacement.fillSource,
+      optionMid: optionQuote.mid,
+      optionBid: optionQuote.bid,
+      entryOptionPrice: readNumber(trade.option_entry_price),
+    });
+    const optionExitPrice = journalExitPrice.optionExitPrice;
     if (optionExitPrice === null || optionExitPrice <= 0) {
       decisionLog = appendDecisionLog(decisionLog, {
         timestamp: nowIso,
@@ -4434,13 +4888,15 @@ async function manageOpenPaperTrades(
       kind: "exit",
       action: "closed",
       reason: decision.reason,
-      note: decision.note,
+      note: joinNoteParts([decision.note, journalExitPrice.note, ...orderPlacement.fillLookupWarnings]),
       optionSymbol: automation.optionSymbol,
       orderId: orderIds || null,
       quantity: exitQuantity,
       positionCostUsd: readNumber(trade.position_cost_usd),
       currentUnderlyingPrice: underlyingQuote.last,
       currentOptionMid: optionQuote.mid,
+      exitPriceSource: journalExitPrice.source,
+      exitPriceLookupWarnings: orderPlacement.fillLookupWarnings,
     });
     await updateJournalTradeSignalSnapshot(
       trade.id,
@@ -4454,7 +4910,11 @@ async function manageOpenPaperTrades(
       quantity_closed: exitQuantity,
       fees_usd: 0,
       slippage_usd: 0,
-      exit_notes: `TradeStation automation auto-exit. ${decision.note}`,
+      exit_notes: joinNoteParts([
+        `TradeStation automation auto-exit. ${decision.note}`,
+        journalExitPrice.note,
+        ...orderPlacement.fillLookupWarnings,
+      ]),
       lessons_learned: null,
       review_notes: `TradeStation automation auto-managed exit from ${automation.optionSymbol}.`,
     });
@@ -4466,7 +4926,7 @@ async function manageOpenPaperTrades(
       action: "closed",
       orderId: orderIds || null,
       optionExitPrice,
-      note: decision.note,
+      note: joinNoteParts([decision.note, journalExitPrice.note]),
     });
   }
 
