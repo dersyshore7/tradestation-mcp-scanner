@@ -14,6 +14,7 @@ import type {
   JournalTradeCreateInput,
   JournalTradeDetail,
   JournalTradeExitRecord,
+  JournalExitPriceSource,
   JournalTradeListItem,
   JournalTradePartialExitInput,
   JournalTradeReviewRecord,
@@ -63,10 +64,12 @@ type JournalInsightsOptions = {
 export type JournalExitBrokerFillUpdateInput = {
   exitId: string;
   optionExitPrice: number;
+  exitPriceSource?: JournalExitPriceSource | null;
   quantityClosed?: number | null;
   feesUsd?: number | null;
   slippageUsd?: number | null;
   appendExitNote?: string | null;
+  brokerOrderId?: string | null;
 };
 
 function buildEntryWeek(entryDate: string): string {
@@ -76,6 +79,10 @@ function buildEntryWeek(entryDate: string): string {
   const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
   const weekNo = Math.ceil((((date.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
   return `${date.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
+}
+
+function readExitPriceSource(input: JournalTradeCloseInput): JournalExitPriceSource {
+  return input.exit_price_source ?? "manual";
 }
 
 function buildEntryDay(entryDate: string): string {
@@ -738,6 +745,10 @@ export async function updateJournalExitWithBrokerFill(
       fees_usd: input.feesUsd ?? toNumber(existingExit.fees_usd) ?? 0,
       slippage_usd: input.slippageUsd ?? toNumber(existingExit.slippage_usd) ?? 0,
       exit_notes: appendJournalNote(existingExit.exit_notes, input.appendExitNote),
+      exit_price_source: input.exitPriceSource ?? "orders",
+      broker_confirmed: true,
+      broker_repaired: true,
+      broker_order_id: input.brokerOrderId ?? existingExit.broker_order_id,
     },
   });
 
@@ -799,6 +810,10 @@ export async function closeJournalTrade(id: string, input: JournalTradeCloseInpu
       fees_usd: feesUsd,
       slippage_usd: slippageUsd,
       exit_notes: input.exit_notes ?? null,
+      exit_price_source: readExitPriceSource(input),
+      broker_confirmed: input.broker_confirmed === true,
+      broker_repaired: false,
+      broker_order_id: input.broker_order_id ?? null,
     },
   });
   const reviewValues = calculateAggregateCloseReviewValues(trade, [
@@ -873,6 +888,10 @@ export async function recordPartialJournalExit(
       fees_usd: feesUsd,
       slippage_usd: slippageUsd,
       exit_notes: input.exit_notes ?? null,
+      exit_price_source: readExitPriceSource(input),
+      broker_confirmed: input.broker_confirmed === true,
+      broker_repaired: false,
+      broker_order_id: input.broker_order_id ?? null,
     },
   });
 

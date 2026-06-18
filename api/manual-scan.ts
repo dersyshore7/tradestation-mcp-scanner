@@ -175,6 +175,10 @@ function totalSymbolCount(): number {
   return SCAN_UNIVERSE_TIERS.reduce((total, tier) => total + tier.symbols.length, 0);
 }
 
+function scanUniverseLabel(): string {
+  return `${totalSymbolCount()} symbols across ${SCAN_UNIVERSE_TIERS.map((tier) => tier.label).join(", ")}`;
+}
+
 function countSymbolsBeforeTier(tierIndex: number): number {
   return SCAN_UNIVERSE_TIERS
     .slice(0, tierIndex)
@@ -447,7 +451,7 @@ function buildManualNoTradeReason(
   chunkCount: number,
   telemetry: StarterUniverseTelemetry,
 ): string {
-  const scannedText = `${totalSymbolCount()} symbols across Tier 1, Tier 2, and Tier 3`;
+  const scannedText = scanUniverseLabel();
   const counts = telemetry.stageCounts;
   const funnelSummary =
     telemetry.bestRejectedCandidates.length > 0
@@ -522,7 +526,7 @@ function buildSelectedManualScanReason(params: {
       : "";
   const selectedDetail = selectedOutcome?.reason ?? params.fallbackReason;
 
-  return `Selected ${params.selectedSymbol} as the best confirmed setup after scanning ${params.scannedText}. Finalist confirmation used the merged full-universe ladder (reviewed: ${reviewedText || params.selectedSymbol}; selected: ${params.selectedSymbol}${rankScoreText}). ${params.selectedSymbol} was the first trade-card-ready survivor in global rank order${earlierText}. ${selectedDetail}`;
+  return `Selected ${params.selectedSymbol} as the best confirmed setup after scanning ${params.scannedText}. Finalist confirmation used the merged configured-universe ladder (reviewed: ${reviewedText || params.selectedSymbol}; selected: ${params.selectedSymbol}${rankScoreText}). ${params.selectedSymbol} was the first trade-card-ready survivor in global rank order${earlierText}. ${selectedDetail}`;
 }
 
 function buildEmptyTelemetry(): StarterUniverseTelemetry {
@@ -977,7 +981,7 @@ async function maybeBuildTradeCard(
 
 async function finalizeState(state: ManualScanState): Promise<ManualScanState> {
   const best = state.bestConfirmed;
-  const scannedText = `${totalSymbolCount()} symbols across Tier 1, Tier 2, and Tier 3`;
+  const scannedText = scanUniverseLabel();
 
   if (!best) {
     const provisionalTelemetry = finalizeManualTelemetry(state.accumulatedTelemetry, {

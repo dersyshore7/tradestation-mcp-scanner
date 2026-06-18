@@ -4,7 +4,7 @@ This is a developer-facing doctrine map for the current `runScan` implementation
 
 | Doctrine clause | Current logic classification | Current implementation notes | Calibration note |
 | --- | --- | --- | --- |
-| Broader U.S. options market | Preference only | Starter universe is still curated U.S. large-cap / ETF symbols, not a full market sweep. | Still approximate by design. |
+| Broader U.S. options market | Preference only | Scanner uses an expanded static universe of roughly 500 liquid optionable U.S. names and ETFs, not dynamic full-market discovery. | Broader than the starter list, still approximate by design. |
 | Price $10-$500 | Hard veto | Stage 1 price filter enforces range. | Kept strict. |
 | Avg volume >1M | Hard veto | Stage 1 average-volume filter enforces threshold. | Kept strict as initial liquidity gate. |
 | Tight option spreads | Hard veto | Stage 2 spread threshold rejects serious tradability failures. | Kept strict. |

@@ -3,7 +3,7 @@ import { buildLearningOutcomeAudit, type LearningOutcomeAudit } from "../automat
 import { buildReasoningSnapshot } from "./insights.js";
 import { listJournalTradeDetails } from "./repository.js";
 import { supabaseCount, supabaseSelect } from "../supabase/serverClient.js";
-import type { AccountMode, JournalReasoningSnapshot } from "./types.js";
+import type { AccountMode, JournalExitPriceSource, JournalReasoningSnapshot } from "./types.js";
 
 const WEEKDAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const CURRENT_EPOCH_SCOPE_LABEL = "Current learning epoch" as const;
@@ -46,11 +46,27 @@ type PaperDashboardExitRow = {
   option_exit_price: NumericValue;
   quantity_closed: number;
   exit_notes: string | null;
+  exit_price_source: JournalExitPriceSource;
+  broker_confirmed: boolean;
+  broker_repaired: boolean;
+  broker_order_id: string | null;
 };
 
 type PaperDashboardOutcomeDetailRow = {
   id: string;
   signal_snapshot_json: Record<string, unknown> | null;
+};
+
+export type PaperDashboardBrokerAudit = {
+  provisional_exit_count: number;
+  broker_confirmed_exit_count: number;
+  broker_repaired_exit_count: number;
+};
+
+export type PaperDashboardBrokerAuditExit = {
+  exit_price_source: JournalExitPriceSource | null;
+  broker_confirmed: boolean | null;
+  broker_repaired: boolean | null;
 };
 
 export type PaperDashboardBucket = {
@@ -94,6 +110,8 @@ export type PaperDashboardOutcomeTrade = {
   realized_return_pct: number | null;
   entry_notes: string | null;
   exit_notes: string | null;
+  exit_price_source: JournalExitPriceSource | null;
+  broker_order_id: string | null;
   review_notes: string | null;
   provisional_exit: boolean;
   broker_confirmed_exit: boolean;
@@ -130,11 +148,7 @@ export type PaperDashboard = {
   by_symbol: PaperDashboardBucket[];
   by_exit_reason: PaperDashboardBucket[];
   learning_audit: LearningOutcomeAudit;
-  broker_audit: {
-    provisional_exit_count: number;
-    broker_confirmed_exit_count: number;
-    broker_repaired_exit_count: number;
-  };
+  broker_audit: PaperDashboardBrokerAudit;
   outcome_details: {
     winners: PaperDashboardOutcomeTrade[];
     losers: PaperDashboardOutcomeTrade[];
@@ -281,13 +295,38 @@ function buildSoldForUsd(exit: PaperDashboardExitRow | null): number | null {
   return Number((optionExitPrice * quantityClosed * 100).toFixed(2));
 }
 
+function buildEmptyBrokerAudit(): PaperDashboardBrokerAudit {
+  return {
+    provisional_exit_count: 0,
+    broker_confirmed_exit_count: 0,
+    broker_repaired_exit_count: 0,
+  };
+}
+
+export function buildPaperDashboardBrokerAuditForTest(
+  exits: readonly PaperDashboardBrokerAuditExit[],
+): PaperDashboardBrokerAudit {
+  return exits.reduce((audit, exit) => {
+    if (exit.exit_price_source === "provisional_quote") {
+      audit.provisional_exit_count += 1;
+    }
+    if (exit.broker_confirmed === true) {
+      audit.broker_confirmed_exit_count += 1;
+    }
+    if (exit.broker_repaired === true) {
+      audit.broker_repaired_exit_count += 1;
+    }
+    return audit;
+  }, buildEmptyBrokerAudit());
+}
+
 function buildOutcomeTrade(
   trade: PaperDashboardTrade,
   detail: PaperDashboardOutcomeDetailRow | null,
 ): PaperDashboardOutcomeTrade {
   const signalSnapshot = asRecord(detail?.signal_snapshot_json);
   const exitNotes = trade.latest_exit?.exit_notes ?? null;
-  const normalizedExitNotes = exitNotes?.toLowerCase() ?? "";
+  const exitPriceSource = trade.latest_exit?.exit_price_source ?? null;
   return {
     id: trade.id,
     symbol: trade.symbol,
@@ -314,10 +353,12 @@ function buildOutcomeTrade(
     realized_return_pct: asNumber(trade.review?.realized_return_pct),
     entry_notes: trade.entry_notes,
     exit_notes: exitNotes,
+    exit_price_source: exitPriceSource,
+    broker_order_id: trade.latest_exit?.broker_order_id ?? null,
     review_notes: trade.review?.review_notes ?? null,
-    provisional_exit: normalizedExitNotes.includes("provisional"),
-    broker_confirmed_exit: normalizedExitNotes.includes("broker-confirmed tradestation fill"),
-    broker_repaired_exit: normalizedExitNotes.includes("broker-confirmed tradestation fill"),
+    provisional_exit: exitPriceSource === "provisional_quote",
+    broker_confirmed_exit: trade.latest_exit?.broker_confirmed === true,
+    broker_repaired_exit: trade.latest_exit?.broker_repaired === true,
     reasoning: buildReasoningSnapshot(signalSnapshot, trade.symbol),
   };
 }
@@ -363,7 +404,7 @@ async function loadPaperDashboardRows(
     }),
     supabaseSelect<PaperDashboardExitRow>({
       table: "journal_exits",
-      select: "trade_id,exit_time,exit_reason,option_exit_price,quantity_closed,exit_notes",
+      select: "trade_id,exit_time,exit_reason,option_exit_price,quantity_closed,exit_notes,exit_price_source,broker_confirmed,broker_repaired,broker_order_id",
       filters: [buildInFilter("trade_id", tradeIds)],
       order: ["exit_time.desc"],
     }),
@@ -477,11 +518,7 @@ export function buildEmptyPaperDashboard(
     by_symbol: [],
     by_exit_reason: [],
     learning_audit: buildLearningOutcomeAudit([], { accountMode }),
-    broker_audit: {
-      provisional_exit_count: 0,
-      broker_confirmed_exit_count: 0,
-      broker_repaired_exit_count: 0,
-    },
+    broker_audit: buildEmptyBrokerAudit(),
     outcome_details: {
       winners: [],
       losers: [],
@@ -547,21 +584,9 @@ export async function getPaperDashboard(
   const outcomeDetailsById = await loadPaperDashboardOutcomeDetails(
     [...outcomeWinnerTrades, ...outcomeLoserTrades].map((trade) => trade.id),
   );
-  const brokerAudit = closedTrades.reduce((audit, trade) => {
-    const normalizedExitNotes = trade.latest_exit?.exit_notes?.toLowerCase() ?? "";
-    if (normalizedExitNotes.includes("provisional")) {
-      audit.provisional_exit_count += 1;
-    }
-    if (normalizedExitNotes.includes("broker-confirmed tradestation fill")) {
-      audit.broker_confirmed_exit_count += 1;
-      audit.broker_repaired_exit_count += 1;
-    }
-    return audit;
-  }, {
-    provisional_exit_count: 0,
-    broker_confirmed_exit_count: 0,
-    broker_repaired_exit_count: 0,
-  });
+  const brokerAudit = buildPaperDashboardBrokerAuditForTest(
+    closedTrades.flatMap((trade) => trade.latest_exit ?? []),
+  );
 
   return {
     dataWarnings: includedTradeCount > trades.length

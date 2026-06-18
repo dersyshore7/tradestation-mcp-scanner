@@ -349,8 +349,14 @@ test("paper trader wires closed-exit broker reconciliation without new order pla
   assert.ok(source.includes("buildCloseOrderFillSummary"));
   assert.ok(source.includes("Broker-confirmed TradeStation fill"));
   assert.ok(source.includes("closedExitReconciliation"));
+  assert.ok(source.includes("exit_price_source: journalExitPrice.source"));
+  assert.ok(source.includes("broker_confirmed: isBrokerConfirmedExitPriceSource(journalExitPrice.source)"));
+  assert.ok(source.includes("broker_order_id: orderIds || null"));
   assert.ok(repositorySource.includes("updateJournalExitWithBrokerFill"));
   assert.ok(repositorySource.includes("calculateAggregateCloseReviewValues"));
+  assert.ok(repositorySource.includes("broker_confirmed: true"));
+  assert.ok(repositorySource.includes("broker_repaired: true"));
+  assert.ok(repositorySource.includes("broker_order_id: input.brokerOrderId"));
 });
 
 test("paper trader preserves final winner runners until hard exits or dead thesis", () => {

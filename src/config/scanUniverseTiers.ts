@@ -1,4 +1,4 @@
-export type ScanUniverseTierKey = "tier1" | "tier2" | "tier3";
+export type ScanUniverseTierKey = "tier1" | "tier2" | "tier3" | "tier4";
 
 export type ScanUniverseTier = {
   key: ScanUniverseTierKey;
@@ -50,6 +50,28 @@ const TIER_3_SYMBOLS = [
   "ADM", "BG", "CF", "FMC", "DECK", "ANF", "GME", "NCLH", "VST", "TECK",
 ] as const;
 
+const TIER_4_SYMBOLS = [
+  "ADI", "A", "ACGL", "AES", "ALB", "ALK", "ALL", "AME", "AMT", "APH",
+  "APTV", "ARE", "ATO", "AWK", "BAX", "BDX", "BEN", "BIIB", "BRO", "BURL",
+  "CBOE", "CCEP", "CDW", "CEG", "CFG", "CHD", "CHRW", "CINF", "CLX", "CMA",
+  "CMI", "CMS", "COO", "CP", "CTVA", "CTSH", "DD", "DLR", "DOV", "DOW",
+  "DPZ", "DRI", "DTE", "EA", "ED", "EFX", "EIX", "EL", "EPAM", "EQR",
+  "EQT", "ES", "ESS", "EVRG", "EXC", "EXR", "FANG", "FDS", "FE", "FI",
+  "FICO", "FITB", "FIS", "FOXA", "FTV", "GEHC", "GLW", "GM", "GNRC", "GPN",
+  "HES", "HIG", "HOLX", "HST", "HWM", "IFF", "INVH", "IR", "J", "JBHT",
+  "JBL", "JKHY", "K", "KEY", "KEYS", "KHC", "KIM", "KVUE", "LDOS", "LHX",
+  "LVS", "LYB", "MAA", "MAS", "MGM", "MKC", "MKTX", "MLM", "MSCI", "NDAQ",
+  "NI", "NTRS", "O", "OMC", "OTIS", "PAYX", "PKG", "PPG", "PRU", "PSA",
+  "PWR", "QRVO", "ROL", "ROST", "RSG", "SBAC", "SJM", "SNA", "STT", "SWK",
+  "SYF", "TEL", "TROW", "TXT", "VFC", "VTR", "WAB", "WAT", "WBD", "WEC",
+  "WELL", "WRB", "WST", "WY", "XYL", "YUM", "ZBH", "ZBRA", "ACHR", "AI",
+  "ASTS", "CLSK", "GEV", "HUT", "IBIT", "IONQ", "IOT", "JOBY", "KWEB", "LABD",
+  "LABU", "LUNR", "OKLO", "OPEN", "QLD", "RDDT", "RKLB", "SDS", "SMCI", "SOXL",
+  "SOXS", "SPXL", "SPXS", "SQQQ", "TNA", "TQQQ", "TZA", "UPRO", "UVXY", "WULF",
+  "ARKG", "ARKW", "BITO", "EWA", "EWC", "EWG", "EWH", "EWJ", "EWQ", "EWU",
+  "EWY", "EWZ", "FBTC", "INDA", "MCHI",
+] as const;
+
 function uniqueSymbols(symbols: readonly string[]): string[] {
   return [...new Set(symbols)];
 }
@@ -72,6 +94,12 @@ export const SCAN_UNIVERSE_TIERS: readonly ScanUniverseTier[] = [
     label: "Tier 3",
     description: "Broader still-liquid optionable names and ETFs.",
     symbols: uniqueSymbols(TIER_3_SYMBOLS),
+  },
+  {
+    key: "tier4",
+    label: "Tier 4",
+    description: "Expanded liquid optionable U.S. names and active ETFs.",
+    symbols: uniqueSymbols(TIER_4_SYMBOLS),
   },
 ] as const;
 

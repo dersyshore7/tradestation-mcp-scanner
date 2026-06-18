@@ -15,6 +15,13 @@ export type AccountMode = (typeof ACCOUNT_MODES)[number];
 export type TradeDirection = (typeof TRADE_DIRECTIONS)[number];
 export type TradeStatus = (typeof TRADE_STATUSES)[number];
 export type JournalExitReason = (typeof JOURNAL_EXIT_REASONS)[number];
+export type JournalExitPriceSource =
+  | "manual"
+  | "provisional_quote"
+  | "order_response"
+  | "executions"
+  | "orders"
+  | "broker_legacy_note";
 
 export type PlannedTradeSnapshot = {
   scan_run_id?: string | null;
@@ -55,6 +62,9 @@ export type JournalTradeCloseInput = {
   fees_usd?: number | null;
   slippage_usd?: number | null;
   exit_notes?: string | null;
+  exit_price_source?: JournalExitPriceSource | null;
+  broker_confirmed?: boolean | null;
+  broker_order_id?: string | null;
   lessons_learned?: string | null;
   review_notes?: string | null;
 };
@@ -118,6 +128,10 @@ export type JournalTradeExitRecord = {
   fees_usd: string;
   slippage_usd: string;
   exit_notes: string | null;
+  exit_price_source: JournalExitPriceSource;
+  broker_confirmed: boolean;
+  broker_repaired: boolean;
+  broker_order_id: string | null;
 };
 
 export type JournalTradeReviewRecord = {

@@ -2797,7 +2797,7 @@ function buildBrokerFillNote(params: {
 }
 
 function journalExitHasBrokerConfirmedFill(exit: JournalTradeDetail["exits"][number]): boolean {
-  return exit.exit_notes?.toLowerCase().includes("broker-confirmed tradestation fill") ?? false;
+  return exit.broker_confirmed === true;
 }
 
 function tradeHasRecentExit(trade: JournalTradeDetail, cutoffMs: number): boolean {
@@ -2970,10 +2970,12 @@ async function reconcileClosedLiveJournalExits(
         await updateJournalExitWithBrokerFill({
           exitId: exit.id,
           optionExitPrice: closeFill.averageFillPrice,
+          exitPriceSource: "orders",
           quantityClosed,
           feesUsd: brokerFees,
           slippageUsd: oldSlippage ?? 0,
           appendExitNote: note,
+          brokerOrderId: decision.orderId,
         });
       }
 
@@ -3236,6 +3238,10 @@ function chooseJournalExitPrice(params: {
     source: "provisional_quote",
     note: `Journal exit price is provisional: TradeStation fill price was unavailable, so automation used ${fallbackLabel} ${fallbackPrice.toFixed(4)}.`,
   };
+}
+
+function isBrokerConfirmedExitPriceSource(source: JournalExitPriceSource | null): boolean {
+  return source === "order_response" || source === "executions" || source === "orders";
 }
 
 export function chooseJournalExitPriceForTest(
@@ -5138,6 +5144,9 @@ async function manageOpenPaperTrades(
           journalExitPrice.note,
           ...orderPlacement.fillLookupWarnings,
         ]),
+        exit_price_source: journalExitPrice.source,
+        broker_confirmed: isBrokerConfirmedExitPriceSource(journalExitPrice.source),
+        broker_order_id: orderIds || null,
         lessons_learned: null,
         review_notes: null,
       });
@@ -5489,6 +5498,9 @@ async function manageOpenPaperTrades(
         journalExitPrice.note,
         ...orderPlacement.fillLookupWarnings,
       ]),
+      exit_price_source: journalExitPrice.source,
+      broker_confirmed: isBrokerConfirmedExitPriceSource(journalExitPrice.source),
+      broker_order_id: orderIds || null,
       lessons_learned: null,
       review_notes: `TradeStation automation auto-managed exit from ${automation.optionSymbol}.`,
     });

@@ -1,13 +1,13 @@
 # tradestation-mcp-scanner
 
-A very small beginner-friendly MCP scanner starter in TypeScript.
+A TypeScript MCP scanner/trader starter that uses TradeStation market data, a curated liquid-options universe, and separate paper/live automation lanes.
 
 ## What the MCP server does now
 
 This project runs a **minimal HTTP MCP server** with two scan modes:
 
 - Single-symbol TradeStation read-only analysis for prompts like `analyze AAPL`.
-- Small-universe TradeStation read-only scan-and-review for general prompts.
+- Expanded static-universe TradeStation read-only scan-and-review for general prompts.
 
 It exposes two tools:
 
@@ -16,13 +16,13 @@ It exposes two tools:
 
 That tool checks for a single symbol prompt first. If present, it runs the same single-symbol read-only analysis.
 
-If no single symbol is detected, it now runs a tiny real-data scan-and-review pipeline on a hardcoded V1 scan universe of about 100 liquid, options-heavy U.S. names defined in `src/app/runScan.ts` (`V1_SCAN_UNIVERSE_CONFIG`).
+If no single symbol is detected, it runs a real-data scan-and-review pipeline on a maintained static universe of roughly 500 liquid, options-heavy U.S. names and ETFs defined in `src/config/scanUniverseTiers.ts`.
 
 The fake scanner fallback is still present only as a safety fallback if real-data requests fail.
 
 
 
-### Small-universe scan-and-review mode
+### Expanded static-universe scan-and-review mode
 
 General prompts (for example, `find bullish setups`) now run a simple 4-stage read-only pipeline:
 
@@ -43,7 +43,7 @@ General prompts (for example, `find bullish setups`) now run a simple 4-stage re
    - Score remaining candidates with a simple score
    - Return best candidate, otherwise `no_trade_today`
 
-This is intentionally a tiny starter pipeline and does **not** scan the full market.
+This is intentionally an expanded static universe for calibration and opportunity count; it is **not** a dynamic full-market symbol discovery engine.
 
 ### Stage 3 starter-universe telemetry debug
 
@@ -93,7 +93,7 @@ Trade construction is read-only and returns a first-pass 2:1 trade card; the aut
 
 `excludedTickers` is optional.
 
-`excludedTickers` is optional and defaults to an empty list when omitted. The default V1 general scan runs the full V1 universe. Exclusions are mainly useful for reruns after a ticker was already reviewed/rejected.
+`excludedTickers` is optional and defaults to an empty list when omitted. The default general scan runs the configured static scan universe. Exclusions are mainly useful for reruns after a ticker was already reviewed/rejected.
 
 ### Tool output
 
@@ -241,6 +241,8 @@ What one automation cycle does:
 13. Save the evaluated entry candidate to the candidate audit log when the migration is applied
 
 New automation trades seed AI management state in `signal_snapshot_json`, including active stop/target levels, entry reward-policy context, plus a short decision log so later 5-minute reviews can explain what the AI entered, held, tightened, or exited.
+
+Automation exits store structured journal-exit truth fields for dashboard/accounting use: manual exits remain `manual`, broker fill prices record the TradeStation fill source, and quote fallbacks are marked `provisional_quote` instead of being inferred from note text.
 
 Safety defaults:
 

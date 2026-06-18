@@ -4,7 +4,7 @@ import { constructTradeCard, type TradeConstructionInput, type TradeConstruction
 export const scanToolDefinition = {
   name: "scan_prompt_to_best_ticker",
   description:
-    "Run a read-only scan. Uses real TradeStation data for single-symbol prompts and a tiny V1 scan-universe scan for general prompts.",
+    "Run a read-only scan. Uses real TradeStation data for single-symbol prompts and the configured static liquid-options universe for general prompts.",
   inputSchema: {
     type: "object",
     properties: {

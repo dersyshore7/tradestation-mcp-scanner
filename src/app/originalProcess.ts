@@ -216,6 +216,10 @@ function totalSymbolCount(): number {
   return SCAN_UNIVERSE_TIERS.reduce((total, tier) => total + tier.symbols.length, 0);
 }
 
+function scanUniverseLabel(): string {
+  return `${totalSymbolCount()} configured symbols across ${SCAN_UNIVERSE_TIERS.map((tier) => tier.label).join(", ")}`;
+}
+
 function buildScanRunId(): string {
   return `original_process_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -768,8 +772,9 @@ function buildSelectionPrompt(state: OriginalProcessState): string {
     "Return JSON only with exactly these keys:",
     '{ "status": "selected|no_trade_today", "ticker": "AAPL|null", "direction": "bullish|bearish|null", "confidencePercent": number|null, "confidenceBand": "65-74|75-84|85-92|93-97|null", "reason": "one concise reason" }',
     "",
-    `Full-universe scan summary: ${JSON.stringify({
+    `Configured-universe scan summary: ${JSON.stringify({
       configuredSymbolCount: totalSymbolCount(),
+      universe: scanUniverseLabel(),
       scannedSymbolCount: state.scannedSymbolCount,
       chunkCount: state.chunkCount,
       candidateRowCount: state.marketRows.length,
@@ -1013,7 +1018,7 @@ async function finalizeOriginalProcess(
   if (state.marketRows.length === 0) {
     return buildCompletedNoTradeResponse({
       state,
-      reason: "Full-universe scan completed, but no compact candidate rows survived the market-data gates.",
+      reason: `Configured-universe scan completed across ${scanUniverseLabel()}, but no compact candidate rows survived the market-data gates.`,
       selection: null,
       confirmation: null,
       selectedContext: null,
@@ -1158,7 +1163,7 @@ export async function runOriginalProcessStep(
         status: "running",
         scan_run_id: state.scanRunId,
         prompt: ORIGINAL_PROCESS_PROMPT_STAGES.scan,
-        progress: buildProgress(state, `Original Process scanning full universe: ${state.scannedSymbolCount}/${totalSymbolCount()} symbols screened.`),
+        progress: buildProgress(state, `Original Process scanning configured universe: ${state.scannedSymbolCount}/${totalSymbolCount()} symbols screened across ${SCAN_UNIVERSE_TIERS.length} tier(s).`),
         state,
         latestChunk: state.chunkSummaries.at(-1) ?? null,
         originalProcess: {
