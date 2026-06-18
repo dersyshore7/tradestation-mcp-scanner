@@ -2796,6 +2796,17 @@ function buildBrokerFillNote(params: {
   return `Broker-confirmed TradeStation fill ${params.orderId}: ${quantityText}${priceText}.${feeText}`;
 }
 
+function journalExitHasBrokerConfirmedFill(exit: JournalTradeDetail["exits"][number]): boolean {
+  return exit.exit_notes?.toLowerCase().includes("broker-confirmed tradestation fill") ?? false;
+}
+
+function tradeHasRecentExit(trade: JournalTradeDetail, cutoffMs: number): boolean {
+  return trade.exits.some((exit) => {
+    const exitMs = Date.parse(exit.exit_time);
+    return Number.isFinite(exitMs) && exitMs >= cutoffMs;
+  });
+}
+
 async function reconcileClosedLiveJournalExits(
   config: PaperTraderConfig,
   allTrades: JournalTradeDetail[],
@@ -2808,9 +2819,11 @@ async function reconcileClosedLiveJournalExits(
   const result = buildEmptyClosedExitReconciliationResult();
   const client = await createAutomationTradeStationClient(config.automationBaseUrl);
   const orderCache = new Map<string, Record<string, unknown> | null>();
+  const recentExitCutoffMs = Date.now() - (7 * 24 * 60 * 60 * 1000);
   const closedTrades = allTrades.filter((trade) =>
     isConfiguredAccountModeTrade(config, trade)
     && trade.status === "closed"
+    && tradeHasRecentExit(trade, recentExitCutoffMs)
     && readAutomationSnapshot(trade)?.accountId
     && readAutomationSnapshot(trade)?.optionSymbol
   );
@@ -3047,6 +3060,18 @@ async function buildLiveDailyAudit(
     && trade.status === "closed"
     && tradeHasExitOnDate(trade, todayChicago)
   );
+  const repairedTradeIds = new Set(closedExitReconciliation.updates.map((update) => update.tradeId));
+  const brokerConfirmedRealizedPlUsd = todayClosedTrades.reduce<number | null>((sum, trade) => {
+    const hasConfirmedExit = trade.exits.some(journalExitHasBrokerConfirmedFill) || repairedTradeIds.has(trade.id);
+    if (!hasConfirmedExit) {
+      return sum;
+    }
+    const realizedPlUsd = readNumber(trade.review?.realized_pl_usd ?? null);
+    if (realizedPlUsd === null) {
+      return sum;
+    }
+    return Number(((sum ?? 0) + realizedPlUsd).toFixed(2));
+  }, null);
   const biggestLosers: NonNullable<PaperTraderRunResult["liveDailyAudit"]>["biggestLosers"] = todayClosedTrades
     .flatMap((trade) => {
       const realizedPlUsd = readNumber(trade.review?.realized_pl_usd ?? null);
@@ -3096,9 +3121,7 @@ async function buildLiveDailyAudit(
   return {
     date: todayChicago,
     journalRealizedPlUsd: computeTodayRealizedPlUsd(allTrades, todayChicago, "live"),
-    brokerConfirmedRealizedPlUsd: closedExitReconciliation.inspected > 0
-      ? closedExitReconciliation.brokerConfirmedRealizedPlUsd
-      : null,
+    brokerConfirmedRealizedPlUsd,
     openUnrealizedPlUsd,
     biggestLosers,
     winnersExitedBeforeTarget,
