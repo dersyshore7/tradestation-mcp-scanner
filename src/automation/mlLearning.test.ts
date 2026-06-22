@@ -48,7 +48,10 @@ import {
   readOpeningOrderSnapshotForTest,
   validateEntryGeometryForTest,
 } from "./paperTrader.js";
-import type { AutomatedEntryScanState } from "./automatedEntryScan.js";
+import {
+  canResumeAutomatedEntryScanState,
+  type AutomatedEntryScanState,
+} from "./automatedEntryScan.js";
 import type { PaperEntryCandidateRecord } from "./entryCandidateHistory.js";
 import type { PaperTraderRunRecord } from "./paperTraderHistory.js";
 
@@ -178,6 +181,60 @@ test("resumable scan state is loaded from non-entry runs", () => {
   };
 
   assert.deepEqual(readAutomatedScanStateFromPaperTraderRun(run), state);
+});
+
+test("automated scan resume tolerates closed symbols falling out of exclusions", () => {
+  const state: AutomatedEntryScanState = {
+    version: 1,
+    scanRunId: "paper_scan_test",
+    prompt: "scan",
+    status: "running",
+    tierIndex: 1,
+    tierCursor: 20,
+    chunkCount: 7,
+    scannedSymbolCount: 121,
+    startedAt: new Date().toISOString(),
+    excludedTickers: ["BKR", "DRI", "HOOD", "PEP", "SLV"],
+    paperLearningPreferences: [],
+    confirmedCandidates: [],
+    chunkSummaries: [],
+    warnings: [],
+  };
+
+  assert.equal(
+    canResumeAutomatedEntryScanState(state, {
+      prompt: "scan",
+      excludedTickers: ["BKR", "DRI", "PEP", "SLV"],
+    }),
+    true,
+  );
+});
+
+test("automated scan resume rejects new unscanned open symbols", () => {
+  const state: AutomatedEntryScanState = {
+    version: 1,
+    scanRunId: "paper_scan_test",
+    prompt: "scan",
+    status: "running",
+    tierIndex: 0,
+    tierCursor: 20,
+    chunkCount: 1,
+    scannedSymbolCount: 20,
+    startedAt: new Date().toISOString(),
+    excludedTickers: [],
+    paperLearningPreferences: [],
+    confirmedCandidates: [],
+    chunkSummaries: [],
+    warnings: [],
+  };
+
+  assert.equal(
+    canResumeAutomatedEntryScanState(state, {
+      prompt: "scan",
+      excludedTickers: ["DRI"],
+    }),
+    false,
+  );
 });
 
 test("paper trader recognizes alive partial opening orders", () => {
@@ -359,13 +416,20 @@ test("paper trader wires closed-exit broker reconciliation without new order pla
   assert.ok(repositorySource.includes("broker_order_id: input.brokerOrderId"));
 });
 
-test("paper trader preserves final winner runners until hard exits or dead thesis", () => {
+test("paper trader preserves AI runners but closes premium-trailing exits", () => {
   const source = readFileSync(new URL("./paperTrader.ts", import.meta.url), "utf8");
 
   assert.ok(source.includes("Final runner preserved until hard target, stop, time exit, or validated dead-thesis exit."));
   assert.ok(source.includes("Prior scale-out already protected this winner; remaining runner position preserved"));
+  assert.ok(source.includes('&& aiDecision.action === "scale_out";'));
+  assert.ok(source.includes("profit_protection_exit_full"));
+  assert.ok(source.includes('profitProtectionDecision.action === "exit_full"'));
+  assert.ok(source.includes('reason: "manual_early_exit"'));
   assert.ok(source.includes("const aiOrRuleScaleOut = !decision && liveQuantity > 1 && !alreadyScaledOut"));
-  assert.equal(source.includes("Profit protection chose full exit for a single-contract winner"), false);
+  assert.equal(
+    source.includes('profitProtectionDecision.action === "exit_full"\n          || aiDecision.action === "scale_out"'),
+    false,
+  );
 });
 
 test("live opening exit guard suppresses ordinary early stop breaches", () => {
@@ -1357,6 +1421,7 @@ test("profit protection scales out BKR-style winner before giveback", () => {
   const decision = decideProfitProtection({
     direction: "CALL",
     quantity: 13,
+    entryOptionPrice: 3.2,
     optionReturnPct: 23.4,
     progressToTargetPct: 45.8,
     currentStopUnderlying: 64.53,
@@ -1371,12 +1436,14 @@ test("profit protection scales out BKR-style winner before giveback", () => {
   assert.equal(decision.remainingQuantity, 6);
   assert.equal(decision.updatedStopUnderlying, 65.39);
   assert.equal(decision.diagnostics.triggered, true);
+  assert.equal(decision.state.premiumTrailStopOptionMid, 3.68);
 });
 
 test("profit protection keeps original chart stop until a real trigger is earned", () => {
   const decision = decideProfitProtection({
     direction: "CALL",
     quantity: 3,
+    entryOptionPrice: 2,
     optionReturnPct: 5,
     progressToTargetPct: 25,
     currentStopUnderlying: 95,
@@ -1396,6 +1463,7 @@ test("profit protection permits breakeven stop after progress plus option-return
   const decision = decideProfitProtection({
     direction: "CALL",
     quantity: 3,
+    entryOptionPrice: 2,
     optionReturnPct: 10,
     progressToTargetPct: 40,
     currentStopUnderlying: 95,
@@ -1409,12 +1477,14 @@ test("profit protection permits breakeven stop after progress plus option-return
   assert.equal(decision.updatedStopUnderlying, 100);
   assert.equal(decision.diagnostics.triggered, true);
   assert.equal(decision.diagnostics.protectionEligible, true);
+  assert.equal(decision.diagnostics.premiumTrailActive, false);
 });
 
 test("profit protection keeps earned stops protective without repeating scale-out", () => {
   const decision = decideProfitProtection({
     direction: "CALL",
     quantity: 2,
+    entryOptionPrice: 2,
     optionReturnPct: 6,
     progressToTargetPct: 20,
     currentState: {
@@ -1432,6 +1502,103 @@ test("profit protection keeps earned stops protective without repeating scale-ou
   assert.equal(decision.updatedStopUnderlying, 101);
   assert.equal(decision.diagnostics.triggered, false);
   assert.equal(decision.diagnostics.protectionEligible, true);
+});
+
+test("single-contract premium trail activates without immediate close at the 20% trigger", () => {
+  const decision = decideProfitProtection({
+    direction: "CALL",
+    quantity: 1,
+    entryOptionPrice: 6.2,
+    optionReturnPct: 20,
+    progressToTargetPct: 58.7,
+    currentStopUnderlying: 212.43,
+    entryUnderlyingPrice: 215.02,
+    currentUnderlyingPrice: 217.44,
+    currentOptionMid: 7.44,
+    nowIso: "2026-06-22T14:30:00.000Z",
+  });
+
+  assert.equal(decision.action, "none");
+  assert.equal(decision.remainingQuantity, 1);
+  assert.equal(decision.diagnostics.premiumTrailActive, true);
+  assert.equal(decision.diagnostics.premiumTrailBreached, false);
+  assert.equal(decision.state.premiumTrailActivatedAt, "2026-06-22T14:30:00.000Z");
+  assert.equal(decision.state.premiumTrailStopOptionMid, 7.13);
+  assert.equal(decision.state.premiumTrailStopReturnPct, 15);
+});
+
+test("premium trail ratchets upward with stronger option highs", () => {
+  const decision = decideProfitProtection({
+    direction: "CALL",
+    quantity: 1,
+    entryOptionPrice: 6.2,
+    optionReturnPct: 37.1,
+    progressToTargetPct: 100,
+    currentState: {
+      triggeredAt: "2026-06-22T14:30:00.000Z",
+      premiumTrailActivatedAt: "2026-06-22T14:30:00.000Z",
+      premiumTrailStopOptionMid: 7.13,
+      premiumTrailStopReturnPct: 15,
+    },
+    currentStopUnderlying: 215.02,
+    entryUnderlyingPrice: 215.02,
+    currentUnderlyingPrice: 219.14,
+    currentOptionMid: 8.5,
+    nowIso: "2026-06-22T14:45:00.000Z",
+  });
+
+  assert.equal(decision.action, "none");
+  assert.equal(decision.state.premiumTrailStopOptionMid, 7.65);
+  assert.equal(decision.state.premiumTrailStopReturnPct, 23.4);
+});
+
+test("premium trail breach closes remaining option position", () => {
+  const decision = decideProfitProtection({
+    direction: "CALL",
+    quantity: 1,
+    entryOptionPrice: 6.2,
+    optionReturnPct: 14.5,
+    progressToTargetPct: 43,
+    currentState: {
+      triggeredAt: "2026-06-22T13:41:11.973Z",
+      peakOptionMid: 7.7,
+      peakOptionReturnPct: 24.2,
+      premiumTrailActivatedAt: "2026-06-22T14:46:00.385Z",
+      premiumTrailStopOptionMid: 7.13,
+      premiumTrailStopReturnPct: 15,
+    },
+    currentStopUnderlying: 215.02,
+    entryUnderlyingPrice: 215.02,
+    currentUnderlyingPrice: 216.79,
+    currentOptionMid: 7.1,
+    nowIso: "2026-06-22T15:05:00.000Z",
+  });
+
+  assert.equal(decision.action, "exit_full");
+  assert.equal(decision.remainingQuantity, 0);
+  assert.equal(decision.diagnostics.premiumTrailBreached, true);
+  assert.match(decision.reason ?? "", /current mid 7\.10 <= protected floor 7\.13 after peak 7\.70/);
+});
+
+test("progress-only protection does not activate premium trail below 20% option return", () => {
+  const decision = decideProfitProtection({
+    direction: "CALL",
+    quantity: 1,
+    entryOptionPrice: 6.2,
+    optionReturnPct: 14.5,
+    progressToTargetPct: 43,
+    currentStopUnderlying: 212.43,
+    entryUnderlyingPrice: 215.02,
+    currentUnderlyingPrice: 216.79,
+    currentOptionMid: 7.1,
+    nowIso: "2026-06-22T13:41:11.973Z",
+  });
+
+  assert.equal(decision.action, "none");
+  assert.equal(decision.updatedStopUnderlying, 215.02);
+  assert.equal(decision.diagnostics.protectionEligible, true);
+  assert.equal(decision.diagnostics.premiumTrailActive, false);
+  assert.equal(decision.state.premiumTrailActivatedAt, undefined);
 });
 
 test("BKR replay with scale-out preserves profit instead of learning setup failure", () => {
@@ -1480,6 +1647,7 @@ test("profit protection works without target progress for adopted AVGO-style pos
   const multiContract = decideProfitProtection({
     direction: "CALL",
     quantity: 3,
+    entryOptionPrice: 23.55,
     optionReturnPct: 20,
     progressToTargetPct: null,
     currentStopUnderlying: null,
@@ -1491,10 +1659,12 @@ test("profit protection works without target progress for adopted AVGO-style pos
   assert.equal(multiContract.action, "scale_out");
   assert.equal(multiContract.scaleQuantity, 2);
   assert.equal(multiContract.remainingQuantity, 1);
+  assert.equal(multiContract.state.premiumTrailStopOptionMid, 27.08);
 
   const singleContract = decideProfitProtection({
     direction: "CALL",
     quantity: 1,
+    entryOptionPrice: 23.55,
     optionReturnPct: 20,
     progressToTargetPct: null,
     currentStopUnderlying: null,
@@ -1503,7 +1673,10 @@ test("profit protection works without target progress for adopted AVGO-style pos
     currentOptionMid: 28.26,
     nowIso: "2026-05-27T19:50:29.284Z",
   });
-  assert.equal(singleContract.action, "exit_full");
+  assert.equal(singleContract.action, "none");
+  assert.equal(singleContract.remainingQuantity, 1);
+  assert.equal(singleContract.diagnostics.premiumTrailActive, true);
+  assert.equal(singleContract.state.premiumTrailStopOptionMid, 27.08);
 });
 
 test("partial exit math leaves a runner and aggregate final review includes all exits", () => {

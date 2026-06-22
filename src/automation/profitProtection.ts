@@ -9,6 +9,9 @@ export type ProfitProtectionState = {
   peakOptionMid?: number | null;
   peakUnderlyingPrice?: number | null;
   givebackFromPeakPct?: number | null;
+  premiumTrailActivatedAt?: string | null;
+  premiumTrailStopOptionMid?: number | null;
+  premiumTrailStopReturnPct?: number | null;
   lastCheckedAt?: string | null;
 };
 
@@ -27,12 +30,18 @@ export type ProfitProtectionDecision = {
     peakOptionReturnPct: number | null;
     peakProgressToTargetPct: number | null;
     givebackFromPeakPct: number | null;
+    premiumTrailActive: boolean;
+    premiumTrailStopOptionMid: number | null;
+    premiumTrailStopReturnPct: number | null;
+    premiumTrailBreached: boolean;
   };
 };
 
 const OPTION_RETURN_PROTECT_PCT = 20;
 const PROGRESS_PROTECT_PCT = 40;
 const PROGRESS_OPTION_RETURN_PROTECT_PCT = 10;
+const PREMIUM_TRAIL_LOCK_RETURN_PCT = 15;
+const PREMIUM_TRAIL_PEAK_MULTIPLE = 0.9;
 
 function roundPrice(value: number | null): number | null {
   return value === null ? null : Number(value.toFixed(2));
@@ -79,6 +88,32 @@ function buildTriggerReason(input: {
   }
 
   return `Trade reached ${input.progressToTargetPct?.toFixed(1) ?? "n/a"}% of target with option return ${input.optionReturnPct?.toFixed(1) ?? "n/a"}%, meeting the progress profit-protection trigger.`;
+}
+
+function computeOptionReturnPct(input: {
+  entryOptionPrice: number | null;
+  optionMid: number | null;
+}): number | null {
+  if (
+    input.entryOptionPrice === null
+    || input.entryOptionPrice <= 0
+    || input.optionMid === null
+  ) {
+    return null;
+  }
+
+  return ((input.optionMid - input.entryOptionPrice) / input.entryOptionPrice) * 100;
+}
+
+function buildPremiumTrailExitReason(input: {
+  currentOptionMid: number;
+  stopOptionMid: number;
+  peakOptionMid: number | null;
+}): string {
+  const peakText = input.peakOptionMid !== null
+    ? input.peakOptionMid.toFixed(2)
+    : "n/a";
+  return `Option premium trailing floor hit: current mid ${input.currentOptionMid.toFixed(2)} <= protected floor ${input.stopOptionMid.toFixed(2)} after peak ${peakText}.`;
 }
 
 function computeProtectedStopUnderlying(input: {
@@ -131,6 +166,7 @@ export function calculateScaleOutQuantity(quantity: number): {
 export function decideProfitProtection(input: {
   direction: TradeDirection;
   quantity: number;
+  entryOptionPrice: number | null;
   optionReturnPct: number | null;
   progressToTargetPct: number | null;
   currentState?: ProfitProtectionState | null;
@@ -143,25 +179,60 @@ export function decideProfitProtection(input: {
   const priorState = input.currentState ?? {};
   const peakOptionReturnPct = roundPct(maxNullable(priorState.peakOptionReturnPct, input.optionReturnPct));
   const peakProgressToTargetPct = roundPct(maxNullable(priorState.peakProgressToTargetPct, input.progressToTargetPct));
+  const peakOptionMid = roundPrice(maxNullable(priorState.peakOptionMid, input.currentOptionMid));
   const givebackFromPeakPct =
     peakOptionReturnPct !== null && input.optionReturnPct !== null
       ? roundPct(peakOptionReturnPct - input.optionReturnPct)
       : priorState.givebackFromPeakPct ?? null;
   const triggered = isProfitProtectionTriggered(input);
   const protectionEligible = triggered || Boolean(priorState.triggeredAt);
+  const premiumTrailActive = Boolean(priorState.premiumTrailActivatedAt) || (
+    input.entryOptionPrice !== null
+    && input.entryOptionPrice > 0
+    && input.currentOptionMid !== null
+    && input.optionReturnPct !== null
+    && input.optionReturnPct >= OPTION_RETURN_PROTECT_PCT
+  );
+  const premiumTrailLockFloor = premiumTrailActive && input.entryOptionPrice !== null && input.entryOptionPrice > 0
+    ? input.entryOptionPrice * (1 + (PREMIUM_TRAIL_LOCK_RETURN_PCT / 100))
+    : null;
+  const premiumTrailPeakFloor = premiumTrailActive && input.currentOptionMid !== null
+    ? input.currentOptionMid * PREMIUM_TRAIL_PEAK_MULTIPLE
+    : null;
+  const premiumTrailStopOptionMid = premiumTrailActive
+    ? roundPrice(maxNullable(
+        priorState.premiumTrailStopOptionMid,
+        maxNullable(premiumTrailLockFloor, premiumTrailPeakFloor),
+      ))
+    : priorState.premiumTrailStopOptionMid ?? null;
+  const premiumTrailStopReturnPct = premiumTrailStopOptionMid !== null
+    ? roundPct(computeOptionReturnPct({
+        entryOptionPrice: input.entryOptionPrice,
+        optionMid: premiumTrailStopOptionMid,
+      }))
+    : priorState.premiumTrailStopReturnPct ?? null;
+  const premiumTrailBreached =
+    premiumTrailActive
+    && premiumTrailStopOptionMid !== null
+    && input.currentOptionMid !== null
+    && input.currentOptionMid <= premiumTrailStopOptionMid;
   const state: ProfitProtectionState = {
     ...priorState,
     peakOptionReturnPct,
     peakProgressToTargetPct,
-    peakOptionMid:
-      input.optionReturnPct !== null && input.optionReturnPct === peakOptionReturnPct
-        ? input.currentOptionMid
-        : priorState.peakOptionMid ?? input.currentOptionMid,
+    peakOptionMid,
     peakUnderlyingPrice:
       input.progressToTargetPct !== null && input.progressToTargetPct === peakProgressToTargetPct
         ? input.currentUnderlyingPrice
         : priorState.peakUnderlyingPrice ?? input.currentUnderlyingPrice,
     givebackFromPeakPct,
+    ...(premiumTrailActive
+      ? {
+          premiumTrailActivatedAt: priorState.premiumTrailActivatedAt ?? input.nowIso,
+          premiumTrailStopOptionMid,
+          premiumTrailStopReturnPct,
+        }
+      : {}),
     lastCheckedAt: input.nowIso,
     ...(triggered && !priorState.triggeredAt ? { triggeredAt: input.nowIso } : {}),
   };
@@ -174,15 +245,41 @@ export function decideProfitProtection(input: {
     peakOptionReturnPct,
     peakProgressToTargetPct,
     givebackFromPeakPct,
+    premiumTrailActive,
+    premiumTrailStopOptionMid,
+    premiumTrailStopReturnPct,
+    premiumTrailBreached,
   };
   const updatedStopUnderlying = protectionEligible
     ? computeProtectedStopUnderlying(input)
     : null;
 
+  if (
+    premiumTrailBreached
+    && input.currentOptionMid !== null
+    && premiumTrailStopOptionMid !== null
+  ) {
+    return {
+      action: "exit_full",
+      reason: buildPremiumTrailExitReason({
+        currentOptionMid: input.currentOptionMid,
+        stopOptionMid: premiumTrailStopOptionMid,
+        peakOptionMid,
+      }),
+      scaleQuantity: Math.max(0, Math.floor(input.quantity)),
+      remainingQuantity: 0,
+      updatedStopUnderlying,
+      state,
+      diagnostics,
+    };
+  }
+
   if (!triggered || priorState.scaledOutAt) {
     return {
       action: "none",
-      reason: null,
+      reason: premiumTrailActive
+        ? `Premium trailing floor active at ${premiumTrailStopOptionMid?.toFixed(2) ?? "n/a"} (${premiumTrailStopReturnPct?.toFixed(1) ?? "n/a"}% option return).`
+        : null,
       scaleQuantity: 0,
       remainingQuantity: Math.max(0, Math.floor(input.quantity)),
       updatedStopUnderlying,
@@ -192,14 +289,16 @@ export function decideProfitProtection(input: {
   }
 
   const { scaleQuantity, remainingQuantity } = calculateScaleOutQuantity(input.quantity);
-  const reason = buildTriggerReason(input);
+  const reason = premiumTrailActive
+    ? `${buildTriggerReason(input)} Premium trailing floor active at ${premiumTrailStopOptionMid?.toFixed(2) ?? "n/a"} (${premiumTrailStopReturnPct?.toFixed(1) ?? "n/a"}% option return).`
+    : buildTriggerReason(input);
 
   if (input.quantity <= 1) {
     return {
-      action: "exit_full",
+      action: "none",
       reason,
-      scaleQuantity,
-      remainingQuantity,
+      scaleQuantity: 0,
+      remainingQuantity: Math.max(0, Math.floor(input.quantity)),
       updatedStopUnderlying,
       state,
       diagnostics,

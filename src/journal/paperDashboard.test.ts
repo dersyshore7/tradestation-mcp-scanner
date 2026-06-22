@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { buildPaperDashboardBrokerAuditForTest } from "./paperDashboard.js";
+import {
+  addDefaultExitTruthForTest,
+  buildPaperDashboardBrokerAuditForTest,
+} from "./paperDashboard.js";
 
 test("paper dashboard broker audit uses structured exit truth fields", () => {
   const audit = buildPaperDashboardBrokerAuditForTest([
@@ -46,4 +49,24 @@ test("exit truth migration adds columns and backfills legacy note patterns", () 
   assert.match(migration, /add column if not exists broker_order_id text null/);
   assert.match(migration, /exit_notes ilike '%provisional%'/);
   assert.match(migration, /exit_notes ilike '%broker-confirmed tradestation fill%'/);
+});
+
+test("pending migration fallback keeps legacy exit notes out of broker truth counts", () => {
+  const fallbackExit = addDefaultExitTruthForTest({
+    trade_id: "trade-1",
+    exit_time: "2026-06-18T15:00:00.000Z",
+    exit_reason: "manual_early_exit",
+    option_exit_price: "1.23",
+    quantity_closed: 1,
+    exit_notes: "Broker-confirmed TradeStation fill 123 and provisional quote text.",
+  });
+
+  assert.equal(fallbackExit.exit_price_source, "manual");
+  assert.equal(fallbackExit.broker_confirmed, false);
+  assert.equal(fallbackExit.broker_repaired, false);
+  assert.deepEqual(buildPaperDashboardBrokerAuditForTest([fallbackExit]), {
+    provisional_exit_count: 0,
+    broker_confirmed_exit_count: 0,
+    broker_repaired_exit_count: 0,
+  });
 });

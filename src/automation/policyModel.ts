@@ -259,6 +259,7 @@ function isProfitProtectionState(item: PaperTraderManagementHistoryEntry, trade:
   return decideProfitProtection({
     direction: trade.direction,
     quantity: Math.max(2, trade.contracts ?? 2),
+    entryOptionPrice: asFiniteNumber(trade.option_entry_price),
     optionReturnPct: asFiniteNumber(item.optionReturnPct),
     progressToTargetPct: asFiniteNumber(item.progressToTargetPct),
     currentStopUnderlying: asFiniteNumber(item.stopUnderlying),

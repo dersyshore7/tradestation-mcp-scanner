@@ -52,6 +52,11 @@ type PaperDashboardExitRow = {
   broker_order_id: string | null;
 };
 
+type PaperDashboardLegacyExitRow = Omit<
+  PaperDashboardExitRow,
+  "exit_price_source" | "broker_confirmed" | "broker_repaired" | "broker_order_id"
+>;
+
 type PaperDashboardOutcomeDetailRow = {
   id: string;
   signal_snapshot_json: Record<string, unknown> | null;
@@ -320,6 +325,31 @@ export function buildPaperDashboardBrokerAuditForTest(
   }, buildEmptyBrokerAudit());
 }
 
+function isMissingExitTruthColumnError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("42703")
+    && (
+      message.includes("exit_price_source")
+      || message.includes("broker_confirmed")
+      || message.includes("broker_repaired")
+      || message.includes("broker_order_id")
+    );
+}
+
+function addDefaultExitTruth(row: PaperDashboardLegacyExitRow): PaperDashboardExitRow {
+  return {
+    ...row,
+    exit_price_source: "manual",
+    broker_confirmed: false,
+    broker_repaired: false,
+    broker_order_id: null,
+  };
+}
+
+export function addDefaultExitTruthForTest(row: PaperDashboardLegacyExitRow): PaperDashboardExitRow {
+  return addDefaultExitTruth(row);
+}
+
 function buildOutcomeTrade(
   trade: PaperDashboardTrade,
   detail: PaperDashboardOutcomeDetailRow | null,
@@ -378,6 +408,32 @@ async function countPaperDashboardRows(accountMode: AccountMode, filters: string
   });
 }
 
+async function loadPaperDashboardExitRows(tradeIds: string[]): Promise<PaperDashboardExitRow[]> {
+  try {
+    return await supabaseSelect<PaperDashboardExitRow>({
+      table: "journal_exits",
+      select: "trade_id,exit_time,exit_reason,option_exit_price,quantity_closed,exit_notes,exit_price_source,broker_confirmed,broker_repaired,broker_order_id",
+      filters: [buildInFilter("trade_id", tradeIds)],
+      order: ["exit_time.desc"],
+    });
+  } catch (error) {
+    if (!isMissingExitTruthColumnError(error)) {
+      throw error;
+    }
+
+    console.warn(
+      "Paper dashboard exit-truth columns are missing; falling back to legacy journal_exits columns. Apply 202606180001_journal_exit_truth_fields.sql to enable structured broker/provisional counts.",
+    );
+    const legacyRows = await supabaseSelect<PaperDashboardLegacyExitRow>({
+      table: "journal_exits",
+      select: "trade_id,exit_time,exit_reason,option_exit_price,quantity_closed,exit_notes",
+      filters: [buildInFilter("trade_id", tradeIds)],
+      order: ["exit_time.desc"],
+    });
+    return legacyRows.map(addDefaultExitTruth);
+  }
+}
+
 async function loadPaperDashboardRows(
   accountMode: AccountMode,
   limit: number,
@@ -402,12 +458,7 @@ async function loadPaperDashboardRows(
       select: "trade_id,winner,realized_pl_usd,realized_r_multiple,realized_return_pct,review_notes",
       filters: [buildInFilter("trade_id", tradeIds)],
     }),
-    supabaseSelect<PaperDashboardExitRow>({
-      table: "journal_exits",
-      select: "trade_id,exit_time,exit_reason,option_exit_price,quantity_closed,exit_notes,exit_price_source,broker_confirmed,broker_repaired,broker_order_id",
-      filters: [buildInFilter("trade_id", tradeIds)],
-      order: ["exit_time.desc"],
-    }),
+    loadPaperDashboardExitRows(tradeIds),
   ]);
 
   const reviewsByTradeId = reviewRows.reduce((map, review) => {

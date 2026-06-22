@@ -1905,16 +1905,25 @@
         }
 
         const runs = sortByTimestampDesc(Array.isArray(activity?.runs) ? activity.runs : [], "created_at");
+        const candidateActivity = sortByTimestampDesc(Array.isArray(activity?.candidateActivity) ? activity.candidateActivity : [], "created_at");
         const dataWarnings = Array.isArray(activity?.dataWarnings) ? activity.dataWarnings : [];
         page.activityHasLoaded = true;
 
-        if (runs.length === 0 && dataWarnings.length === 0) {
+        if (runs.length === 0 && candidateActivity.length === 0 && dataWarnings.length === 0) {
           page.activityArea.innerHTML = '<div class="empty-state">No saved automation runs yet. Once the Vercel cron or a manual cycle runs, it will appear here.</div>';
           return;
         }
 
         page.activityArea.innerHTML = `
           ${dataWarnings.length > 0 ? `<div class="empty-state">${renderList(dataWarnings)}</div>` : ""}
+          ${candidateActivity.length > 0
+            ? `<div class="summary-section">
+                <h3>Scanner Heartbeat</h3>
+                ${candidateActivity.slice(0, 6).map((item) => `
+                  <div class="row"><strong>${escapeHtml(formatCentralTimestamp(item.created_at))}:</strong> ${escapeHtml(renderMaybe(item.symbol))} | ${escapeHtml(renderMaybe(item.decision))}${item.decision_reason ? ` - ${escapeHtml(compactText(item.decision_reason, 160))}` : ""}</div>
+                `).join("")}
+              </div>`
+            : ""}
           ${runs.length === 0
             ? ""
             : `<div class="timeline-list">

@@ -29,6 +29,7 @@ import {
   type ThesisStatus,
 } from "./aiManager.js";
 import {
+  canResumeAutomatedEntryScanState,
   runAutomatedEntryScan,
   type AutomatedEntryScanState,
 } from "./automatedEntryScan.js";
@@ -549,7 +550,14 @@ type PaperTraderRunResult = {
     updates: {
       tradeId: string;
       symbol: string;
-      action: "ai_hold" | "ai_update_levels" | "ai_exit_now" | "ai_scale_out" | "ai_fallback" | "profit_protection_scale_out";
+      action:
+        | "ai_hold"
+        | "ai_update_levels"
+        | "ai_exit_now"
+        | "ai_scale_out"
+        | "ai_fallback"
+        | "profit_protection_scale_out"
+        | "profit_protection_exit_full";
       stopUnderlying: number | null;
       targetUnderlying: number | null;
       note: string;
@@ -4633,9 +4641,11 @@ async function manageOpenPaperTrades(
       dteAtEntry: trade.dte_at_entry,
     });
     const liveQuantity = Math.abs(livePosition.quantity ?? automation.quantity ?? 0);
+    const entryOptionPrice = readNumber(trade.option_entry_price);
     const profitProtectionDecision = decideProfitProtection({
       direction: trade.direction,
       quantity: liveQuantity,
+      entryOptionPrice,
       optionReturnPct,
       progressToTargetPct,
       currentState: automation.profitProtectionState ?? null,
@@ -4729,12 +4739,12 @@ async function manageOpenPaperTrades(
         profitProtectionStop: profitProtectionDecision.updatedStopUnderlying,
         profitProtectionEarned: stopProtectionEligible,
       });
+      const profitProtectionFullExit =
+        profitProtectionDecision.action === "exit_full"
+        && aiDecision.action !== "exit_now";
       const preserveFinalRunner =
         liveQuantity <= 1
-        && (
-          profitProtectionDecision.action === "exit_full"
-          || aiDecision.action === "scale_out"
-        );
+        && aiDecision.action === "scale_out";
       const preserveScaledRunnerBundle =
         liveQuantity > 1
         && Boolean(profitProtectionDecision.state.scaledOutAt)
@@ -4742,7 +4752,14 @@ async function manageOpenPaperTrades(
       const preserveRunnerPosition =
         aiDecision.action !== "exit_now"
         && (preserveFinalRunner || preserveScaledRunnerBundle);
-      const historyNote = preserveRunnerPosition
+      const historyNote = profitProtectionFullExit
+        ? joinNoteParts([
+            aiDecision.note,
+            thesisInvalidationEvidence,
+            aiStopTighteningBlockedReason,
+            `Profit protection overrides management action: ${profitProtectionDecision.reason}`,
+          ])
+        : preserveRunnerPosition
         ? joinNoteParts([
             aiDecision.note,
             thesisInvalidationEvidence,
@@ -4763,7 +4780,9 @@ async function manageOpenPaperTrades(
       const historyEntry: PaperTraderManagementHistoryEntry = {
         timestamp: nowIso,
         action:
-          preserveRunnerPosition
+          profitProtectionFullExit
+            ? "exit_now"
+            : preserveRunnerPosition
             ? "hold"
             : profitProtectionDecision.action === "scale_out" && aiDecision.action !== "exit_now"
             ? "scale_out"
@@ -4850,7 +4869,9 @@ async function manageOpenPaperTrades(
         tradeId: trade.id,
         symbol: trade.symbol,
         action:
-          historyEntry.action === "hold"
+          profitProtectionFullExit
+            ? "profit_protection_exit_full"
+            : historyEntry.action === "hold"
             ? "ai_hold"
             : historyEntry.action === "update_levels"
               ? "ai_update_levels"
@@ -4878,6 +4899,13 @@ async function manageOpenPaperTrades(
         targetUnderlying: activeLevels.targetUnderlying,
         note: `AI manager unavailable; falling back to hard exits. ${message}`,
       });
+    }
+
+    if (!decision && profitProtectionDecision.action === "exit_full") {
+      decision = {
+        reason: "manual_early_exit",
+        note: profitProtectionDecision.reason ?? "Option premium trailing floor hit.",
+      };
     }
 
     const alreadyScaledOut = Boolean(profitProtectionDecision.state.scaledOutAt);
@@ -5542,12 +5570,18 @@ async function maybeEnterNewPaperTrade(params: {
   const learningTrades = filterRecordsForPaperLearning(allTrades);
   const entryRewardModel = trainEntryRewardModel(learningTrades);
   const learningOutcomeAudit = buildLearningOutcomeAudit(learningTrades);
-  const resumableScanState = await loadResumableAutomatedScanState(config.accountMode, dryRun);
+  const openSymbols = openPaperTrades.map((trade) => trade.symbol);
+  const loadedScanState = await loadResumableAutomatedScanState(config.accountMode, dryRun);
+  const resumableScanState = canResumeAutomatedEntryScanState(loadedScanState, {
+    prompt,
+    excludedTickers: openSymbols,
+  })
+    ? loadedScanState
+    : null;
   const scanRunId = resumableScanState?.scanRunId ?? buildScanRunId();
   const paperLearningPreferences =
     resumableScanState?.paperLearningPreferences
     ?? buildPaperLearningPreferences(entryRewardModel, learningOutcomeAudit);
-  const openSymbols = openPaperTrades.map((trade) => trade.symbol);
   const policySkippedSymbols: string[] = [];
   const policySkipReasons: string[] = [];
   const evaluatedCandidates: PaperTraderEntryCandidateEvaluation[] = [];

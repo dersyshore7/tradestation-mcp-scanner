@@ -175,9 +175,9 @@ function createInitialState(params: AutomatedEntryScanParams): AutomatedEntrySca
   };
 }
 
-function canResumeState(
+export function canResumeAutomatedEntryScanState(
   state: AutomatedEntryScanState | null | undefined,
-  params: AutomatedEntryScanParams,
+  params: { prompt: string; excludedTickers: string[] },
 ): state is AutomatedEntryScanState {
   if (!state || state.version !== 1 || state.status !== "running") {
     return false;
@@ -185,8 +185,18 @@ function canResumeState(
   if (state.prompt !== params.prompt) {
     return false;
   }
-  const currentExcluded = normalizeSymbols(params.excludedTickers).join(",");
-  return normalizeSymbols(state.excludedTickers).join(",") === currentExcluded;
+
+  const excludedByState = new Set(
+    excludedBeforePosition(normalizeScanPosition(state)).map((symbol) => symbol.toUpperCase()),
+  );
+  return normalizeSymbols(params.excludedTickers).every((symbol) => excludedByState.has(symbol));
+}
+
+function canResumeState(
+  state: AutomatedEntryScanState | null | undefined,
+  params: AutomatedEntryScanParams,
+): state is AutomatedEntryScanState {
+  return canResumeAutomatedEntryScanState(state, params);
 }
 
 function excludedBeforePosition(state: AutomatedEntryScanState): string[] {
