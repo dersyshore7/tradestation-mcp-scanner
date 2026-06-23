@@ -2734,49 +2734,132 @@
       }
 
       const liveTheoreticalBalanceConfig = {
-        activationStorageKey: "liveTheoreticalBalanceActivationStateV2",
-        legacyActivationStorageKey: "liveTheoreticalBalanceActivationPlUsd",
-        balanceABaselineUsd: 5477.50,
+        activationStorageKey: "liveTheoreticalBalanceActivationStateV3",
+        dailyBaselineStorageKey: "liveTheoreticalBalanceDailyBaselineV1",
+        legacyStorageKeys: [
+          "liveTheoreticalBalanceActivationPlUsd",
+          "liveTheoreticalBalanceActivationStateV2",
+        ],
         balanceJBaselineUsd: 3000,
         balanceDBaselineUsd: 2640,
         pendingDepositUsd: 5640,
-        combinedBaselineUsd: 11117.50,
+        chicagoTimeZone: "America/Chicago",
       };
 
-      function readLiveTheoreticalBalanceActivationState() {
+      function getChicagoDateKey(date = new Date()) {
         try {
-          const rawState = window.localStorage.getItem(liveTheoreticalBalanceConfig.activationStorageKey);
-          if (!rawState) {
-            return null;
+          const parts = new Intl.DateTimeFormat("en-US", {
+            timeZone: liveTheoreticalBalanceConfig.chicagoTimeZone,
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+          }).formatToParts(date).reduce((acc, part) => {
+            acc[part.type] = part.value;
+            return acc;
+          }, {});
+          if (parts.year && parts.month && parts.day) {
+            return `${parts.year}-${parts.month}-${parts.day}`;
           }
-          const state = JSON.parse(rawState);
-          const activationAccountValueUsd = asNumber(state?.activationAccountValueUsd);
-          const balanceAPlAtActivationUsd = asNumber(state?.balanceAPlAtActivationUsd);
-          if (activationAccountValueUsd === null || balanceAPlAtActivationUsd === null) {
-            return null;
-          }
-          return {
-            activationAccountValueUsd,
-            balanceAPlAtActivationUsd,
-          };
+        } catch {
+          // Fall through to a stable browser-safe fallback.
+        }
+        return date.toISOString().slice(0, 10);
+      }
+
+      function readLiveTheoreticalStorage(key) {
+        try {
+          const rawState = window.localStorage.getItem(key);
+          return rawState ? JSON.parse(rawState) : null;
         } catch {
           return null;
         }
       }
 
-      function writeLiveTheoreticalBalanceActivationState(state) {
+      function writeLiveTheoreticalStorage(key, state) {
         try {
-          window.localStorage.setItem(
-            liveTheoreticalBalanceConfig.activationStorageKey,
-            JSON.stringify({
-              activationAccountValueUsd: Number(state.activationAccountValueUsd).toFixed(2),
-              balanceAPlAtActivationUsd: Number(state.balanceAPlAtActivationUsd).toFixed(2),
-            }),
-          );
-          window.localStorage.removeItem(liveTheoreticalBalanceConfig.legacyActivationStorageKey);
+          window.localStorage.setItem(key, JSON.stringify(state));
         } catch {
           // Ignore browsers where localStorage is unavailable.
         }
+      }
+
+      function removeLiveTheoreticalStorage(keys) {
+        try {
+          keys.forEach((key) => window.localStorage.removeItem(key));
+        } catch {
+          // Ignore browsers where localStorage is unavailable.
+        }
+      }
+
+      function readLiveTheoreticalBalanceActivationState() {
+        const state = readLiveTheoreticalStorage(liveTheoreticalBalanceConfig.activationStorageKey);
+        const activationAccountValueUsd = asNumber(state?.activationAccountValueUsd);
+        const balanceAPlAtActivationUsd = asNumber(state?.balanceAPlAtActivationUsd);
+        const balanceABaselineUsd = asNumber(state?.balanceABaselineUsd);
+        const combinedActivatedCapitalUsd = asNumber(state?.combinedActivatedCapitalUsd);
+        if (
+          activationAccountValueUsd === null
+          || balanceAPlAtActivationUsd === null
+          || balanceABaselineUsd === null
+          || combinedActivatedCapitalUsd === null
+        ) {
+          return null;
+        }
+        return {
+          activationDateKey: typeof state?.activationDateKey === "string" ? state.activationDateKey : "",
+          baselineCapturedAt: typeof state?.baselineCapturedAt === "string" ? state.baselineCapturedAt : "",
+          activationAccountValueUsd,
+          balanceAPlAtActivationUsd,
+          balanceABaselineUsd,
+          combinedActivatedCapitalUsd,
+        };
+      }
+
+      function writeLiveTheoreticalBalanceActivationState(state) {
+        writeLiveTheoreticalStorage(liveTheoreticalBalanceConfig.activationStorageKey, {
+          activationDateKey: state.activationDateKey,
+          baselineCapturedAt: state.baselineCapturedAt,
+          activationAccountValueUsd: Number(state.activationAccountValueUsd).toFixed(2),
+          balanceAPlAtActivationUsd: Number(state.balanceAPlAtActivationUsd).toFixed(2),
+          balanceABaselineUsd: Number(state.balanceABaselineUsd).toFixed(2),
+          combinedActivatedCapitalUsd: Number(state.combinedActivatedCapitalUsd).toFixed(2),
+        });
+        removeLiveTheoreticalStorage(liveTheoreticalBalanceConfig.legacyStorageKeys);
+      }
+
+      function readLiveTheoreticalDailyBaseline(dateKey) {
+        const state = readLiveTheoreticalStorage(liveTheoreticalBalanceConfig.dailyBaselineStorageKey);
+        const balanceABaselineUsd = asNumber(state?.balanceABaselineUsd);
+        if (state?.dateKey !== dateKey || balanceABaselineUsd === null) {
+          return null;
+        }
+        return {
+          dateKey,
+          balanceABaselineUsd,
+          capturedAt: typeof state?.capturedAt === "string" ? state.capturedAt : "",
+        };
+      }
+
+      function writeLiveTheoreticalDailyBaseline(state) {
+        writeLiveTheoreticalStorage(liveTheoreticalBalanceConfig.dailyBaselineStorageKey, {
+          dateKey: state.dateKey,
+          balanceABaselineUsd: Number(state.balanceABaselineUsd).toFixed(2),
+          capturedAt: state.capturedAt,
+        });
+      }
+
+      function getLiveTheoreticalDailyBaseline(accountValueUsd, dateKey) {
+        const existingState = readLiveTheoreticalDailyBaseline(dateKey);
+        if (existingState || accountValueUsd === null) {
+          return existingState;
+        }
+        const capturedState = {
+          dateKey,
+          balanceABaselineUsd: accountValueUsd,
+          capturedAt: new Date().toISOString(),
+        };
+        writeLiveTheoreticalDailyBaseline(capturedState);
+        return capturedState;
       }
 
       function renderTheoreticalBalanceCard(row) {
@@ -2798,24 +2881,48 @@
 
         const config = liveTheoreticalBalanceConfig;
         const accountValueUsd = asNumber(accountSnapshot?.accountValueUsd);
-        const balanceAAccountDeltaUsd = accountValueUsd === null
-          ? null
-          : Number((accountValueUsd - config.balanceABaselineUsd).toFixed(2));
-        const depositDetected = accountValueUsd !== null && accountValueUsd >= config.combinedBaselineUsd;
+        const todayChicagoDateKey = getChicagoDateKey();
         let activationState = readLiveTheoreticalBalanceActivationState();
         let depositActive = activationState !== null;
+        const dailyBaselineState = depositActive
+          ? null
+          : getLiveTheoreticalDailyBaseline(accountValueUsd, todayChicagoDateKey);
+        const balanceABaselineUsd = activationState?.balanceABaselineUsd
+          ?? dailyBaselineState?.balanceABaselineUsd
+          ?? null;
+        const combinedActivatedCapitalUsd = activationState?.combinedActivatedCapitalUsd
+          ?? (balanceABaselineUsd === null
+            ? null
+            : Number((balanceABaselineUsd + config.balanceJBaselineUsd + config.balanceDBaselineUsd).toFixed(2)));
+        const depositThresholdUsd = balanceABaselineUsd === null
+          ? null
+          : Number((balanceABaselineUsd + config.pendingDepositUsd).toFixed(2));
+        const balanceAAccountDeltaUsd = accountValueUsd === null || balanceABaselineUsd === null
+          ? null
+          : Number((accountValueUsd - balanceABaselineUsd).toFixed(2));
+        const depositDetected = accountValueUsd !== null && depositThresholdUsd !== null && accountValueUsd >= depositThresholdUsd;
 
-        if (!depositActive && depositDetected && accountValueUsd !== null) {
+        if (
+          !depositActive
+          && depositDetected
+          && accountValueUsd !== null
+          && balanceABaselineUsd !== null
+          && combinedActivatedCapitalUsd !== null
+        ) {
           activationState = {
+            activationDateKey: todayChicagoDateKey,
+            baselineCapturedAt: dailyBaselineState?.capturedAt || new Date().toISOString(),
             activationAccountValueUsd: accountValueUsd,
-            balanceAPlAtActivationUsd: Number((accountValueUsd - config.combinedBaselineUsd).toFixed(2)),
+            balanceAPlAtActivationUsd: Number((accountValueUsd - depositThresholdUsd).toFixed(2)),
+            balanceABaselineUsd,
+            combinedActivatedCapitalUsd,
           };
           depositActive = true;
           writeLiveTheoreticalBalanceActivationState(activationState);
         }
 
         const balances = [
-          { key: "A", label: "Balance A", baseUsd: config.balanceABaselineUsd },
+          { key: "A", label: "Balance A", baseUsd: balanceABaselineUsd },
           { key: "J", label: "Balance J", baseUsd: config.balanceJBaselineUsd },
           { key: "D", label: "Balance D", baseUsd: config.balanceDBaselineUsd },
         ];
@@ -2823,7 +2930,9 @@
           ? Number((accountValueUsd - activationState.activationAccountValueUsd).toFixed(2))
           : null;
         const rows = balances.map((balance) => {
-          const share = balance.baseUsd / config.combinedBaselineUsd;
+          const share = combinedActivatedCapitalUsd !== null && combinedActivatedCapitalUsd > 0 && balance.baseUsd !== null
+            ? balance.baseUsd / combinedActivatedCapitalUsd
+            : 0;
           let plUsd = null;
           if (accountValueUsd !== null) {
             if (!depositActive) {
@@ -2848,8 +2957,10 @@
         const meta = accountValueUsd === null
           ? `${depositState}. Broker net worth unavailable.`
           : depositActive
-            ? `${depositState}. Net worth ${formatMoney(accountValueUsd)}; post-deposit P/L ${formatMoney(postActivationPlUsd ?? 0)}.`
-            : `${depositState}. Net worth ${formatMoney(accountValueUsd)}; Balance A P/L ${formatMoney(balanceAAccountDeltaUsd)}.`;
+            ? `${depositState}. Balance A baseline ${formatMoney(activationState?.balanceABaselineUsd)}; net worth ${formatMoney(accountValueUsd)}; post-deposit P/L ${formatMoney(postActivationPlUsd ?? 0)}.`
+            : balanceABaselineUsd === null
+              ? `${depositState}. Waiting for Balance A baseline from the first live snapshot today.`
+              : `${depositState}. Balance A baseline captured from first live snapshot today: ${formatMoney(balanceABaselineUsd)}. Net worth ${formatMoney(accountValueUsd)}; Balance A P/L ${formatMoney(balanceAAccountDeltaUsd)}.`;
 
         return `
           <section class="ops-panel ops-theoretical-balances">
@@ -3475,20 +3586,14 @@
             .map((bucket) => String(bucket.label || bucket.key || "").toUpperCase())
             .filter(Boolean),
         );
-        const liveNotJournaled = [...simPositionUnderlyings].filter((symbol) => !journalOpenUnderlyings.has(symbol));
         const journalNotLive = [...journalOpenUnderlyings].filter((symbol) => !simPositionUnderlyings.has(symbol));
         const hasArchivedTrades = (excludedTradeCount ?? 0) > 0;
         const syncWarnings = [
-          liveNotJournaled.length > 0
-            ? hasArchivedTrades
-              ? `TradeStation position(s) not matched to current-epoch open journal rows are still shown: ${liveNotJournaled.join(", ")}.`
-              : `TradeStation position(s) without an open journal row: ${liveNotJournaled.join(", ")}.`
-            : null,
           journalNotLive.length > 0
             ? `Current-epoch open journal row(s) not currently present in TradeStation positions: ${journalNotLive.join(", ")}.`
             : null,
         ].filter(Boolean);
-        const syncWarningLabel = hasArchivedTrades ? "Position scope note:" : "Position sync warning:";
+        const syncWarningLabel = "Position sync warning:";
         const outcomeDetailsId = `${page.mode}OutcomeDetails`;
         const warningItems = [
           accountSnapshot?.error,
