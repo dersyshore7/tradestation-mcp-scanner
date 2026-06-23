@@ -2734,28 +2734,46 @@
       }
 
       const liveTheoreticalBalanceConfig = {
-        activationStorageKey: "liveTheoreticalBalanceActivationPlUsd",
-        balanceABaselineUsd: 5447.50,
+        activationStorageKey: "liveTheoreticalBalanceActivationStateV2",
+        legacyActivationStorageKey: "liveTheoreticalBalanceActivationPlUsd",
+        balanceABaselineUsd: 5477.50,
         balanceJBaselineUsd: 3000,
         balanceDBaselineUsd: 2640,
         pendingDepositUsd: 5640,
-        combinedBaselineUsd: 11087.50,
+        combinedBaselineUsd: 11117.50,
       };
 
-      function readLiveTheoreticalBalanceActivationPl() {
+      function readLiveTheoreticalBalanceActivationState() {
         try {
-          return asNumber(window.localStorage.getItem(liveTheoreticalBalanceConfig.activationStorageKey));
+          const rawState = window.localStorage.getItem(liveTheoreticalBalanceConfig.activationStorageKey);
+          if (!rawState) {
+            return null;
+          }
+          const state = JSON.parse(rawState);
+          const activationAccountValueUsd = asNumber(state?.activationAccountValueUsd);
+          const balanceAPlAtActivationUsd = asNumber(state?.balanceAPlAtActivationUsd);
+          if (activationAccountValueUsd === null || balanceAPlAtActivationUsd === null) {
+            return null;
+          }
+          return {
+            activationAccountValueUsd,
+            balanceAPlAtActivationUsd,
+          };
         } catch {
           return null;
         }
       }
 
-      function writeLiveTheoreticalBalanceActivationPl(value) {
+      function writeLiveTheoreticalBalanceActivationState(state) {
         try {
           window.localStorage.setItem(
             liveTheoreticalBalanceConfig.activationStorageKey,
-            String(Number(value).toFixed(2)),
+            JSON.stringify({
+              activationAccountValueUsd: Number(state.activationAccountValueUsd).toFixed(2),
+              balanceAPlAtActivationUsd: Number(state.balanceAPlAtActivationUsd).toFixed(2),
+            }),
           );
+          window.localStorage.removeItem(liveTheoreticalBalanceConfig.legacyActivationStorageKey);
         } catch {
           // Ignore browsers where localStorage is unavailable.
         }
@@ -2773,26 +2791,27 @@
         `;
       }
 
-      function renderLiveTheoreticalBalancesPanel(totals, accountSnapshot, journalDataUnavailable, page = traderPages.paper) {
+      function renderLiveTheoreticalBalancesPanel(_totals, accountSnapshot, _journalDataUnavailable, page = traderPages.paper) {
         if (page.mode !== "live") {
           return "";
         }
 
         const config = liveTheoreticalBalanceConfig;
         const accountValueUsd = asNumber(accountSnapshot?.accountValueUsd);
-        const realizedPlUsd = journalDataUnavailable ? null : asNumber(totals?.total_realized_pl_usd);
-        const unrealizedPlUsd = asNumber(accountSnapshot?.unrealizedPlUsd);
-        const reportablePlUsd = realizedPlUsd === null || unrealizedPlUsd === null
+        const balanceAAccountDeltaUsd = accountValueUsd === null
           ? null
-          : Number((realizedPlUsd + unrealizedPlUsd).toFixed(2));
+          : Number((accountValueUsd - config.balanceABaselineUsd).toFixed(2));
         const depositDetected = accountValueUsd !== null && accountValueUsd >= config.combinedBaselineUsd;
-        let activationPlUsd = readLiveTheoreticalBalanceActivationPl();
-        let depositActive = activationPlUsd !== null;
+        let activationState = readLiveTheoreticalBalanceActivationState();
+        let depositActive = activationState !== null;
 
-        if (!depositActive && depositDetected && reportablePlUsd !== null) {
-          activationPlUsd = reportablePlUsd;
+        if (!depositActive && depositDetected && accountValueUsd !== null) {
+          activationState = {
+            activationAccountValueUsd: accountValueUsd,
+            balanceAPlAtActivationUsd: Number((accountValueUsd - config.combinedBaselineUsd).toFixed(2)),
+          };
           depositActive = true;
-          writeLiveTheoreticalBalanceActivationPl(activationPlUsd);
+          writeLiveTheoreticalBalanceActivationState(activationState);
         }
 
         const balances = [
@@ -2800,17 +2819,17 @@
           { key: "J", label: "Balance J", baseUsd: config.balanceJBaselineUsd },
           { key: "D", label: "Balance D", baseUsd: config.balanceDBaselineUsd },
         ];
-        const postActivationPlUsd = depositActive && reportablePlUsd !== null && activationPlUsd !== null
-          ? Number((reportablePlUsd - activationPlUsd).toFixed(2))
+        const postActivationPlUsd = depositActive && accountValueUsd !== null && activationState !== null
+          ? Number((accountValueUsd - activationState.activationAccountValueUsd).toFixed(2))
           : null;
         const rows = balances.map((balance) => {
           const share = balance.baseUsd / config.combinedBaselineUsd;
           let plUsd = null;
-          if (reportablePlUsd !== null) {
+          if (accountValueUsd !== null) {
             if (!depositActive) {
-              plUsd = balance.key === "A" ? reportablePlUsd : 0;
+              plUsd = balance.key === "A" ? balanceAAccountDeltaUsd : 0;
             } else if (balance.key === "A") {
-              plUsd = Number((activationPlUsd + ((postActivationPlUsd ?? 0) * share)).toFixed(2));
+              plUsd = Number((activationState.balanceAPlAtActivationUsd + ((postActivationPlUsd ?? 0) * share)).toFixed(2));
             } else {
               plUsd = Number(((postActivationPlUsd ?? 0) * share).toFixed(2));
             }
@@ -2826,9 +2845,11 @@
           : depositDetected
             ? "Deposit detected"
             : `Deposit pending ${formatMoney(config.pendingDepositUsd)}`;
-        const meta = reportablePlUsd === null
-          ? `${depositState}. Reportable P/L unavailable.`
-          : `${depositState}. Reportable P/L ${formatMoney(reportablePlUsd)}.`;
+        const meta = accountValueUsd === null
+          ? `${depositState}. Broker net worth unavailable.`
+          : depositActive
+            ? `${depositState}. Net worth ${formatMoney(accountValueUsd)}; post-deposit P/L ${formatMoney(postActivationPlUsd ?? 0)}.`
+            : `${depositState}. Net worth ${formatMoney(accountValueUsd)}; Balance A P/L ${formatMoney(balanceAAccountDeltaUsd)}.`;
 
         return `
           <section class="ops-panel ops-theoretical-balances">
@@ -3013,7 +3034,7 @@
                     const syncLabel = hasJournalRow
                       ? "Current journal row"
                       : hasArchivedTrades
-                        ? "Outside current epoch"
+                        ? "No current-epoch row"
                         : "No current journal row";
                     const syncTone = hasJournalRow ? "is-positive" : "is-warning";
                     const plTone = numberToneClass(unrealizedPl);
@@ -3460,7 +3481,7 @@
         const syncWarnings = [
           liveNotJournaled.length > 0
             ? hasArchivedTrades
-              ? `TradeStation position(s) outside the current-epoch journal scope are still shown: ${liveNotJournaled.join(", ")}.`
+              ? `TradeStation position(s) not matched to current-epoch open journal rows are still shown: ${liveNotJournaled.join(", ")}.`
               : `TradeStation position(s) without an open journal row: ${liveNotJournaled.join(", ")}.`
             : null,
           journalNotLive.length > 0
