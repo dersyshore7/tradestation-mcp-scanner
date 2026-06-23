@@ -6,23 +6,31 @@
     <title>TradeStation Scanner UI</title>
     <style>
       :root {
-        --bg: #f3f5ef;
-        --bg-accent: #e7efe6;
-        --card: rgba(255, 255, 255, 0.92);
+        --bg: #f4f7fb;
+        --bg-accent: #dceafe;
+        --card: rgba(255, 255, 255, 0.94);
         --card-strong: #ffffff;
-        --border: #d6ddd2;
-        --border-strong: #b8c5bb;
-        --text: #172117;
-        --muted-text: #5b675d;
-        --accent: #215c45;
-        --accent-soft: #edf7f1;
-        --accent-border: #b8d7c5;
-        --danger: #9a4037;
-        --danger-soft: #fbe9e5;
-        --danger-border: #efc7bf;
-        --neutral-soft: #f6f8f5;
-        --info-soft: #ebf1fb;
-        --shadow: 0 14px 38px rgba(27, 41, 29, 0.08);
+        --border: #d8e0ea;
+        --border-strong: #aebbcc;
+        --text: #172033;
+        --muted-text: #657286;
+        --accent: #0f766e;
+        --accent-soft: #e6f6f3;
+        --accent-border: #97d5cf;
+        --danger: #b42318;
+        --danger-soft: #fff0ed;
+        --danger-border: #f3b7ad;
+        --neutral-soft: #f7f9fc;
+        --info: #2563eb;
+        --info-soft: #edf4ff;
+        --info-border: #bdd3ff;
+        --warning: #946200;
+        --warning-soft: #fff7df;
+        --warning-border: #e7c774;
+        --live: #a6402d;
+        --live-soft: #fff0ea;
+        --live-border: #eba88f;
+        --shadow: 0 14px 38px rgba(23, 32, 51, 0.08);
       }
       body {
         font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
@@ -30,7 +38,7 @@
         min-height: 100vh;
         background:
           radial-gradient(circle at top left, var(--bg-accent) 0, transparent 34%),
-          linear-gradient(180deg, #fafcf8 0%, var(--bg) 100%);
+          linear-gradient(180deg, #fbfdff 0%, var(--bg) 100%);
         color: var(--text);
       }
       main {
@@ -42,8 +50,8 @@
         position: sticky;
         top: 0;
         z-index: 20;
-        border-bottom: 1px solid rgba(184, 197, 187, 0.72);
-        background: rgba(250, 252, 248, 0.9);
+        border-bottom: 1px solid rgba(174, 187, 204, 0.72);
+        background: rgba(251, 253, 255, 0.9);
         backdrop-filter: blur(12px);
       }
       .app-topbar-inner {
@@ -68,7 +76,7 @@
         padding: 0;
       }
       .menu-toggle:hover:not(:disabled) {
-        box-shadow: 0 8px 20px rgba(14, 36, 27, 0.1);
+        box-shadow: 0 8px 20px rgba(23, 32, 51, 0.1);
       }
       .menu-icon,
       .menu-icon::before,
@@ -112,7 +120,7 @@
         inset: 0;
         z-index: 28;
         display: none;
-        background: rgba(14, 20, 16, 0.32);
+        background: rgba(23, 32, 51, 0.32);
       }
       .nav-scrim.is-open {
         display: block;
@@ -126,9 +134,9 @@
         height: 100vh;
         box-sizing: border-box;
         padding: 18px;
-        background: #fbfcf9;
+        background: #fbfdff;
         border-right: 1px solid var(--border);
-        box-shadow: 20px 0 45px rgba(14, 20, 16, 0.16);
+        box-shadow: 20px 0 45px rgba(23, 32, 51, 0.16);
         transform: translateX(-105%);
         transition: transform 160ms ease;
       }
@@ -247,13 +255,13 @@
       input:focus,
       select:focus,
       textarea:focus {
-        outline: 2px solid rgba(33, 92, 69, 0.15);
+        outline: 2px solid rgba(15, 118, 110, 0.18);
         border-color: var(--accent);
       }
       button {
-        border: 1px solid #163628;
+        border: 1px solid #0f4f4a;
         border-radius: 10px;
-        background: linear-gradient(180deg, #173b2d 0%, #0e241b 100%);
+        background: linear-gradient(180deg, #0f766e 0%, #115e59 100%);
         color: #fff;
         padding: 10px 14px;
         font-weight: 600;
@@ -262,7 +270,7 @@
       }
       button:hover:not(:disabled) {
         transform: translateY(-1px);
-        box-shadow: 0 10px 24px rgba(14, 36, 27, 0.18);
+        box-shadow: 0 10px 24px rgba(15, 118, 110, 0.18);
       }
       button.secondary {
         background: rgba(255, 255, 255, 0.88);
@@ -289,7 +297,7 @@
       .modal {
         position: fixed;
         inset: 0;
-        background: rgba(14, 20, 16, 0.58);
+        background: rgba(23, 32, 51, 0.58);
         display: none;
         align-items: center;
         justify-content: center;
@@ -332,7 +340,7 @@
         line-height: 1.45;
       }
       pre {
-        background: #f8faf7;
+        background: #f7f9fc;
         border: 1px solid var(--border);
         border-radius: 12px;
         padding: 12px;
@@ -356,7 +364,7 @@
         border: 1px solid var(--border);
         border-radius: 16px;
         padding: 14px;
-        background: rgba(251, 252, 249, 0.92);
+        background: rgba(251, 253, 255, 0.92);
       }
       .summary-section ul {
         margin: 8px 0 0 0;
@@ -371,8 +379,8 @@
         margin-top: 8px;
       }
       .data-health-warning {
-        border-color: #d8942f;
-        background: #fff8e7;
+        border-color: var(--warning-border);
+        background: var(--warning-soft);
       }
       .pill {
         display: inline-block;
@@ -402,7 +410,7 @@
       }
       .stat-card-button:hover:not(:disabled) {
         border-color: var(--accent-border);
-        box-shadow: 0 10px 24px rgba(14, 36, 27, 0.1);
+        box-shadow: 0 10px 24px rgba(15, 118, 110, 0.1);
       }
       .stat-action-note {
         color: var(--accent);
@@ -450,7 +458,7 @@
         border-radius: 16px;
         padding: 14px;
         margin-top: 12px;
-        background: rgba(251, 252, 249, 0.94);
+        background: rgba(251, 253, 255, 0.94);
       }
       .comparison-card {
         margin-top: 0;
@@ -535,7 +543,7 @@
         padding: 9px 10px;
         border: 1px solid var(--border);
         border-radius: 10px;
-        background: #f8faf7;
+        background: #f7f9fc;
       }
       .decision-module .journal-trade {
         background: #fff;
@@ -568,7 +576,7 @@
       .trade-phase-card {
         border: 1px solid var(--border);
         border-radius: 13px;
-        background: rgba(251, 252, 249, 0.96);
+        background: rgba(251, 253, 255, 0.96);
         padding: 10px 12px;
         margin-top: 10px;
       }
@@ -604,7 +612,7 @@
       }
       .status-closed {
         background: var(--info-soft);
-        color: #27486f;
+        color: var(--info);
       }
       .winner-chip {
         display: inline-block;
@@ -622,8 +630,8 @@
         color: var(--danger);
       }
       .chip-neutral {
-        background: #eef1ef;
-        color: #4d5a51;
+        background: #eef2f7;
+        color: #4c596d;
       }
       .trade-header {
         display: flex;
@@ -720,6 +728,385 @@
         background: rgba(255, 255, 255, 0.7);
         color: var(--muted-text);
       }
+      .ops-dashboard {
+        display: grid;
+        gap: 12px;
+      }
+      .ops-panel,
+      .ops-warning-band,
+      .ops-heartbeat,
+      .ops-scope-note {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #fff;
+      }
+      .ops-warning-band {
+        display: grid;
+        gap: 8px;
+        padding: 12px;
+        border-color: var(--warning-border);
+        background: var(--warning-soft);
+      }
+      .ops-warning-title {
+        font-weight: 800;
+        color: var(--warning);
+      }
+      .ops-warning-list {
+        display: grid;
+        gap: 6px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .ops-warning-list li {
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: #6f5109;
+        font-size: 13px;
+        line-height: 1.4;
+      }
+      .ops-kpi-groups {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .ops-panel {
+        min-width: 0;
+        padding: 12px;
+      }
+      .ops-panel-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .ops-kpi-groups > .ops-panel > .ops-panel-header {
+        min-height: 46px;
+      }
+      .ops-panel-title {
+        margin: 0;
+        font-size: 14px;
+        line-height: 1.2;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+      }
+      .ops-panel-caption {
+        color: var(--muted-text);
+        font-size: 12px;
+        line-height: 1.25;
+        max-width: 138px;
+        text-align: right;
+      }
+      .ops-metric-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .ops-metric {
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 9px 10px;
+        background: var(--neutral-soft);
+      }
+      .ops-metric-label {
+        color: var(--muted-text);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        line-height: 1.25;
+        text-transform: uppercase;
+      }
+      .ops-metric-value {
+        margin-top: 5px;
+        font-size: 18px;
+        font-weight: 400;
+        line-height: 1.15;
+        overflow-wrap: anywhere;
+      }
+      .ops-metric-note {
+        margin-top: 4px;
+        color: var(--muted-text);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+      .ops-theoretical-balances {
+        display: grid;
+        gap: 10px;
+      }
+      .ops-theoretical-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .ops-theoretical-card {
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px;
+        background: var(--neutral-soft);
+      }
+      .ops-theoretical-label {
+        color: var(--muted-text);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        line-height: 1.25;
+        text-transform: uppercase;
+      }
+      .ops-theoretical-base,
+      .ops-theoretical-state {
+        margin-top: 4px;
+        color: var(--muted-text);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+      .ops-theoretical-value {
+        margin-top: 7px;
+        font-size: 20px;
+        font-weight: 400;
+        line-height: 1.15;
+        overflow-wrap: anywhere;
+      }
+      .ops-theoretical-meta {
+        color: var(--muted-text);
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      .ops-section-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.4fr);
+        gap: 12px;
+      }
+      .ops-section-stack {
+        display: grid;
+        gap: 12px;
+      }
+      .ops-table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #fff;
+      }
+      .ops-table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 560px;
+      }
+      .ops-table th,
+      .ops-table td {
+        padding: 8px 9px;
+        border-bottom: 1px solid var(--border);
+        text-align: left;
+        vertical-align: top;
+        font-size: 13px;
+        line-height: 1.35;
+      }
+      .ops-table th {
+        color: var(--muted-text);
+        background: #f7f9fc;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      .ops-table tr:last-child td {
+        border-bottom: 0;
+      }
+      .ops-table .num {
+        text-align: right;
+        white-space: nowrap;
+      }
+      .ops-table .label-cell {
+        min-width: 120px;
+        font-weight: 700;
+      }
+      .ops-pill-row {
+        display: flex;
+        gap: 5px;
+        flex-wrap: wrap;
+      }
+      .ops-pill {
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid var(--border-strong);
+        border-radius: 999px;
+        padding: 3px 7px;
+        background: #fff;
+        color: #4c596d;
+        font-size: 11px;
+        font-weight: 800;
+        line-height: 1.2;
+        white-space: nowrap;
+      }
+      .ops-pill.is-positive {
+        background: var(--accent-soft);
+        border-color: var(--accent-border);
+        color: var(--accent);
+      }
+      .ops-pill.is-negative {
+        background: var(--danger-soft);
+        border-color: var(--danger-border);
+        color: var(--danger);
+      }
+      .ops-pill.is-warning {
+        background: var(--warning-soft);
+        border-color: var(--warning-border);
+        color: var(--warning);
+      }
+      .ops-pill.is-live {
+        background: var(--live-soft);
+        border-color: var(--live-border);
+        color: var(--live);
+      }
+      .ops-actions-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .ops-segmented {
+        display: inline-flex;
+        gap: 2px;
+        padding: 3px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--neutral-soft);
+      }
+      .ops-segmented button,
+      button.ops-segment-button {
+        border: 0;
+        border-radius: 999px;
+        padding: 6px 10px;
+        background: transparent;
+        color: var(--muted-text);
+        box-shadow: none;
+        font-size: 12px;
+      }
+      .ops-segmented button:hover:not(:disabled),
+      button.ops-segment-button:hover:not(:disabled) {
+        transform: none;
+        box-shadow: none;
+        color: var(--text);
+      }
+      .ops-segmented button.is-active,
+      button.ops-segment-button.is-active {
+        background: #fff;
+        color: var(--text);
+        box-shadow: 0 1px 4px rgba(23, 32, 51, 0.08);
+      }
+      .ops-outcome-list {
+        display: grid;
+        gap: 8px;
+      }
+      .ops-outcome-row {
+        margin-top: 0;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #fff;
+        padding: 10px;
+      }
+      .ops-outcome-row > summary {
+        list-style: none;
+      }
+      .ops-outcome-row > summary::-webkit-details-marker {
+        display: none;
+      }
+      .ops-outcome-head {
+        display: grid;
+        grid-template-columns: minmax(120px, 1fr) auto;
+        gap: 10px;
+        align-items: start;
+      }
+      .ops-outcome-title {
+        font-weight: 800;
+      }
+      .ops-outcome-meta {
+        margin-top: 4px;
+        color: var(--muted-text);
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      .ops-outcome-metrics {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        flex-wrap: wrap;
+        font-size: 12px;
+        font-weight: 800;
+        text-align: right;
+      }
+      .ops-outcome-detail {
+        border-top: 1px solid var(--border);
+        margin-top: 10px;
+        padding-top: 10px;
+      }
+      .ops-scope-note {
+        padding: 11px 12px;
+        color: var(--muted-text);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      .ops-heartbeat {
+        display: grid;
+        gap: 10px;
+        padding: 12px;
+      }
+      .ops-heartbeat-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .ops-heartbeat-title {
+        margin: 0;
+        font-size: 16px;
+      }
+      .ops-heartbeat-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+        gap: 8px;
+      }
+      .ops-heartbeat-item {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 9px;
+        background: var(--neutral-soft);
+      }
+      .ops-heartbeat-label {
+        color: var(--muted-text);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .ops-heartbeat-value {
+        margin-top: 4px;
+        font-size: 14px;
+        font-weight: 400;
+        line-height: 1.35;
+      }
+      .ops-candidate-list {
+        display: grid;
+        gap: 6px;
+      }
+      .ops-candidate-row {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 9px;
+        background: #fff;
+        font-size: 13px;
+        line-height: 1.4;
+      }
+      .ops-timeline-list {
+        display: grid;
+        gap: 8px;
+      }
       @media (max-width: 680px) {
         main {
           margin-top: 18px;
@@ -755,6 +1142,23 @@
         .trade-header,
         .trade-footer {
           align-items: stretch;
+        }
+        .ops-actions-row,
+        .ops-heartbeat-top {
+          align-items: stretch;
+        }
+        .ops-kpi-groups,
+        .ops-section-grid,
+        .ops-metric-grid,
+        .ops-theoretical-grid {
+          grid-template-columns: 1fr;
+        }
+        .ops-outcome-head {
+          grid-template-columns: 1fr;
+        }
+        .ops-outcome-metrics {
+          justify-content: flex-start;
+          text-align: left;
         }
       }
     </style>
@@ -1404,6 +1808,7 @@
           dashboardHasLoaded: false,
           activityHasLoaded: false,
           outcomeDetailsExpanded: false,
+          outcomeFilter: "all",
         },
         live: {
           mode: "live",
@@ -1426,6 +1831,7 @@
           dashboardHasLoaded: false,
           activityHasLoaded: false,
           outcomeDetailsExpanded: false,
+          outcomeFilter: "all",
         },
       };
       const pageTitles = {
@@ -1941,19 +2347,76 @@
           return;
         }
 
+        const latestRun = runs[0] || null;
+        const latestRaw = latestRun?.raw_result_json || {};
+        const latestEntry = latestRaw.entry || {};
+        const latestCandidate = candidateActivity[0] || null;
+        const latestEnvironmentLabel = latestRun
+          ? formatTradeStationEnvironmentLabel(readRunEnvironment(latestRaw, latestRun.mode))
+          : page.environmentLabel;
+        const latestOutcome = latestRun
+          ? formatAutomationEntryOutcome(latestEntry.outcome || latestRun.outcome, latestEntry.symbol || latestRun.symbol)
+          : "No saved run";
+        const candidateSymbols = [...new Set(candidateActivity.map((item) => renderMaybe(item.symbol, "").trim()).filter(Boolean))];
+        const candidateDecisions = [...new Set(candidateActivity.map((item) => renderMaybe(item.decision, "").trim()).filter(Boolean))];
+
         page.activityArea.innerHTML = `
-          ${dataWarnings.length > 0 ? `<div class="empty-state">${renderList(dataWarnings)}</div>` : ""}
-          ${candidateActivity.length > 0
-            ? `<div class="summary-section">
-                <h3>Scanner Heartbeat</h3>
-                ${candidateActivity.slice(0, 6).map((item) => `
-                  <div class="row"><strong>${escapeHtml(formatCentralTimestamp(item.created_at))}:</strong> ${escapeHtml(renderMaybe(item.symbol))} | ${escapeHtml(renderMaybe(item.decision))}${item.decision_reason ? ` - ${escapeHtml(compactText(item.decision_reason, 160))}` : ""}</div>
-                `).join("")}
-              </div>`
-            : ""}
+          <section class="ops-heartbeat">
+            <div class="ops-heartbeat-top">
+              <div>
+                <h3 class="ops-heartbeat-title">Automation Heartbeat</h3>
+                <p class="section-description">Read-only run history and scanner decisions for the ${escapeHtml(page.tradeLabel)} lane.</p>
+              </div>
+            </div>
+            ${renderOpsWarningBand(dataWarnings)}
+            <div class="ops-heartbeat-grid">
+              <div class="ops-heartbeat-item">
+                <div class="ops-heartbeat-label">Last run</div>
+                <div class="ops-heartbeat-value">${escapeHtml(formatCentralTimestamp(latestRun?.created_at))}</div>
+              </div>
+              <div class="ops-heartbeat-item">
+                <div class="ops-heartbeat-label">Run mode</div>
+                <div class="ops-heartbeat-value">${escapeHtml(latestRun ? latestEnvironmentLabel : "n/a")}</div>
+              </div>
+              <div class="ops-heartbeat-item">
+                <div class="ops-heartbeat-label">Dry-run flag</div>
+                <div class="ops-heartbeat-value">${escapeHtml(latestRun ? latestRun.dry_run ? "Dry run" : "Order-enabled" : "n/a")}</div>
+              </div>
+              <div class="ops-heartbeat-item">
+                <div class="ops-heartbeat-label">Last outcome</div>
+                <div class="ops-heartbeat-value">${escapeHtml(latestOutcome)}</div>
+              </div>
+              <div class="ops-heartbeat-item">
+                <div class="ops-heartbeat-label">Last symbol</div>
+                <div class="ops-heartbeat-value">${escapeHtml(renderMaybe(latestEntry.symbol || latestRun?.symbol))}</div>
+              </div>
+              <div class="ops-heartbeat-item">
+                <div class="ops-heartbeat-label">Scan activity</div>
+                <div class="ops-heartbeat-value">${escapeHtml(candidateActivity.length > 0 ? `${candidateActivity.length} recent candidate(s)` : latestRun ? "Latest run saved" : "No scan rows")}</div>
+              </div>
+              <div class="ops-heartbeat-item">
+                <div class="ops-heartbeat-label">Candidate symbols</div>
+                <div class="ops-heartbeat-value">${escapeHtml(candidateSymbols.length > 0 ? candidateSymbols.slice(0, 6).join(", ") : "n/a")}</div>
+              </div>
+              <div class="ops-heartbeat-item">
+                <div class="ops-heartbeat-label">Candidate decisions</div>
+                <div class="ops-heartbeat-value">${escapeHtml(candidateDecisions.length > 0 ? candidateDecisions.slice(0, 4).join(", ") : "n/a")}</div>
+              </div>
+            </div>
+            ${latestCandidate
+              ? `<div class="ops-candidate-list">
+                  ${candidateActivity.slice(0, 6).map((item) => `
+                    <div class="ops-candidate-row">
+                      <strong>${escapeHtml(formatCentralTimestamp(item.created_at))}</strong> | ${escapeHtml(renderMaybe(item.symbol))} | ${escapeHtml(renderMaybe(item.decision))}
+                      ${item.decision_reason ? `<div class="ops-outcome-meta">${escapeHtml(compactText(item.decision_reason, 180))}</div>` : ""}
+                    </div>
+                  `).join("")}
+                </div>`
+              : ""}
+          </section>
           ${runs.length === 0
             ? ""
-            : `<div class="timeline-list">
+            : `<div class="ops-timeline-list">
                 ${runs.map((run) => {
                   const raw = run.raw_result_json || {};
                   const reconciliation = raw.reconciliation || {};
@@ -2256,12 +2719,6 @@
         return headers;
       }
 
-      function bestBucketByRealizedPl(buckets) {
-        return (Array.isArray(buckets) ? buckets : [])
-          .filter((bucket) => bucket.closed_trade_count > 0)
-          .sort((left, right) => (asNumber(right.realized_pl_usd) ?? 0) - (asNumber(left.realized_pl_usd) ?? 0))[0] || null;
-      }
-
       function formatLearningState(closedTrades) {
         const count = asNumber(closedTrades) ?? 0;
         if (count >= 75) {
@@ -2276,57 +2733,306 @@
         return "No outcomes";
       }
 
-      function renderPaperDashboardBucket(title, buckets, formatter, limit = 6, historyUnavailable = false, tradeLabel = "paper") {
+      const liveTheoreticalBalanceConfig = {
+        activationStorageKey: "liveTheoreticalBalanceActivationPlUsd",
+        balanceABaselineUsd: 5447.50,
+        balanceJBaselineUsd: 3000,
+        balanceDBaselineUsd: 2640,
+        pendingDepositUsd: 5640,
+        combinedBaselineUsd: 11087.50,
+      };
+
+      function readLiveTheoreticalBalanceActivationPl() {
+        try {
+          return asNumber(window.localStorage.getItem(liveTheoreticalBalanceConfig.activationStorageKey));
+        } catch {
+          return null;
+        }
+      }
+
+      function writeLiveTheoreticalBalanceActivationPl(value) {
+        try {
+          window.localStorage.setItem(
+            liveTheoreticalBalanceConfig.activationStorageKey,
+            String(Number(value).toFixed(2)),
+          );
+        } catch {
+          // Ignore browsers where localStorage is unavailable.
+        }
+      }
+
+      function renderTheoreticalBalanceCard(row) {
+        const valueTone = row.plUsd === null ? "tone-neutral" : numberToneClass(row.plUsd);
+        return `
+          <div class="ops-theoretical-card">
+            <div class="ops-theoretical-label">${escapeHtml(row.label)}</div>
+            <div class="ops-theoretical-base">Base ${escapeHtml(formatMoney(row.baseUsd))}</div>
+            <div class="ops-theoretical-value ${escapeHtml(valueTone)}">${escapeHtml(row.plUsd === null ? "n/a" : formatMoney(row.plUsd))}</div>
+            <div class="ops-theoretical-state">${escapeHtml(row.state)}</div>
+          </div>
+        `;
+      }
+
+      function renderLiveTheoreticalBalancesPanel(totals, accountSnapshot, journalDataUnavailable, page = traderPages.paper) {
+        if (page.mode !== "live") {
+          return "";
+        }
+
+        const config = liveTheoreticalBalanceConfig;
+        const accountValueUsd = asNumber(accountSnapshot?.accountValueUsd);
+        const realizedPlUsd = journalDataUnavailable ? null : asNumber(totals?.total_realized_pl_usd);
+        const unrealizedPlUsd = asNumber(accountSnapshot?.unrealizedPlUsd);
+        const reportablePlUsd = realizedPlUsd === null || unrealizedPlUsd === null
+          ? null
+          : Number((realizedPlUsd + unrealizedPlUsd).toFixed(2));
+        const depositDetected = accountValueUsd !== null && accountValueUsd >= config.combinedBaselineUsd;
+        let activationPlUsd = readLiveTheoreticalBalanceActivationPl();
+        let depositActive = activationPlUsd !== null;
+
+        if (!depositActive && depositDetected && reportablePlUsd !== null) {
+          activationPlUsd = reportablePlUsd;
+          depositActive = true;
+          writeLiveTheoreticalBalanceActivationPl(activationPlUsd);
+        }
+
+        const balances = [
+          { key: "A", label: "Balance A", baseUsd: config.balanceABaselineUsd },
+          { key: "J", label: "Balance J", baseUsd: config.balanceJBaselineUsd },
+          { key: "D", label: "Balance D", baseUsd: config.balanceDBaselineUsd },
+        ];
+        const postActivationPlUsd = depositActive && reportablePlUsd !== null && activationPlUsd !== null
+          ? Number((reportablePlUsd - activationPlUsd).toFixed(2))
+          : null;
+        const rows = balances.map((balance) => {
+          const share = balance.baseUsd / config.combinedBaselineUsd;
+          let plUsd = null;
+          if (reportablePlUsd !== null) {
+            if (!depositActive) {
+              plUsd = balance.key === "A" ? reportablePlUsd : 0;
+            } else if (balance.key === "A") {
+              plUsd = Number((activationPlUsd + ((postActivationPlUsd ?? 0) * share)).toFixed(2));
+            } else {
+              plUsd = Number(((postActivationPlUsd ?? 0) * share).toFixed(2));
+            }
+          }
+          return {
+            ...balance,
+            plUsd,
+            state: depositActive || balance.key === "A" ? "Funded" : "Pending deposit",
+          };
+        });
+        const depositState = depositActive
+          ? "Deposit active"
+          : depositDetected
+            ? "Deposit detected"
+            : `Deposit pending ${formatMoney(config.pendingDepositUsd)}`;
+        const meta = reportablePlUsd === null
+          ? `${depositState}. Reportable P/L unavailable.`
+          : `${depositState}. Reportable P/L ${formatMoney(reportablePlUsd)}.`;
+
+        return `
+          <section class="ops-panel ops-theoretical-balances">
+            <div class="ops-panel-header">
+              <h3 class="ops-panel-title">Theoretical Balances</h3>
+              <span class="ops-panel-caption">Live reporting split</span>
+            </div>
+            <div class="ops-theoretical-grid">
+              ${rows.map(renderTheoreticalBalanceCard).join("")}
+            </div>
+            <div class="ops-theoretical-meta">${escapeHtml(meta)}</div>
+          </section>
+        `;
+      }
+
+      function renderOpsPill(label, tone = "") {
+        const toneClass = tone ? ` ${tone}` : "";
+        return `<span class="ops-pill${escapeHtml(toneClass)}">${escapeHtml(renderMaybe(label))}</span>`;
+      }
+
+      function renderBrokerTruthPills(trade) {
+        const pills = [];
+        if (trade?.broker_confirmed_exit) {
+          pills.push(renderOpsPill("Broker confirmed", "is-positive"));
+        }
+        if (trade?.provisional_exit) {
+          pills.push(renderOpsPill("Provisional", "is-warning"));
+        }
+        if (trade?.broker_repaired_exit) {
+          pills.push(renderOpsPill("Repaired", "is-live"));
+        }
+        if (pills.length === 0) {
+          pills.push(renderOpsPill("Journal derived"));
+        }
+        return `<span class="ops-pill-row">${pills.join("")}</span>`;
+      }
+
+      function renderOpsMetric(label, value, tone = "", note = "", attrs = "") {
+        const tag = attrs ? "button" : "div";
+        const buttonType = attrs ? ' type="button"' : "";
+        const buttonClass = attrs ? " stat-card-button" : "";
+        const toneClass = tone ? ` ${tone}` : "";
+        return `
+          <${tag} class="ops-metric${buttonClass}${escapeHtml(toneClass)}"${buttonType}${attrs}>
+            <div class="ops-metric-label">${escapeHtml(label)}</div>
+            <div class="ops-metric-value ${escapeHtml(tone)}">${escapeHtml(value)}</div>
+            ${note ? `<div class="ops-metric-note">${escapeHtml(note)}</div>` : ""}
+          </${tag}>
+        `;
+      }
+
+      function renderOpsMetricGroup(title, caption, metrics) {
+        return `
+          <section class="ops-panel">
+            <div class="ops-panel-header">
+              <h3 class="ops-panel-title">${escapeHtml(title)}</h3>
+              <span class="ops-panel-caption">${escapeHtml(caption)}</span>
+            </div>
+            <div class="ops-metric-grid">
+              ${metrics.join("")}
+            </div>
+          </section>
+        `;
+      }
+
+      function renderOpsWarningBand(warnings) {
+        const rows = (Array.isArray(warnings) ? warnings : [])
+          .map((warning) => renderMaybe(warning, "").trim())
+          .filter(Boolean);
+        if (rows.length === 0) {
+          return "";
+        }
+        return `
+          <section class="ops-warning-band">
+            <div class="ops-warning-title">Status / warnings</div>
+            <ul class="ops-warning-list">
+              ${rows.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}
+            </ul>
+          </section>
+        `;
+      }
+
+      function renderPaperDashboardBucket(title, buckets, limit = 6, historyUnavailable = false, tradeLabel = "paper") {
         const rows = (Array.isArray(buckets) ? buckets : [])
           .filter((bucket) => bucket.trade_count > 0)
           .sort((left, right) => (asNumber(right.realized_pl_usd) ?? 0) - (asNumber(left.realized_pl_usd) ?? 0))
           .slice(0, limit);
         if (rows.length === 0) {
           return `
-            <div class="comparison-card">
-              <h4>${escapeHtml(title)}</h4>
+            <section class="ops-panel">
+              <div class="ops-panel-header">
+                <h3 class="ops-panel-title">${escapeHtml(title)}</h3>
+              </div>
               <div class="empty-state">${historyUnavailable ? "Journal history unavailable." : `No current-epoch ${tradeLabel}-trade data yet.`}</div>
-            </div>
+            </section>
           `;
         }
 
         return `
-          <div class="comparison-card">
-            <h4>${escapeHtml(title)}</h4>
-            <ul class="bucket-list">
-              ${rows.map((bucket) => `<li>${escapeHtml(bucket.label)} - ${escapeHtml(formatter(bucket))}</li>`).join("")}
-            </ul>
-          </div>
+          <section class="ops-panel">
+            <div class="ops-panel-header">
+              <h3 class="ops-panel-title">${escapeHtml(title)}</h3>
+              <span class="ops-panel-caption">Top ${escapeHtml(renderMaybe(rows.length, "0"))}</span>
+            </div>
+            <div class="ops-table-wrap">
+              <table class="ops-table">
+                <thead>
+                  <tr>
+                    <th>Label</th>
+                    <th class="num">Realized P/L</th>
+                    <th class="num">Win</th>
+                    <th class="num">Avg R</th>
+                    <th class="num">Closed</th>
+                    <th class="num">Trades</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rows.map((bucket) => {
+                    const realizedTone = numberToneClass(bucket.realized_pl_usd);
+                    return `
+                      <tr>
+                        <td class="label-cell">${escapeHtml(bucket.label)}</td>
+                        <td class="num ${escapeHtml(realizedTone)}">${escapeHtml(formatMoney(bucket.realized_pl_usd))}</td>
+                        <td class="num">${escapeHtml(formatPercent(bucket.win_rate, 1))}</td>
+                        <td class="num">${escapeHtml(formatRatio(bucket.average_r_multiple))}</td>
+                        <td class="num">${escapeHtml(renderMaybe(bucket.closed_trade_count, "0"))}</td>
+                        <td class="num">${escapeHtml(renderMaybe(bucket.trade_count, "0"))}</td>
+                      </tr>
+                    `;
+                  }).join("")}
+                </tbody>
+              </table>
+            </div>
+          </section>
         `;
       }
 
-      function renderOpenSimPositions(positions) {
+      function renderOpenSimPositions(positions, journalOpenUnderlyings, hasArchivedTrades = false) {
         const rows = (Array.isArray(positions) ? positions : []).filter((position) =>
           (asNumber(position.quantity) ?? 0) !== 0
         );
         if (rows.length === 0) {
           return `
-            <div class="comparison-card">
-              <h4>Open TradeStation Positions</h4>
+            <section class="ops-panel">
+              <div class="ops-panel-header">
+                <h3 class="ops-panel-title">Open TradeStation Positions</h3>
+                <span class="ops-panel-caption">Broker snapshot</span>
+              </div>
               <div class="empty-state">No open positions reported by TradeStation.</div>
-            </div>
+            </section>
           `;
         }
 
         return `
-          <div class="comparison-card">
-            <h4>Open TradeStation Positions</h4>
-            <ul class="bucket-list">
-              ${rows.map((position) => {
-                const quantity = asNumber(position.quantity);
-                const averagePrice = asNumber(position.averagePrice);
-                const estimatedCost = asNumber(position.estimatedCostUsd);
-                const marketValue = asNumber(position.marketValueUsd);
-                const unrealizedPl = asNumber(position.unrealizedPlUsd);
-                return `<li>${escapeHtml(position.symbol)} - ${escapeHtml(renderMaybe(quantity, "n/a"))} contract(s) | avg ${escapeHtml(averagePrice === null ? "n/a" : formatMoney(averagePrice))} | cost ${escapeHtml(formatMoney(estimatedCost))} | value ${escapeHtml(formatMoney(marketValue))} | P/L ${escapeHtml(formatMoney(unrealizedPl))}</li>`;
-              }).join("")}
-            </ul>
-          </div>
+          <section class="ops-panel">
+            <div class="ops-panel-header">
+              <h3 class="ops-panel-title">Open TradeStation Positions</h3>
+              <span class="ops-panel-caption">Read-only broker truth</span>
+            </div>
+            <div class="ops-table-wrap">
+              <table class="ops-table">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th class="num">Contracts</th>
+                    <th class="num">Avg price</th>
+                    <th class="num">Cost</th>
+                    <th class="num">Market value</th>
+                    <th class="num">Unrealized P/L</th>
+                    <th>Journal scope</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rows.map((position) => {
+                    const quantity = asNumber(position.quantity);
+                    const averagePrice = asNumber(position.averagePrice);
+                    const estimatedCost = asNumber(position.estimatedCostUsd);
+                    const marketValue = asNumber(position.marketValueUsd);
+                    const unrealizedPl = asNumber(position.unrealizedPlUsd);
+                    const underlying = String(position?.symbol || "").trim().split(/\s+/)[0]?.toUpperCase();
+                    const hasJournalRow = Boolean(underlying && journalOpenUnderlyings?.has(underlying));
+                    const syncLabel = hasJournalRow
+                      ? "Current journal row"
+                      : hasArchivedTrades
+                        ? "Outside current epoch"
+                        : "No current journal row";
+                    const syncTone = hasJournalRow ? "is-positive" : "is-warning";
+                    const plTone = numberToneClass(unrealizedPl);
+                    return `
+                      <tr>
+                        <td class="label-cell">${escapeHtml(renderMaybe(position.symbol))}</td>
+                        <td class="num">${escapeHtml(renderMaybe(quantity, "n/a"))}</td>
+                        <td class="num">${escapeHtml(averagePrice === null ? "n/a" : formatMoney(averagePrice))}</td>
+                        <td class="num">${escapeHtml(formatMoney(estimatedCost))}</td>
+                        <td class="num">${escapeHtml(formatMoney(marketValue))}</td>
+                        <td class="num ${escapeHtml(plTone)}">${escapeHtml(formatMoney(unrealizedPl))}</td>
+                        <td>${renderOpsPill(syncLabel, syncTone)}</td>
+                      </tr>
+                    `;
+                  }).join("")}
+                </tbody>
+              </table>
+            </div>
+          </section>
         `;
       }
 
@@ -2413,6 +3119,62 @@
         `;
       }
 
+      function renderExitTruthPills(exit) {
+        const pills = [];
+        if (exit?.broker_confirmed) {
+          pills.push(renderOpsPill("Broker confirmed", "is-positive"));
+        }
+        if (exit?.exit_price_source === "provisional_quote") {
+          pills.push(renderOpsPill("Provisional", "is-warning"));
+        }
+        if (exit?.broker_repaired) {
+          pills.push(renderOpsPill("Repaired", "is-live"));
+        }
+        if (pills.length === 0 && exit?.exit_price_source) {
+          pills.push(renderOpsPill(exit.exit_price_source));
+        }
+        return pills.length > 0 ? `<span class="ops-pill-row">${pills.join("")}</span>` : renderOpsPill("Journal derived");
+      }
+
+      function renderOutcomeExitHistory(trade) {
+        const exits = Array.isArray(trade?.exits) ? trade.exits : [];
+        if (exits.length <= 1) {
+          return "";
+        }
+        return `
+          <div class="ops-outcome-detail">
+            <div class="ops-panel-header">
+              <h4 class="ops-panel-title">Exit history</h4>
+              <span class="ops-panel-caption">${escapeHtml(renderMaybe(exits.length, "0"))} legs</span>
+            </div>
+            <div class="ops-table-wrap">
+              <table class="ops-table">
+                <thead>
+                  <tr>
+                    <th>Exit time</th>
+                    <th>Reason</th>
+                    <th class="num">Qty</th>
+                    <th class="num">Exit price</th>
+                    <th>Truth</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${exits.map((exit) => `
+                    <tr>
+                      <td>${escapeHtml(formatCentralTimestamp(exit.exit_time))}</td>
+                      <td>${escapeHtml(renderMaybe(exit.exit_reason))}</td>
+                      <td class="num">${escapeHtml(renderMaybe(exit.quantity_closed, "n/a"))}</td>
+                      <td class="num">${escapeHtml(formatMoney(exit.option_exit_price))}</td>
+                      <td>${renderExitTruthPills(exit)}</td>
+                    </tr>
+                  `).join("")}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        `;
+      }
+
       function renderOutcomeDetailRows(trade, page = traderPages.paper) {
         const reasoning = trade.reasoning || {};
         const technical = reasoning.technical_snapshot || {};
@@ -2428,17 +3190,12 @@
           || trade.intended_target_underlying !== null && trade.intended_target_underlying !== undefined
             ? `${formatMoney(trade.intended_stop_underlying)} / ${formatMoney(trade.intended_target_underlying)}`
             : null;
-        const brokerTruthFlags = [
-          trade.broker_confirmed_exit ? "broker-confirmed" : null,
-          trade.provisional_exit ? "provisional quote" : null,
-          trade.broker_repaired_exit ? "repaired" : null,
-        ].filter(Boolean).join(" | ");
         const rows = [
           `<strong>Contracts:</strong> ${escapeHtml(renderMaybe(trade.contracts))} | <strong>Closed:</strong> ${escapeHtml(renderMaybe(trade.quantity_closed))}`,
           `<strong>Option entry / exit:</strong> ${escapeHtml(formatMoney(trade.option_entry_price))} / ${escapeHtml(formatMoney(trade.option_exit_price))}`,
           `<strong>Underlying entry:</strong> ${escapeHtml(formatMoney(trade.underlying_entry_price))}`,
           `<strong>Sold for:</strong> ${escapeHtml(formatMoney(trade.sold_for_usd))} | <strong>Cost:</strong> ${escapeHtml(formatMoney(trade.position_cost_usd))}`,
-          brokerTruthFlags ? `<strong>Broker truth:</strong> ${escapeHtml(brokerTruthFlags)}` : null,
+          `<strong>Broker truth:</strong> ${renderBrokerTruthPills(trade)}`,
           plannedLevels ? `<strong>Planned stop / target:</strong> ${escapeHtml(plannedLevels)}` : null,
           activeLevels ? `<strong>Active stop / target:</strong> ${escapeHtml(activeLevels)}` : null,
           trade.entry_notes ? `<strong>Entry notes:</strong> ${escapeHtml(trade.entry_notes)}` : null,
@@ -2488,48 +3245,75 @@
 
         const detailRows = rows.length === 0
           ? '<div class="empty-state">No saved detail or reasoning snapshot is available for this trade.</div>'
-          : `<div class="outcome-row-detail">${rows.map((row) => `<div class="row">${row}</div>`).join("")}</div>`;
+          : `<div class="ops-outcome-detail">${rows.map((row) => `<div class="row">${row}</div>`).join("")}</div>`;
 
-        return `${detailRows}${renderLossPostMortem(trade, page)}`;
+        return `${detailRows}${renderOutcomeExitHistory(trade)}${renderLossPostMortem(trade, page)}`;
       }
 
-      function renderPaperOutcomeRows(title, trades, totalCount, outcomeLabel, chipClass, page = traderPages.paper) {
+      function decorateOutcomeTrades(winners, losers, filter) {
+        const winnerRows = (Array.isArray(winners) ? winners : []).map((trade) => ({
+          ...trade,
+          outcomeLabel: "Win",
+          outcomeTone: "is-positive",
+        }));
+        const loserRows = (Array.isArray(losers) ? losers : []).map((trade) => ({
+          ...trade,
+          outcomeLabel: "Loss",
+          outcomeTone: "is-negative",
+        }));
+        const rows = filter === "winners"
+          ? winnerRows
+          : filter === "losers"
+            ? loserRows
+            : winnerRows.concat(loserRows);
+        return rows.sort((left, right) =>
+          new Date(right.exit_time || right.entry_date || 0).getTime()
+          - new Date(left.exit_time || left.entry_date || 0).getTime()
+        );
+      }
+
+      function renderPaperOutcomeRows(title, trades, totalCount, page = traderPages.paper) {
         const rows = Array.isArray(trades) ? trades : [];
         const total = asNumber(totalCount) ?? rows.length;
         const truncatedCount = Math.max(0, total - rows.length);
         return `
-          <div class="outcome-list">
-            <div class="outcome-row-header">
-              <h3>${escapeHtml(title)}</h3>
-              <span class="winner-chip ${escapeHtml(chipClass)}">${escapeHtml(renderMaybe(total, "0"))}</span>
+          <div class="ops-outcome-list">
+            <div class="ops-actions-row">
+              <h3 class="ops-panel-title">${escapeHtml(title)}</h3>
+              ${renderOpsPill(`${renderMaybe(total, "0")} total`)}
             </div>
             ${truncatedCount > 0
               ? `<div class="field-note">Showing latest ${escapeHtml(rows.length)} of ${escapeHtml(total)}.</div>`
               : ""}
             ${rows.length === 0
-              ? `<div class="empty-state">No ${escapeHtml(title.toLowerCase())} in the current learning epoch.</div>`
+              ? `<div class="empty-state">No matching closed ${escapeHtml(page.tradeLabel)} trades in the current learning epoch.</div>`
               : rows.map((trade) => {
                   const plTone = numberToneClass(trade.realized_pl_usd);
                   return `
-                    <details class="outcome-row">
+                    <details class="ops-outcome-row">
                       <summary>
-                        <span class="outcome-row-header">
-                          <strong>${escapeHtml(renderMaybe(trade.symbol))}</strong>
-                          <span class="winner-chip ${escapeHtml(chipClass)}">${escapeHtml(outcomeLabel)}</span>
+                        <span class="ops-outcome-head">
+                          <span>
+                            <span class="ops-outcome-title">${escapeHtml(renderMaybe(trade.symbol))}</span>
+                            <span class="ops-pill-row">
+                              ${renderOpsPill(trade.outcomeLabel, trade.outcomeTone)}
+                              ${renderBrokerTruthPills(trade)}
+                            </span>
+                            <span class="ops-outcome-meta">
+                              ${escapeHtml(formatOutcomeEntryLabel(trade))} | ${escapeHtml(renderMaybe(trade.direction))} | ${escapeHtml(renderMaybe(trade.setup_type))}
+                            </span>
+                            <span class="ops-outcome-meta">
+                              Exit ${escapeHtml(formatCentralTimestamp(trade.exit_time))} | ${escapeHtml(renderMaybe(trade.exit_reason))}
+                            </span>
+                          </span>
+                          <span class="ops-outcome-metrics">
+                            <span class="${escapeHtml(plTone)}">P/L ${escapeHtml(formatMoney(trade.realized_pl_usd))}</span>
+                            <span>R ${escapeHtml(formatRatio(trade.realized_r_multiple))}</span>
+                            <span>Return ${escapeHtml(formatPercent(trade.realized_return_pct, 1))}</span>
+                            <span>Cost ${escapeHtml(formatMoney(trade.position_cost_usd))}</span>
+                          </span>
                         </span>
                       </summary>
-                      <div class="outcome-row-meta">
-                        ${escapeHtml(formatOutcomeEntryLabel(trade))} | ${escapeHtml(renderMaybe(trade.direction))} | ${escapeHtml(renderMaybe(trade.setup_type))}
-                      </div>
-                      <div class="outcome-row-meta">
-                        Exit ${escapeHtml(formatCentralTimestamp(trade.exit_time))} | ${escapeHtml(renderMaybe(trade.exit_reason))}
-                      </div>
-                      <div class="outcome-row-metrics">
-                        <span class="${escapeHtml(plTone)}">P/L ${escapeHtml(formatMoney(trade.realized_pl_usd))}</span>
-                        <span>R ${escapeHtml(formatRatio(trade.realized_r_multiple))}</span>
-                        <span>Return ${escapeHtml(formatPercent(trade.realized_return_pct, 1))}</span>
-                        <span>Cost ${escapeHtml(formatMoney(trade.position_cost_usd))}</span>
-                      </div>
                       ${renderOutcomeDetailRows(trade, page)}
                     </details>
                   `;
@@ -2546,22 +3330,38 @@
         const winners = Array.isArray(details.winners) ? details.winners : [];
         const losers = Array.isArray(details.losers) ? details.losers : [];
         const totals = insights?.totals || {};
+        const filter = ["all", "winners", "losers"].includes(page.outcomeFilter)
+          ? page.outcomeFilter
+          : "all";
+        const rows = decorateOutcomeTrades(winners, losers, filter);
+        const totalCount = filter === "winners"
+          ? totals.winners
+          : filter === "losers"
+            ? totals.losers
+            : (asNumber(totals.winners) ?? winners.length) + (asNumber(totals.losers) ?? losers.length);
         return `
           <div
             id="${escapeHtml(page.mode)}OutcomeDetails"
-            class="outcome-detail-panel"
+            class="ops-panel"
             ${page.outcomeDetailsExpanded ? "" : "hidden"}
           >
-            <div class="panel-header">
+            <div class="ops-actions-row">
               <div>
-                <h3>Winner / Loser Trades</h3>
+                <h3 class="ops-panel-title">Winner / Loser Drill-In</h3>
                 <p class="section-description">Current-epoch closed ${escapeHtml(page.tradeLabel)} trades, sorted by latest exit.</p>
               </div>
+              <div class="ops-segmented" role="tablist" aria-label="Outcome filter">
+                ${["all", "winners", "losers"].map((key) => `
+                  <button
+                    type="button"
+                    class="ops-segment-button ${escapeHtml(filter === key ? "is-active" : "")}"
+                    data-outcome-filter="${escapeHtml(key)}"
+                    aria-pressed="${filter === key ? "true" : "false"}"
+                  >${escapeHtml(key === "all" ? "All" : key === "winners" ? "Winners" : "Losers")}</button>
+                `).join("")}
+              </div>
             </div>
-            <div class="outcome-detail-grid">
-              ${renderPaperOutcomeRows("Winners", winners, totals.winners, "Win", "chip-positive", page)}
-              ${renderPaperOutcomeRows("Losers", losers, totals.losers, "Loss", "chip-negative", page)}
-            </div>
+            ${renderPaperOutcomeRows(filter === "all" ? "All outcomes" : filter === "winners" ? "Winners" : "Losers", rows, totalCount, page)}
           </div>
         `;
       }
@@ -2630,9 +3430,6 @@
           String(warning).toLowerCase().includes("unavailable")
           || String(warning).toLowerCase().includes("timed out")
         );
-        const bestDay = journalDataUnavailable ? null : bestBucketByRealizedPl(insights.by_day_of_week);
-        const bestTime = journalDataUnavailable ? null : bestBucketByRealizedPl(insights.by_entry_hour);
-        const bestSetup = journalDataUnavailable ? null : bestBucketByRealizedPl(insights.by_setup_type);
         const brokerAudit = insights.broker_audit || {};
         const realizedTone = journalDataUnavailable ? "" : numberToneClass(totals.total_realized_pl_usd);
         const unrealizedTone = numberToneClass(accountSnapshot?.unrealizedPlUsd);
@@ -2672,126 +3469,82 @@
         ].filter(Boolean);
         const syncWarningLabel = hasArchivedTrades ? "Position scope note:" : "Position sync warning:";
         const outcomeDetailsId = `${page.mode}OutcomeDetails`;
+        const warningItems = [
+          accountSnapshot?.error,
+          ...dataWarnings,
+          ...syncWarnings.map((warning) => `${syncWarningLabel} ${warning}`),
+        ].filter(Boolean);
+        const outcomeButtonAttrs = `
+          data-paper-outcome-toggle="true"
+          aria-controls="${escapeHtml(outcomeDetailsId)}"
+          aria-expanded="${page.outcomeDetailsExpanded ? "true" : "false"}"
+          ${journalDataUnavailable ? "disabled" : ""}
+        `;
 
         page.dashboardArea.innerHTML = `
-          ${accountSnapshot?.error
-            ? `<div class="empty-state">${escapeHtml(accountSnapshot.error)}</div>`
-            : ""}
-          ${dataWarnings.length > 0
-            ? `<div class="empty-state">${renderList(dataWarnings)}</div>`
-            : ""}
+          <div class="ops-dashboard">
+            ${renderOpsWarningBand(warningItems)}
 
-          <div class="stats-grid" style="margin-top: 12px;">
-            <div class="stat-card">
-              <div class="stat-label">TradeStation Net Worth</div>
-              <div class="stat-value">${escapeHtml(formatMoney(accountSnapshot?.accountValueUsd))}</div>
+            <div class="ops-kpi-groups">
+              ${renderOpsMetricGroup("Broker Snapshot", "TradeStation read-only", [
+                renderOpsMetric("Net worth", formatMoney(accountSnapshot?.accountValueUsd)),
+                renderOpsMetric("Cash", formatMoney(accountSnapshot?.cashBalanceUsd)),
+                renderOpsMetric("Unrealized P/L", formatMoney(accountSnapshot?.unrealizedPlUsd), unrealizedTone, "Broker mark"),
+                renderOpsMetric("Options buying power", formatMoney(accountSnapshot?.optionsBuyingPowerUsd)),
+                renderOpsMetric("Open positions", renderMaybe(openSimPositions, "n/a")),
+                renderOpsMetric("Open contracts", renderMaybe(openSimContracts, "n/a")),
+              ])}
+              ${renderOpsMetricGroup("Journal Performance", "Current learning epoch", [
+                renderOpsMetric("Epoch realized P/L", journalDataUnavailable ? "unavailable" : formatMoney(totals.total_realized_pl_usd), realizedTone, "Journal derived"),
+                renderOpsMetric("Win rate", journalDataUnavailable ? "unavailable" : formatPercent(totals.win_rate, 1), winRateTone),
+                renderOpsMetric("Avg realized R", journalDataUnavailable ? "unavailable" : formatRatio(totals.average_r_multiple), avgRTone),
+                renderOpsMetric("Closed trades", journalDataUnavailable ? "unavailable" : renderMaybe(totals.closed_trades, "0")),
+                renderOpsMetric("Open journal trades", journalDataUnavailable && openJournalTrades === 0 ? "unavailable" : renderMaybe(openJournalTrades, "0")),
+                renderOpsMetric(
+                  "Winners / Losers",
+                  journalDataUnavailable ? "unavailable" : `${renderMaybe(totals.winners, "0")} / ${renderMaybe(totals.losers, "0")}`,
+                  "",
+                  journalDataUnavailable ? "Details unavailable" : page.outcomeDetailsExpanded ? "Hide trade details" : "View trade details",
+                  outcomeButtonAttrs,
+                ),
+              ])}
+              ${renderOpsMetricGroup("Broker Audit", "Exit truth state", [
+                renderOpsMetric("Broker-confirmed exits", journalDataUnavailable ? "unavailable" : renderMaybe(brokerAudit.broker_confirmed_exit_count, "0")),
+                renderOpsMetric("Provisional exits", journalDataUnavailable ? "unavailable" : renderMaybe(brokerAudit.provisional_exit_count, "0"), "", "Needs broker fill"),
+                renderOpsMetric("Broker-repaired exits", journalDataUnavailable ? "unavailable" : renderMaybe(brokerAudit.broker_repaired_exit_count, "0")),
+                renderOpsMetric("Position cost", formatMoney(openSimCost), "", `${page.environmentLabel} broker snapshot`),
+                renderOpsMetric("Position value", formatMoney(openSimMarketValue), "", `${page.environmentLabel} broker snapshot`),
+                renderOpsMetric("Learning set", learningState),
+              ])}
             </div>
-            <div class="stat-card ${escapeHtml(unrealizedTone)}">
-              <div class="stat-label">TradeStation Unrealized P/L</div>
-              <div class="stat-value ${escapeHtml(unrealizedTone)}">${escapeHtml(formatMoney(accountSnapshot?.unrealizedPlUsd))}</div>
-            </div>
-            <div class="stat-card ${escapeHtml(realizedTone)}">
-              <div class="stat-label">Epoch Realized P/L</div>
-              <div class="stat-value ${escapeHtml(realizedTone)}">${escapeHtml(journalDataUnavailable ? "unavailable" : formatMoney(totals.total_realized_pl_usd))}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-label">Broker-Confirmed Exits</div>
-              <div class="stat-value">${escapeHtml(journalDataUnavailable ? "unavailable" : renderMaybe(brokerAudit.broker_confirmed_exit_count, "0"))}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-label">Provisional Exits</div>
-              <div class="stat-value">${escapeHtml(journalDataUnavailable ? "unavailable" : renderMaybe(brokerAudit.provisional_exit_count, "0"))}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-label">Open TradeStation Positions</div>
-              <div class="stat-value">${escapeHtml(renderMaybe(openSimPositions, "n/a"))}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-label">TradeStation Open Contracts</div>
-              <div class="stat-value">${escapeHtml(renderMaybe(openSimContracts, "n/a"))}</div>
-            </div>
-            <div class="stat-card ${escapeHtml(winRateTone)}">
-              <div class="stat-label">Win Rate</div>
-              <div class="stat-value ${escapeHtml(winRateTone)}">${escapeHtml(journalDataUnavailable ? "unavailable" : formatPercent(totals.win_rate, 1))}</div>
-            </div>
-            <div class="stat-card ${escapeHtml(avgRTone)}">
-              <div class="stat-label">Avg Realized R</div>
-              <div class="stat-value ${escapeHtml(avgRTone)}">${escapeHtml(journalDataUnavailable ? "unavailable" : formatRatio(totals.average_r_multiple))}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-label">Avg Return</div>
-              <div class="stat-value">${escapeHtml(journalDataUnavailable ? "unavailable" : formatPercent(totals.average_return_pct, 1))}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-label">${escapeHtml(page.environmentLabel)} Position Cost</div>
-              <div class="stat-value">${escapeHtml(formatMoney(openSimCost))}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-label">${escapeHtml(page.environmentLabel)} Position Value</div>
-              <div class="stat-value">${escapeHtml(formatMoney(openSimMarketValue))}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-label">Epoch Closed Trades</div>
-              <div class="stat-value">${escapeHtml(journalDataUnavailable ? "unavailable" : renderMaybe(totals.closed_trades, "0"))}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-label">Epoch Open Journal Trades</div>
-              <div class="stat-value">${escapeHtml(journalDataUnavailable && openJournalTrades === 0 ? "unavailable" : renderMaybe(openJournalTrades, "0"))}</div>
-            </div>
-            <button
-              class="stat-card stat-card-button"
-              type="button"
-              data-paper-outcome-toggle="true"
-              aria-controls="${escapeHtml(outcomeDetailsId)}"
-              aria-expanded="${page.outcomeDetailsExpanded ? "true" : "false"}"
-              ${journalDataUnavailable ? "disabled" : ""}
-            >
-              <div class="stat-label">Winners / Losers</div>
-              <div class="stat-value">${escapeHtml(journalDataUnavailable ? "unavailable" : `${renderMaybe(totals.winners, "0")} / ${renderMaybe(totals.losers, "0")}`)}</div>
-              <div class="stat-action-note">${escapeHtml(journalDataUnavailable ? "Details unavailable" : page.outcomeDetailsExpanded ? "Hide trade details" : "View trade details")}</div>
-            </button>
-            <div class="stat-card">
-              <div class="stat-label">Best Day</div>
-              <div class="stat-value">${escapeHtml(renderMaybe(bestDay?.label))}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-label">Best Time</div>
-              <div class="stat-value">${escapeHtml(renderMaybe(bestTime?.label))}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-label">Best Setup</div>
-              <div class="stat-value">${escapeHtml(renderMaybe(bestSetup?.label))}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-label">Learning Set</div>
-              <div class="stat-value">${escapeHtml(learningState)}</div>
-            </div>
-          </div>
 
-          ${renderPaperOutcomeDetails(insights, journalDataUnavailable, page)}
+            ${renderLiveTheoreticalBalancesPanel(totals, accountSnapshot, journalDataUnavailable, page)}
 
-          <div class="empty-state" style="margin-top: 16px;">
-            <strong>${escapeHtml(scopeLabel)}:</strong> since ${escapeHtml(learningStartLabel)}. ${escapeHtml(renderMaybe(includedTradeCount, "0"))} current-epoch ${escapeHtml(page.tradeLabel)} trade(s); ${escapeHtml(renderMaybe(excludedTradeCount, "0"))} archived ${escapeHtml(page.tradeLabel)} trade(s) kept in journal/history and excluded from current dashboard learning metrics.
-            Open positions, unrealized P/L, and net worth come from read-only TradeStation account data. Epoch realized results and learning analytics come from Supabase journal history, so they can be temporarily unavailable if Supabase times out.
-          </div>
-          ${syncWarnings.length > 0
-            ? `<div class="empty-state" style="margin-top: 12px;"><strong>${escapeHtml(syncWarningLabel)}</strong>${renderList(syncWarnings)}</div>`
-            : ""}
+            ${renderPaperOutcomeDetails(insights, journalDataUnavailable, page)}
 
-          <div class="section-grid" style="margin-top: 16px;">
-            ${renderOpenSimPositions(accountSnapshot?.positions)}
-            ${renderPaperDashboardBucket("Best Days To Trade", insights.by_day_of_week, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)} | ${bucket.closed_trade_count} closed`, 6, journalDataUnavailable, page.tradeLabel)}
-            ${renderPaperDashboardBucket("Best Entry Times", insights.by_entry_hour, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)} | ${bucket.closed_trade_count} closed`, 6, journalDataUnavailable, page.tradeLabel)}
-            ${renderPaperDashboardBucket("Best Setups", insights.by_setup_type, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)}`, 6, journalDataUnavailable, page.tradeLabel)}
-            ${renderPaperDashboardBucket("Best Symbols", insights.by_symbol, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`, 6, journalDataUnavailable, page.tradeLabel)}
-            ${renderPaperDashboardBucket("Direction Performance", insights.by_direction, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | avg ${formatRatio(bucket.average_r_multiple)}`, 6, journalDataUnavailable, page.tradeLabel)}
-            ${renderPaperDashboardBucket("Exit Outcomes", insights.by_exit_reason, (bucket) => `${formatMoney(bucket.realized_pl_usd)} | win ${formatPercent(bucket.win_rate, 1)} | ${bucket.closed_trade_count} closed`, 6, journalDataUnavailable, page.tradeLabel)}
+            <div class="ops-scope-note">
+              <strong>${escapeHtml(scopeLabel)}:</strong> since ${escapeHtml(learningStartLabel)}. ${escapeHtml(renderMaybe(includedTradeCount, "0"))} current-epoch ${escapeHtml(page.tradeLabel)} trade(s); ${escapeHtml(renderMaybe(excludedTradeCount, "0"))} archived ${escapeHtml(page.tradeLabel)} trade(s) kept in journal/history and excluded from current dashboard learning metrics.
+            </div>
+
+            <div class="ops-section-grid">
+              <div class="ops-section-stack">
+                ${renderOpenSimPositions(accountSnapshot?.positions, journalOpenUnderlyings, hasArchivedTrades)}
+              </div>
+              <div class="ops-section-stack">
+                ${renderPaperDashboardBucket("Day Of Week", insights.by_day_of_week, 6, journalDataUnavailable, page.tradeLabel)}
+                ${renderPaperDashboardBucket("Entry Hour", insights.by_entry_hour, 6, journalDataUnavailable, page.tradeLabel)}
+                ${renderPaperDashboardBucket("Direction", insights.by_direction, 6, journalDataUnavailable, page.tradeLabel)}
+                ${renderPaperDashboardBucket("Setup Type", insights.by_setup_type, 6, journalDataUnavailable, page.tradeLabel)}
+                ${renderPaperDashboardBucket("Symbol", insights.by_symbol, 6, journalDataUnavailable, page.tradeLabel)}
+                ${renderPaperDashboardBucket("Exit Reason", insights.by_exit_reason, 6, journalDataUnavailable, page.tradeLabel)}
+              </div>
+            </div>
           </div>
         `;
 
         const outcomeToggle = page.dashboardArea.querySelector("[data-paper-outcome-toggle]");
         const outcomeDetails = page.dashboardArea.querySelector(`#${outcomeDetailsId}`);
-        const outcomeNote = outcomeToggle?.querySelector(".stat-action-note");
+        const outcomeNote = outcomeToggle?.querySelector(".ops-metric-note, .stat-action-note");
         outcomeToggle?.addEventListener("click", () => {
           page.outcomeDetailsExpanded = !page.outcomeDetailsExpanded;
           if (outcomeDetails) {
@@ -2801,6 +3554,14 @@
           if (outcomeNote) {
             outcomeNote.textContent = page.outcomeDetailsExpanded ? "Hide trade details" : "View trade details";
           }
+        });
+        page.dashboardArea.querySelectorAll("[data-outcome-filter]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const nextFilter = button?.dataset?.outcomeFilter || "all";
+            page.outcomeFilter = ["all", "winners", "losers"].includes(nextFilter) ? nextFilter : "all";
+            page.outcomeDetailsExpanded = true;
+            renderPaperDashboard(insights, page);
+          });
         });
         attachLossPostMortemHandlers(page);
       }
