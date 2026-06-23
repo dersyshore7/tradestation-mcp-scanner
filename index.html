@@ -857,11 +857,15 @@
         text-transform: uppercase;
       }
       .ops-theoretical-base,
-      .ops-theoretical-state {
+      .ops-theoretical-state,
+      .ops-theoretical-running {
         margin-top: 4px;
         color: var(--muted-text);
         font-size: 12px;
         line-height: 1.35;
+      }
+      .ops-theoretical-running strong {
+        font-weight: 800;
       }
       .ops-theoretical-value {
         margin-top: 7px;
@@ -2864,12 +2868,14 @@
 
       function renderTheoreticalBalanceCard(row) {
         const valueTone = row.plUsd === null ? "tone-neutral" : numberToneClass(row.plUsd);
+        const runningValue = row.plUsd === null ? "n/a" : formatMoney(row.plUsd);
         return `
           <div class="ops-theoretical-card">
             <div class="ops-theoretical-label">${escapeHtml(row.label)}</div>
             <div class="ops-theoretical-base">Base ${escapeHtml(formatMoney(row.baseUsd))}</div>
             <div class="ops-theoretical-value ${escapeHtml(valueTone)}">${escapeHtml(row.plUsd === null ? "n/a" : formatMoney(row.plUsd))}</div>
             <div class="ops-theoretical-state">${escapeHtml(row.state)}</div>
+            <div class="ops-theoretical-running"><strong>Running P/L</strong> <span class="${escapeHtml(valueTone)}">${escapeHtml(runningValue)}</span></div>
           </div>
         `;
       }
