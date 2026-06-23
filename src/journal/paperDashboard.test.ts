@@ -53,11 +53,14 @@ test("exit truth migration adds columns and backfills legacy note patterns", () 
 
 test("pending migration fallback keeps legacy exit notes out of broker truth counts", () => {
   const fallbackExit = addDefaultExitTruthForTest({
+    id: "exit-1",
     trade_id: "trade-1",
     exit_time: "2026-06-18T15:00:00.000Z",
     exit_reason: "manual_early_exit",
     option_exit_price: "1.23",
     quantity_closed: 1,
+    fees_usd: "0.00",
+    slippage_usd: "0.00",
     exit_notes: "Broker-confirmed TradeStation fill 123 and provisional quote text.",
   });
 

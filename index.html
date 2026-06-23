@@ -510,6 +510,33 @@
         margin-top: 10px;
         padding-top: 10px;
       }
+      .loss-postmortem {
+        border-top: 1px solid var(--border);
+        margin-top: 10px;
+        padding-top: 10px;
+      }
+      .loss-postmortem-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 8px;
+      }
+      .loss-postmortem-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 8px;
+      }
+      .loss-postmortem-ai {
+        margin-top: 8px;
+        padding: 9px 10px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #f8faf7;
+      }
       .decision-module .journal-trade {
         background: #fff;
       }
@@ -2314,7 +2341,79 @@
         ].filter(Boolean).join(" ");
       }
 
-      function renderOutcomeDetailRows(trade) {
+      function postMortemLabel(classification) {
+        if (classification === "program_issue_possible") {
+          return "Program issue possible";
+        }
+        if (classification === "data_quality_issue") {
+          return "Data quality issue";
+        }
+        if (classification === "presentation_issue") {
+          return "Presentation issue";
+        }
+        return "No program issue detected";
+      }
+
+      function postMortemChipClass(classification) {
+        if (classification === "program_issue_possible" || classification === "data_quality_issue") {
+          return "chip-negative";
+        }
+        if (classification === "presentation_issue") {
+          return "chip-neutral";
+        }
+        return "chip-positive";
+      }
+
+      function renderPostMortemFlags(flags) {
+        const rows = Array.isArray(flags) ? flags : [];
+        if (rows.length === 0) {
+          return '<div class="row"><strong>Flags:</strong> None</div>';
+        }
+        return `
+          <div class="row"><strong>Flags:</strong></div>
+          <ul>
+            ${rows.map((flag) => `<li><strong>${escapeHtml(renderMaybe(flag.title))}:</strong> ${escapeHtml(renderMaybe(flag.detail))}</li>`).join("")}
+          </ul>
+        `;
+      }
+
+      function renderLossPostMortem(trade, page) {
+        const postMortem = trade.post_mortem || null;
+        if (!postMortem) {
+          return "";
+        }
+        const recommendation = postMortem.program_recommendation || {};
+        const chipClass = postMortemChipClass(postMortem.classification);
+        const evidence = Array.isArray(postMortem.evidence) ? postMortem.evidence : [];
+        const aiTargetId = `${page.mode}-loss-postmortem-ai-${trade.id}`;
+        return `
+          <div class="loss-postmortem">
+            <div class="loss-postmortem-title">
+              <strong>Loss Post-Mortem</strong>
+              <span class="winner-chip ${escapeHtml(chipClass)}">${escapeHtml(postMortemLabel(postMortem.classification))}</span>
+            </div>
+            <div class="row">${escapeHtml(renderMaybe(postMortem.summary))}</div>
+            <div class="row"><strong>Evidence:</strong></div>
+            ${renderList(evidence)}
+            ${renderPostMortemFlags(postMortem.flags)}
+            <div class="row"><strong>Program recommendation:</strong> ${escapeHtml(recommendation.recommended ? renderMaybe(recommendation.title) : "No program change recommended")}</div>
+            <div class="field-note">${escapeHtml(renderMaybe(recommendation.rationale))}</div>
+            <div class="loss-postmortem-actions">
+              <button
+                type="button"
+                class="secondary"
+                data-loss-postmortem-review="true"
+                data-loss-postmortem-trade="${escapeHtml(trade.id)}"
+                data-loss-postmortem-target="${escapeHtml(aiTargetId)}"
+              >AI review</button>
+              <span class="field-note" style="margin: 0;">On demand. Does not place or change orders.</span>
+            </div>
+            <div id="${escapeHtml(aiTargetId)}" class="loss-postmortem-ai" hidden></div>
+          </div>
+        `;
+      }
+
+      function renderOutcomeDetailRows(trade, page = traderPages.paper) {
         const reasoning = trade.reasoning || {};
         const technical = reasoning.technical_snapshot || {};
         const geometry = reasoning.chart_geometry || null;
@@ -2387,14 +2486,14 @@
             : null,
         ].filter(Boolean);
 
-        if (rows.length === 0) {
-          return '<div class="empty-state">No saved detail or reasoning snapshot is available for this trade.</div>';
-        }
+        const detailRows = rows.length === 0
+          ? '<div class="empty-state">No saved detail or reasoning snapshot is available for this trade.</div>'
+          : `<div class="outcome-row-detail">${rows.map((row) => `<div class="row">${row}</div>`).join("")}</div>`;
 
-        return `<div class="outcome-row-detail">${rows.map((row) => `<div class="row">${row}</div>`).join("")}</div>`;
+        return `${detailRows}${renderLossPostMortem(trade, page)}`;
       }
 
-      function renderPaperOutcomeRows(title, trades, totalCount, outcomeLabel, chipClass) {
+      function renderPaperOutcomeRows(title, trades, totalCount, outcomeLabel, chipClass, page = traderPages.paper) {
         const rows = Array.isArray(trades) ? trades : [];
         const total = asNumber(totalCount) ?? rows.length;
         const truncatedCount = Math.max(0, total - rows.length);
@@ -2431,7 +2530,7 @@
                         <span>Return ${escapeHtml(formatPercent(trade.realized_return_pct, 1))}</span>
                         <span>Cost ${escapeHtml(formatMoney(trade.position_cost_usd))}</span>
                       </div>
-                      ${renderOutcomeDetailRows(trade)}
+                      ${renderOutcomeDetailRows(trade, page)}
                     </details>
                   `;
                 }).join("")}
@@ -2460,11 +2559,53 @@
               </div>
             </div>
             <div class="outcome-detail-grid">
-              ${renderPaperOutcomeRows("Winners", winners, totals.winners, "Win", "chip-positive")}
-              ${renderPaperOutcomeRows("Losers", losers, totals.losers, "Loss", "chip-negative")}
+              ${renderPaperOutcomeRows("Winners", winners, totals.winners, "Win", "chip-positive", page)}
+              ${renderPaperOutcomeRows("Losers", losers, totals.losers, "Loss", "chip-negative", page)}
             </div>
           </div>
         `;
+      }
+
+      function renderLossPostMortemAiReview(aiReview) {
+        const recommendation = aiReview?.program_recommendation || {};
+        return `
+          <div class="row"><strong>AI review:</strong> ${escapeHtml(renderMaybe(aiReview?.narrative))}</div>
+          <div class="row"><strong>AI program recommendation:</strong> ${escapeHtml(recommendation.recommended ? renderMaybe(recommendation.title) : "No AI program change recommended")}</div>
+          <div class="field-note">${escapeHtml(renderMaybe(recommendation.rationale))}</div>
+        `;
+      }
+
+      async function runLossPostMortemAiReview(button, page = traderPages.paper) {
+        const tradeId = button?.dataset?.lossPostmortemTrade || "";
+        const targetId = button?.dataset?.lossPostmortemTarget || "";
+        const target = targetId ? document.getElementById(targetId) : null;
+        if (!tradeId || !target) {
+          return;
+        }
+
+        target.hidden = false;
+        target.innerHTML = '<div class="muted">Running AI post-mortem review...</div>';
+        button.disabled = true;
+
+        try {
+          const response = await fetch("/api/loss-postmortem", {
+            method: "POST",
+            headers: buildPaperTraderHeaders(page, true),
+            body: JSON.stringify({ tradeId }),
+          });
+          const data = await readJsonResponse(response, "Failed to run AI post-mortem review.");
+          target.innerHTML = renderLossPostMortemAiReview(data?.ai_review || null);
+        } catch (error) {
+          target.innerHTML = `<div class="muted">${escapeHtml(compactErrorMessage(error, "Failed to run AI post-mortem review."))}</div>`;
+        } finally {
+          button.disabled = false;
+        }
+      }
+
+      function attachLossPostMortemHandlers(page = traderPages.paper) {
+        page.dashboardArea?.querySelectorAll("[data-loss-postmortem-review]").forEach((button) => {
+          button.addEventListener("click", () => runLossPostMortemAiReview(button, page));
+        });
       }
 
       function renderPaperDashboard(insights, page = traderPages.paper) {
@@ -2661,6 +2802,7 @@
             outcomeNote.textContent = page.outcomeDetailsExpanded ? "Hide trade details" : "View trade details";
           }
         });
+        attachLossPostMortemHandlers(page);
       }
 
       async function readJsonResponse(response, fallbackMessage) {

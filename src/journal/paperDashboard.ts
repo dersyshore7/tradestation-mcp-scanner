@@ -1,6 +1,7 @@
 import { readPaperLearningWindow } from "../automation/paperLearningCutoff.js";
 import { buildLearningOutcomeAudit, type LearningOutcomeAudit } from "../automation/learningOutcomeAudit.js";
 import { buildReasoningSnapshot } from "./insights.js";
+import { buildLossPostMortem, type LossTradePostMortem } from "./lossPostMortem.js";
 import { listJournalTradeDetails } from "./repository.js";
 import { supabaseCount, supabaseSelect } from "../supabase/serverClient.js";
 import type { AccountMode, JournalExitPriceSource, JournalReasoningSnapshot } from "./types.js";
@@ -15,6 +16,7 @@ type NumericValue = number | string | null;
 type PaperDashboardTradeRow = {
   id: string;
   created_at: string;
+  account_mode: AccountMode;
   entry_date: string;
   entry_time: string | null;
   symbol: string;
@@ -25,6 +27,7 @@ type PaperDashboardTradeRow = {
   position_cost_usd: string | null;
   underlying_entry_price: NumericValue;
   option_entry_price: NumericValue;
+  planned_risk_usd: NumericValue;
   intended_stop_underlying: NumericValue;
   intended_target_underlying: NumericValue;
   entry_notes: string | null;
@@ -40,11 +43,14 @@ type PaperDashboardReviewRow = {
 };
 
 type PaperDashboardExitRow = {
+  id: string;
   trade_id: string;
   exit_time: string;
   exit_reason: string;
   option_exit_price: NumericValue;
   quantity_closed: number;
+  fees_usd: NumericValue;
+  slippage_usd: NumericValue;
   exit_notes: string | null;
   exit_price_source: JournalExitPriceSource;
   broker_confirmed: boolean;
@@ -121,6 +127,16 @@ export type PaperDashboardOutcomeTrade = {
   provisional_exit: boolean;
   broker_confirmed_exit: boolean;
   broker_repaired_exit: boolean;
+  exits: Array<{
+    exit_time: string;
+    exit_reason: string;
+    option_exit_price: number | null;
+    quantity_closed: number | null;
+    exit_price_source: JournalExitPriceSource | null;
+    broker_confirmed: boolean;
+    broker_repaired: boolean;
+  }>;
+  post_mortem: LossTradePostMortem | null;
   reasoning: JournalReasoningSnapshot | null;
 };
 
@@ -166,6 +182,7 @@ type PaperDashboardTrade = PaperDashboardTradeRow & {
   entry_hour_key: string;
   entry_hour_label: string;
   review: PaperDashboardReviewRow | null;
+  exits: PaperDashboardExitRow[];
   latest_exit: PaperDashboardExitRow | null;
 };
 
@@ -357,6 +374,7 @@ function buildOutcomeTrade(
   const signalSnapshot = asRecord(detail?.signal_snapshot_json);
   const exitNotes = trade.latest_exit?.exit_notes ?? null;
   const exitPriceSource = trade.latest_exit?.exit_price_source ?? null;
+  const isLoser = trade.review?.winner === false || ((asNumber(trade.review?.realized_pl_usd) ?? 0) < 0);
   return {
     id: trade.id,
     symbol: trade.symbol,
@@ -389,6 +407,33 @@ function buildOutcomeTrade(
     provisional_exit: exitPriceSource === "provisional_quote",
     broker_confirmed_exit: trade.latest_exit?.broker_confirmed === true,
     broker_repaired_exit: trade.latest_exit?.broker_repaired === true,
+    exits: trade.exits.map((exit) => ({
+      exit_time: exit.exit_time,
+      exit_reason: exit.exit_reason,
+      option_exit_price: asNumber(exit.option_exit_price),
+      quantity_closed: asNumber(exit.quantity_closed),
+      exit_price_source: exit.exit_price_source,
+      broker_confirmed: exit.broker_confirmed,
+      broker_repaired: exit.broker_repaired,
+    })),
+    post_mortem: isLoser
+      ? buildLossPostMortem({
+          id: trade.id,
+          account_mode: trade.account_mode,
+          symbol: trade.symbol,
+          direction: trade.direction,
+          status: trade.status,
+          contracts: asNumber(trade.contracts),
+          position_cost_usd: trade.position_cost_usd,
+          option_entry_price: trade.option_entry_price,
+          planned_risk_usd: trade.planned_risk_usd,
+          intended_stop_underlying: trade.intended_stop_underlying,
+          intended_target_underlying: trade.intended_target_underlying,
+          signal_snapshot_json: signalSnapshot,
+          review: trade.review,
+          exits: trade.exits,
+        })
+      : null,
     reasoning: buildReasoningSnapshot(signalSnapshot, trade.symbol),
   };
 }
@@ -412,7 +457,7 @@ async function loadPaperDashboardExitRows(tradeIds: string[]): Promise<PaperDash
   try {
     return await supabaseSelect<PaperDashboardExitRow>({
       table: "journal_exits",
-      select: "trade_id,exit_time,exit_reason,option_exit_price,quantity_closed,exit_notes,exit_price_source,broker_confirmed,broker_repaired,broker_order_id",
+      select: "id,trade_id,exit_time,exit_reason,option_exit_price,quantity_closed,fees_usd,slippage_usd,exit_notes,exit_price_source,broker_confirmed,broker_repaired,broker_order_id",
       filters: [buildInFilter("trade_id", tradeIds)],
       order: ["exit_time.desc"],
     });
@@ -426,7 +471,7 @@ async function loadPaperDashboardExitRows(tradeIds: string[]): Promise<PaperDash
     );
     const legacyRows = await supabaseSelect<PaperDashboardLegacyExitRow>({
       table: "journal_exits",
-      select: "trade_id,exit_time,exit_reason,option_exit_price,quantity_closed,exit_notes",
+      select: "id,trade_id,exit_time,exit_reason,option_exit_price,quantity_closed,fees_usd,slippage_usd,exit_notes",
       filters: [buildInFilter("trade_id", tradeIds)],
       order: ["exit_time.desc"],
     });
@@ -441,7 +486,7 @@ async function loadPaperDashboardRows(
 ): Promise<PaperDashboardTrade[]> {
   const tradeRows = await supabaseSelect<PaperDashboardTradeRow>({
     table: "journal_trades",
-    select: "id,created_at,entry_date,entry_time,symbol,direction,setup_type,status,contracts,position_cost_usd,underlying_entry_price,option_entry_price,intended_stop_underlying,intended_target_underlying,entry_notes",
+    select: "id,created_at,account_mode,entry_date,entry_time,symbol,direction,setup_type,status,contracts,position_cost_usd,underlying_entry_price,option_entry_price,planned_risk_usd,intended_stop_underlying,intended_target_underlying,entry_notes",
     filters: [`account_mode=eq.${accountMode}`, ...filters],
     order: ["entry_date.desc", "created_at.desc"],
     limit,
@@ -465,12 +510,18 @@ async function loadPaperDashboardRows(
     map.set(review.trade_id, review);
     return map;
   }, new Map<string, PaperDashboardReviewRow>());
-  const exitsByTradeId = exitRows.reduce((map, exit) => {
+  const latestExitsByTradeId = exitRows.reduce((map, exit) => {
     if (!map.has(exit.trade_id)) {
       map.set(exit.trade_id, exit);
     }
     return map;
   }, new Map<string, PaperDashboardExitRow>());
+  const exitsByTradeId = exitRows.reduce((map, exit) => {
+    const existing = map.get(exit.trade_id) ?? [];
+    existing.push(exit);
+    map.set(exit.trade_id, existing);
+    return map;
+  }, new Map<string, PaperDashboardExitRow[]>());
 
   return tradeRows.map((trade) => {
     const entryHourKey = buildEntryHourKey(trade.entry_time);
@@ -480,7 +531,8 @@ async function loadPaperDashboardRows(
       entry_hour_key: entryHourKey,
       entry_hour_label: buildEntryHourLabel(entryHourKey),
       review: reviewsByTradeId.get(trade.id) ?? null,
-      latest_exit: exitsByTradeId.get(trade.id) ?? null,
+      exits: exitsByTradeId.get(trade.id) ?? [],
+      latest_exit: latestExitsByTradeId.get(trade.id) ?? null,
     };
   });
 }
