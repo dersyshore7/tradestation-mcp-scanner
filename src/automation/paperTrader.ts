@@ -951,6 +951,24 @@ export function readAutomatedScanStateFromPaperTraderRun(
   return state as AutomatedEntryScanState;
 }
 
+function isRelevantAutomatedScanRun(run: PaperTraderRunRecord): boolean {
+  const raw = asRecord(run.raw_result_json);
+  const entry = asRecord(raw?.entry);
+  return Boolean(entry?.automatedScanState || entry?.scanSummary);
+}
+
+export function selectResumableAutomatedScanStateFromRuns(
+  runs: PaperTraderRunRecord[],
+  dryRun: boolean,
+): AutomatedEntryScanState | null {
+  const latestRelevantRun = [...runs]
+    .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))
+    .find((run) =>
+      run.dry_run === dryRun && isRelevantAutomatedScanRun(run)
+    );
+  return readAutomatedScanStateFromPaperTraderRun(latestRelevantRun ?? null);
+}
+
 async function loadResumableAutomatedScanState(
   mode: AutomationLane,
   dryRun: boolean,
@@ -960,13 +978,7 @@ async function loadResumableAutomatedScanState(
       includeRawResult: true,
       mode,
     });
-    for (const run of recentRuns.runs.filter((item) => item.dry_run === dryRun)) {
-      const state = readAutomatedScanStateFromPaperTraderRun(run);
-      if (state) {
-        return state;
-      }
-    }
-    return null;
+    return selectResumableAutomatedScanStateFromRuns(recentRuns.runs, dryRun);
   } catch (error) {
     console.warn(
       "automation could not load resumable automated scan state",

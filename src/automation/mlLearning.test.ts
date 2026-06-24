@@ -46,6 +46,7 @@ import {
   evaluateOpeningExitGuardForTest,
   readCloseOrderFillSnapshotForTest,
   readOpeningOrderSnapshotForTest,
+  selectResumableAutomatedScanStateFromRuns,
   validateEntryGeometryForTest,
 } from "./paperTrader.js";
 import {
@@ -131,6 +132,47 @@ function buildTradeCardWithGeometry(params: {
   } as Parameters<typeof validateEntryGeometryForTest>[0];
 }
 
+function buildAutomatedScanState(
+  overrides: Partial<AutomatedEntryScanState> = {},
+): AutomatedEntryScanState {
+  return {
+    version: 1,
+    scanRunId: "paper_scan_test",
+    prompt: "scan",
+    status: "running",
+    tierIndex: 1,
+    tierCursor: 20,
+    chunkCount: 3,
+    scannedSymbolCount: 44,
+    startedAt: new Date().toISOString(),
+    excludedTickers: [],
+    paperLearningPreferences: [],
+    confirmedCandidates: [],
+    chunkSummaries: [],
+    warnings: [],
+    ...overrides,
+  };
+}
+
+function buildPaperTraderRunForTest(params: {
+  id: string;
+  createdAt: string;
+  dryRun?: boolean;
+  outcome?: string;
+  rawResult: Record<string, unknown>;
+}): PaperTraderRunRecord {
+  return {
+    id: params.id,
+    created_at: params.createdAt,
+    mode: "live",
+    dry_run: params.dryRun ?? false,
+    outcome: params.outcome ?? "no_trade_today",
+    symbol: null,
+    reason: null,
+    raw_result_json: params.rawResult,
+  };
+}
+
 test("paper trader no longer emits scan_in_progress entry outcomes", () => {
   const source = readFileSync(new URL("./paperTrader.ts", import.meta.url), "utf8");
 
@@ -149,22 +191,7 @@ test("zero-contract entry blocks preserve resumable scan state", () => {
 });
 
 test("resumable scan state is loaded from non-entry runs", () => {
-  const state: AutomatedEntryScanState = {
-    version: 1,
-    scanRunId: "paper_scan_test",
-    prompt: "scan",
-    status: "running",
-    tierIndex: 1,
-    tierCursor: 20,
-    chunkCount: 3,
-    scannedSymbolCount: 44,
-    startedAt: new Date().toISOString(),
-    excludedTickers: [],
-    paperLearningPreferences: [],
-    confirmedCandidates: [],
-    chunkSummaries: [],
-    warnings: [],
-  };
+  const state = buildAutomatedScanState();
   const run: PaperTraderRunRecord = {
     id: "run-1",
     created_at: new Date().toISOString(),
@@ -183,23 +210,133 @@ test("resumable scan state is loaded from non-entry runs", () => {
   assert.deepEqual(readAutomatedScanStateFromPaperTraderRun(run), state);
 });
 
-test("automated scan resume tolerates closed symbols falling out of exclusions", () => {
-  const state: AutomatedEntryScanState = {
-    version: 1,
-    scanRunId: "paper_scan_test",
-    prompt: "scan",
+test("completed scan runs invalidate older running resume state", () => {
+  const runningState = buildAutomatedScanState({
+    scanRunId: "paper_scan_old_running",
     status: "running",
+    scannedSymbolCount: 478,
+  });
+  const olderRunningRun = buildPaperTraderRunForTest({
+    id: "run-older",
+    createdAt: "2026-06-24T14:13:51.000Z",
+    rawResult: {
+      entry: {
+        attempted: true,
+        outcome: "no_trade_today",
+        scanSummary: {
+          status: "running",
+          scannedSymbolCount: 478,
+          totalSymbolCount: 523,
+        },
+        automatedScanState: runningState,
+      },
+    },
+  });
+  const newerCompletedRun = buildPaperTraderRunForTest({
+    id: "run-newer",
+    createdAt: "2026-06-24T14:17:24.000Z",
+    rawResult: {
+      entry: {
+        attempted: true,
+        outcome: "no_trade_today",
+        scanSummary: {
+          status: "completed",
+          scannedSymbolCount: 523,
+          totalSymbolCount: 523,
+        },
+        automatedScanState: null,
+      },
+    },
+  });
+
+  assert.equal(
+    selectResumableAutomatedScanStateFromRuns([olderRunningRun, newerCompletedRun], false),
+    null,
+  );
+});
+
+test("latest running scan state remains resumable", () => {
+  const runningState = buildAutomatedScanState({
+    scanRunId: "paper_scan_latest_running",
+    status: "running",
+    scannedSymbolCount: 80,
+  });
+  const latestRunningRun = buildPaperTraderRunForTest({
+    id: "run-latest",
+    createdAt: "2026-06-24T14:39:40.000Z",
+    rawResult: {
+      entry: {
+        attempted: true,
+        outcome: "no_trade_today",
+        scanSummary: {
+          status: "running",
+          scannedSymbolCount: 80,
+          totalSymbolCount: 523,
+        },
+        automatedScanState: runningState,
+      },
+    },
+  });
+
+  assert.deepEqual(
+    selectResumableAutomatedScanStateFromRuns([latestRunningRun], false),
+    runningState,
+  );
+});
+
+test("newer non-entry runs do not invalidate running scan state", () => {
+  const runningState = buildAutomatedScanState({
+    scanRunId: "paper_scan_running_before_market",
+    status: "running",
+    scannedSymbolCount: 80,
+  });
+  const olderRunningRun = buildPaperTraderRunForTest({
+    id: "run-running",
+    createdAt: "2026-06-24T14:39:40.000Z",
+    rawResult: {
+      entry: {
+        attempted: true,
+        outcome: "no_trade_today",
+        scanSummary: {
+          status: "running",
+          scannedSymbolCount: 80,
+          totalSymbolCount: 523,
+        },
+        automatedScanState: runningState,
+      },
+    },
+  });
+  const newerOutsideMarketHoursRun = buildPaperTraderRunForTest({
+    id: "run-outside-market",
+    createdAt: "2026-06-24T14:44:40.000Z",
+    outcome: "outside_market_hours",
+    rawResult: {
+      entry: {
+        attempted: false,
+        outcome: "outside_market_hours",
+        symbol: null,
+        reason: "Skipped LIVE automation cycle outside regular US equity market hours.",
+      },
+    },
+  });
+
+  assert.deepEqual(
+    selectResumableAutomatedScanStateFromRuns([
+      newerOutsideMarketHoursRun,
+      olderRunningRun,
+    ], false),
+    runningState,
+  );
+});
+
+test("automated scan resume tolerates closed symbols falling out of exclusions", () => {
+  const state: AutomatedEntryScanState = buildAutomatedScanState({
     tierIndex: 1,
     tierCursor: 20,
     chunkCount: 7,
     scannedSymbolCount: 121,
-    startedAt: new Date().toISOString(),
     excludedTickers: ["BKR", "DRI", "HOOD", "PEP", "SLV"],
-    paperLearningPreferences: [],
-    confirmedCandidates: [],
-    chunkSummaries: [],
-    warnings: [],
-  };
+  });
 
   assert.equal(
     canResumeAutomatedEntryScanState(state, {
@@ -211,22 +348,13 @@ test("automated scan resume tolerates closed symbols falling out of exclusions",
 });
 
 test("automated scan resume rejects new unscanned open symbols", () => {
-  const state: AutomatedEntryScanState = {
-    version: 1,
-    scanRunId: "paper_scan_test",
-    prompt: "scan",
-    status: "running",
+  const state: AutomatedEntryScanState = buildAutomatedScanState({
     tierIndex: 0,
     tierCursor: 20,
     chunkCount: 1,
     scannedSymbolCount: 20,
-    startedAt: new Date().toISOString(),
     excludedTickers: [],
-    paperLearningPreferences: [],
-    confirmedCandidates: [],
-    chunkSummaries: [],
-    warnings: [],
-  };
+  });
 
   assert.equal(
     canResumeAutomatedEntryScanState(state, {
