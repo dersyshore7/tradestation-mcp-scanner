@@ -2747,6 +2747,7 @@
         balanceJBaselineUsd: 3000,
         balanceDBaselineUsd: 2640,
         pendingDepositUsd: 5640,
+        depositFunded: true,
         chicagoTimeZone: "America/Chicago",
       };
 
@@ -2812,6 +2813,7 @@
         return {
           activationDateKey: typeof state?.activationDateKey === "string" ? state.activationDateKey : "",
           baselineCapturedAt: typeof state?.baselineCapturedAt === "string" ? state.baselineCapturedAt : "",
+          activationReason: typeof state?.activationReason === "string" ? state.activationReason : "",
           activationAccountValueUsd,
           balanceAPlAtActivationUsd,
           balanceABaselineUsd,
@@ -2823,6 +2825,7 @@
         writeLiveTheoreticalStorage(liveTheoreticalBalanceConfig.activationStorageKey, {
           activationDateKey: state.activationDateKey,
           baselineCapturedAt: state.baselineCapturedAt,
+          activationReason: state.activationReason,
           activationAccountValueUsd: Number(state.activationAccountValueUsd).toFixed(2),
           balanceAPlAtActivationUsd: Number(state.balanceAPlAtActivationUsd).toFixed(2),
           balanceABaselineUsd: Number(state.balanceABaselineUsd).toFixed(2),
@@ -2890,13 +2893,17 @@
         const todayChicagoDateKey = getChicagoDateKey();
         let activationState = readLiveTheoreticalBalanceActivationState();
         let depositActive = activationState !== null;
-        const dailyBaselineState = depositActive
+        const existingDailyBaselineState = depositActive
           ? null
-          : getLiveTheoreticalDailyBaseline(accountValueUsd, todayChicagoDateKey);
-        const balanceABaselineUsd = activationState?.balanceABaselineUsd
+          : readLiveTheoreticalDailyBaseline(todayChicagoDateKey);
+        const dailyBaselineState = existingDailyBaselineState
+          ?? (!depositActive && !config.depositFunded
+            ? getLiveTheoreticalDailyBaseline(accountValueUsd, todayChicagoDateKey)
+            : null);
+        let balanceABaselineUsd = activationState?.balanceABaselineUsd
           ?? dailyBaselineState?.balanceABaselineUsd
           ?? null;
-        const combinedActivatedCapitalUsd = activationState?.combinedActivatedCapitalUsd
+        let combinedActivatedCapitalUsd = activationState?.combinedActivatedCapitalUsd
           ?? (balanceABaselineUsd === null
             ? null
             : Number((balanceABaselineUsd + config.balanceJBaselineUsd + config.balanceDBaselineUsd).toFixed(2)));
@@ -2918,12 +2925,33 @@
           activationState = {
             activationDateKey: todayChicagoDateKey,
             baselineCapturedAt: dailyBaselineState?.capturedAt || new Date().toISOString(),
+            activationReason: "deposit_threshold",
             activationAccountValueUsd: accountValueUsd,
             balanceAPlAtActivationUsd: Number((accountValueUsd - depositThresholdUsd).toFixed(2)),
             balanceABaselineUsd,
             combinedActivatedCapitalUsd,
           };
           depositActive = true;
+          writeLiveTheoreticalBalanceActivationState(activationState);
+        } else if (!depositActive && config.depositFunded && accountValueUsd !== null) {
+          const fundedBalanceABaselineUsd = Number((accountValueUsd - config.pendingDepositUsd).toFixed(2));
+          const fundedCombinedCapitalUsd = Number((
+            fundedBalanceABaselineUsd
+            + config.balanceJBaselineUsd
+            + config.balanceDBaselineUsd
+          ).toFixed(2));
+          activationState = {
+            activationDateKey: todayChicagoDateKey,
+            baselineCapturedAt: new Date().toISOString(),
+            activationReason: "post_deposit_cutover",
+            activationAccountValueUsd: accountValueUsd,
+            balanceAPlAtActivationUsd: 0,
+            balanceABaselineUsd: fundedBalanceABaselineUsd,
+            combinedActivatedCapitalUsd: fundedCombinedCapitalUsd,
+          };
+          depositActive = true;
+          balanceABaselineUsd = fundedBalanceABaselineUsd;
+          combinedActivatedCapitalUsd = fundedCombinedCapitalUsd;
           writeLiveTheoreticalBalanceActivationState(activationState);
         }
 
@@ -2952,18 +2980,22 @@
           return {
             ...balance,
             plUsd,
-            state: depositActive || balance.key === "A" ? "Funded" : "Pending deposit",
+            state: depositActive || config.depositFunded || balance.key === "A" ? "Funded" : "Pending deposit",
           };
         });
         const depositState = depositActive
           ? "Deposit active"
+          : config.depositFunded
+            ? "Deposit funded"
           : depositDetected
             ? "Deposit detected"
             : `Deposit pending ${formatMoney(config.pendingDepositUsd)}`;
         const meta = accountValueUsd === null
           ? `${depositState}. Broker net worth unavailable.`
           : depositActive
-            ? `${depositState}. Balance A baseline ${formatMoney(activationState?.balanceABaselineUsd)}; net worth ${formatMoney(accountValueUsd)}; post-deposit P/L ${formatMoney(postActivationPlUsd ?? 0)}.`
+            ? activationState?.activationReason === "post_deposit_cutover"
+              ? `${depositState}. Future P/L is split from activation net worth ${formatMoney(activationState.activationAccountValueUsd)}. Balance A starts as current net worth minus ${formatMoney(config.pendingDepositUsd)}.`
+              : `${depositState}. Balance A baseline ${formatMoney(activationState?.balanceABaselineUsd)}; net worth ${formatMoney(accountValueUsd)}; post-deposit P/L ${formatMoney(postActivationPlUsd ?? 0)}.`
             : balanceABaselineUsd === null
               ? `${depositState}. Waiting for Balance A baseline from the first live snapshot today.`
               : `${depositState}. Balance A baseline captured from first live snapshot today: ${formatMoney(balanceABaselineUsd)}. Net worth ${formatMoney(accountValueUsd)}; Balance A P/L ${formatMoney(balanceAAccountDeltaUsd)}.`;
