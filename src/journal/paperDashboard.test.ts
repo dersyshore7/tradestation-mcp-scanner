@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   addDefaultExitTruthForTest,
+  buildHoldingPeriodBucketForTest,
+  buildHoldingPeriodBucketsForTest,
   buildPaperDashboardBrokerAuditForTest,
 } from "./paperDashboard.js";
 
@@ -72,4 +74,98 @@ test("pending migration fallback keeps legacy exit notes out of broker truth cou
     broker_confirmed_exit_count: 0,
     broker_repaired_exit_count: 0,
   });
+});
+
+test("holding period bucket derives from Chicago entry and exit dates", () => {
+  assert.equal(
+    buildHoldingPeriodBucketForTest({
+      entryDate: "2026-06-18",
+      exitTime: "2026-06-18T20:00:00.000Z",
+      status: "closed",
+    }),
+    "intraday",
+  );
+  assert.equal(
+    buildHoldingPeriodBucketForTest({
+      entryDate: "2026-06-18",
+      exitTime: "2026-06-19T05:30:00.000Z",
+      status: "closed",
+    }),
+    "overnight",
+  );
+  assert.equal(
+    buildHoldingPeriodBucketForTest({
+      entryDate: "2026-06-18",
+      exitTime: "2026-06-21T15:00:00.000Z",
+      status: "closed",
+    }),
+    "multi_day",
+  );
+  assert.equal(
+    buildHoldingPeriodBucketForTest({
+      entryDate: "2026-06-18",
+      exitTime: null,
+      status: "open",
+    }),
+    "open",
+  );
+  assert.equal(
+    buildHoldingPeriodBucketForTest({
+      entryDate: "bad-date",
+      exitTime: "2026-06-18T20:00:00.000Z",
+      status: "closed",
+    }),
+    "unknown",
+  );
+  assert.equal(
+    buildHoldingPeriodBucketForTest({
+      entryDate: "2026-06-18",
+      exitTime: "bad-timestamp",
+      status: "closed",
+    }),
+    "unknown",
+  );
+});
+
+test("holding period dashboard buckets include open trades and closed P/L", () => {
+  const buckets = buildHoldingPeriodBucketsForTest([
+    {
+      status: "closed",
+      holding_period_bucket: "intraday",
+      review: {
+        winner: true,
+        realized_pl_usd: "100.00",
+        realized_r_multiple: "1.5",
+        realized_return_pct: "12.5",
+      },
+    },
+    {
+      status: "closed",
+      holding_period_bucket: "overnight",
+      review: {
+        winner: false,
+        realized_pl_usd: "-50.00",
+        realized_r_multiple: "-0.5",
+        realized_return_pct: "-6.25",
+      },
+    },
+    {
+      status: "open",
+      holding_period_bucket: "open",
+      position_cost_usd: "300.00",
+      review: null,
+    },
+  ]);
+  const byKey = new Map(buckets.map((bucket) => [bucket.key, bucket]));
+
+  assert.equal(byKey.get("open")?.label, "Open");
+  assert.equal(byKey.get("open")?.trade_count, 1);
+  assert.equal(byKey.get("open")?.open_trade_count, 1);
+  assert.equal(byKey.get("open")?.open_position_cost_usd, 300);
+  assert.equal(byKey.get("intraday")?.closed_trade_count, 1);
+  assert.equal(byKey.get("intraday")?.winner_count, 1);
+  assert.equal(byKey.get("intraday")?.realized_pl_usd, 100);
+  assert.equal(byKey.get("overnight")?.closed_trade_count, 1);
+  assert.equal(byKey.get("overnight")?.loser_count, 1);
+  assert.equal(byKey.get("overnight")?.realized_pl_usd, -50);
 });

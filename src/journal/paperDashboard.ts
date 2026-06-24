@@ -10,8 +10,24 @@ const WEEKDAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const CURRENT_EPOCH_SCOPE_LABEL = "Current learning epoch" as const;
 const PAPER_DASHBOARD_METRIC_LIMIT = 5000;
 const PAPER_DASHBOARD_OUTCOME_DETAIL_LIMIT = 50;
+const CHICAGO_DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
 
 type NumericValue = number | string | null;
+export type HoldingPeriodBucket = "open" | "intraday" | "overnight" | "multi_day" | "unknown";
+
+const HOLDING_PERIOD_LABELS: Record<HoldingPeriodBucket, string> = {
+  open: "Open",
+  intraday: "Intraday",
+  overnight: "Overnight",
+  multi_day: "Multi-day",
+  unknown: "Unknown",
+};
+const HOLDING_PERIOD_ORDER: HoldingPeriodBucket[] = ["open", "intraday", "overnight", "multi_day", "unknown"];
 
 type PaperDashboardTradeRow = {
   id: string;
@@ -103,6 +119,7 @@ export type PaperDashboardOutcomeTrade = {
   entry_date: string;
   entry_time: string | null;
   entry_day: string;
+  holding_period_bucket: HoldingPeriodBucket;
   exit_time: string | null;
   exit_reason: string | null;
   contracts: number | null;
@@ -168,6 +185,7 @@ export type PaperDashboard = {
   by_setup_type: PaperDashboardBucket[];
   by_symbol: PaperDashboardBucket[];
   by_exit_reason: PaperDashboardBucket[];
+  by_holding_period: PaperDashboardBucket[];
   learning_audit: LearningOutcomeAudit;
   broker_audit: PaperDashboardBrokerAudit;
   outcome_details: {
@@ -181,9 +199,22 @@ type PaperDashboardTrade = PaperDashboardTradeRow & {
   entry_day: string;
   entry_hour_key: string;
   entry_hour_label: string;
+  holding_period_bucket: HoldingPeriodBucket;
   review: PaperDashboardReviewRow | null;
   exits: PaperDashboardExitRow[];
   latest_exit: PaperDashboardExitRow | null;
+};
+
+export type PaperDashboardHoldingPeriodBucketInput = {
+  status: "open" | "closed";
+  holding_period_bucket: HoldingPeriodBucket;
+  position_cost_usd?: NumericValue;
+  review?: {
+    winner?: boolean | null;
+    realized_pl_usd?: NumericValue;
+    realized_r_multiple?: NumericValue;
+    realized_return_pct?: NumericValue;
+  } | null;
 };
 
 function asNumber(value: unknown): number | null {
@@ -232,6 +263,96 @@ function buildEntryHourLabel(key: string): string {
   }
   const suffix = hour >= 12 ? "PM" : "AM";
   return `${hour % 12 || 12} ${suffix}`;
+}
+
+function parseDateKey(value: string | null): { key: string; dayIndex: number } | null {
+  const match = typeof value === "string" ? value.match(/^(\d{4})-(\d{2})-(\d{2})$/) : null;
+  if (!match) {
+    return null;
+  }
+
+  const key = match[0];
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const timestamp = Date.UTC(year, month - 1, day);
+  if (!Number.isFinite(timestamp)) {
+    return null;
+  }
+
+  const date = new Date(timestamp);
+  if (
+    date.getUTCFullYear() !== year
+    || date.getUTCMonth() !== month - 1
+    || date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return {
+    key,
+    dayIndex: Math.floor(timestamp / 86400000),
+  };
+}
+
+function toChicagoDateKey(isoTimestamp: string | null): { key: string; dayIndex: number } | null {
+  if (!isoTimestamp) {
+    return null;
+  }
+
+  const date = new Date(isoTimestamp);
+  if (!Number.isFinite(date.getTime())) {
+    return null;
+  }
+
+  const parts = CHICAGO_DATE_FORMATTER.formatToParts(date).reduce((values, part) => {
+    if (part.type === "year" || part.type === "month" || part.type === "day") {
+      values[part.type] = part.value;
+    }
+    return values;
+  }, {} as Record<"year" | "month" | "day", string>);
+
+  return parseDateKey(`${parts.year}-${parts.month}-${parts.day}`);
+}
+
+function buildHoldingPeriodBucket(params: {
+  entryDate: string | null;
+  exitTime: string | null;
+  status: "open" | "closed" | string | null;
+}): HoldingPeriodBucket {
+  if (params.status === "open") {
+    return "open";
+  }
+
+  const entryDate = parseDateKey(params.entryDate);
+  const exitDate = toChicagoDateKey(params.exitTime);
+  if (!entryDate || !exitDate) {
+    return "unknown";
+  }
+
+  const dayDiff = exitDate.dayIndex - entryDate.dayIndex;
+  if (dayDiff < 0) {
+    return "unknown";
+  }
+  if (dayDiff === 0) {
+    return "intraday";
+  }
+  if (dayDiff === 1) {
+    return "overnight";
+  }
+  return "multi_day";
+}
+
+export function buildHoldingPeriodBucketForTest(params: {
+  entryDate: string | null;
+  exitTime: string | null;
+  status?: "open" | "closed" | string | null;
+}): HoldingPeriodBucket {
+  return buildHoldingPeriodBucket({
+    entryDate: params.entryDate,
+    exitTime: params.exitTime,
+    status: params.status ?? "closed",
+  });
 }
 
 function toClosedTrades(trades: PaperDashboardTrade[]): PaperDashboardTrade[] {
@@ -286,6 +407,38 @@ function groupBy(
   }, new Map<string, { label: string; trades: PaperDashboardTrade[] }>());
 
   return Array.from(groups.entries()).map(([key, group]) => buildBucket(key, group.label, group.trades));
+}
+
+function buildHoldingPeriodBuckets(trades: PaperDashboardTrade[]): PaperDashboardBucket[] {
+  const sortIndex = (key: string): number => {
+    const index = HOLDING_PERIOD_ORDER.indexOf(key as HoldingPeriodBucket);
+    return index === -1 ? HOLDING_PERIOD_ORDER.length : index;
+  };
+
+  return groupBy(trades, (trade) => ({
+    key: trade.holding_period_bucket,
+    label: HOLDING_PERIOD_LABELS[trade.holding_period_bucket],
+  })).sort((left, right) => sortIndex(left.key) - sortIndex(right.key));
+}
+
+export function buildHoldingPeriodBucketsForTest(
+  trades: PaperDashboardHoldingPeriodBucketInput[],
+): PaperDashboardBucket[] {
+  return buildHoldingPeriodBuckets(trades.map((trade) => ({
+    status: trade.status,
+    holding_period_bucket: trade.holding_period_bucket,
+    position_cost_usd: trade.position_cost_usd ?? null,
+    review: trade.review
+      ? {
+          trade_id: "test-trade",
+          winner: trade.review.winner ?? null,
+          realized_pl_usd: trade.review.realized_pl_usd ?? null,
+          realized_r_multiple: trade.review.realized_r_multiple ?? null,
+          realized_return_pct: trade.review.realized_return_pct ?? null,
+          review_notes: null,
+        }
+      : null,
+  } as PaperDashboardTrade)));
 }
 
 function bestBucketLabel(buckets: PaperDashboardBucket[]): string | null {
@@ -383,6 +536,7 @@ function buildOutcomeTrade(
     entry_date: trade.entry_date,
     entry_time: trade.entry_time,
     entry_day: trade.entry_day,
+    holding_period_bucket: trade.holding_period_bucket,
     exit_time: trade.latest_exit?.exit_time ?? null,
     exit_reason: trade.latest_exit?.exit_reason ?? null,
     contracts: asNumber(trade.contracts),
@@ -525,14 +679,20 @@ async function loadPaperDashboardRows(
 
   return tradeRows.map((trade) => {
     const entryHourKey = buildEntryHourKey(trade.entry_time);
+    const latestExit = latestExitsByTradeId.get(trade.id) ?? null;
     return {
       ...trade,
       entry_day: buildEntryDay(trade.entry_date),
       entry_hour_key: entryHourKey,
       entry_hour_label: buildEntryHourLabel(entryHourKey),
+      holding_period_bucket: buildHoldingPeriodBucket({
+        entryDate: trade.entry_date,
+        exitTime: latestExit?.exit_time ?? null,
+        status: trade.status,
+      }),
       review: reviewsByTradeId.get(trade.id) ?? null,
       exits: exitsByTradeId.get(trade.id) ?? [],
-      latest_exit: latestExitsByTradeId.get(trade.id) ?? null,
+      latest_exit: latestExit,
     };
   });
 }
@@ -620,6 +780,7 @@ export function buildEmptyPaperDashboard(
     by_setup_type: [],
     by_symbol: [],
     by_exit_reason: [],
+    by_holding_period: [],
     learning_audit: buildLearningOutcomeAudit([], { accountMode }),
     broker_audit: buildEmptyBrokerAudit(),
     outcome_details: {
@@ -678,6 +839,7 @@ export async function getPaperDashboard(
     key: trade.latest_exit?.exit_reason ?? "unknown",
     label: trade.latest_exit?.exit_reason ?? "unknown",
   })).sort((left, right) => right.realized_pl_usd - left.realized_pl_usd);
+  const byHoldingPeriod = buildHoldingPeriodBuckets(trades);
   const outcomeWinnerTrades = winners
     .sort(sortByLatestOutcomeDesc)
     .slice(0, PAPER_DASHBOARD_OUTCOME_DETAIL_LIMIT);
@@ -727,6 +889,7 @@ export async function getPaperDashboard(
     by_setup_type: bySetup,
     by_symbol: bySymbol,
     by_exit_reason: byExitReason,
+    by_holding_period: byHoldingPeriod,
     learning_audit: learningAudit,
     broker_audit: brokerAudit,
     outcome_details: {

@@ -3217,6 +3217,22 @@
         ].filter(Boolean).join(" ");
       }
 
+      function formatHoldingPeriodLabel(bucket) {
+        if (bucket === "intraday") {
+          return "Intraday";
+        }
+        if (bucket === "overnight") {
+          return "Overnight";
+        }
+        if (bucket === "multi_day") {
+          return "Multi-day";
+        }
+        if (bucket === "open") {
+          return "Open";
+        }
+        return "Unknown";
+      }
+
       function postMortemLabel(classification) {
         if (classification === "program_issue_possible") {
           return "Program issue possible";
@@ -3366,6 +3382,7 @@
           `<strong>Underlying entry:</strong> ${escapeHtml(formatMoney(trade.underlying_entry_price))}`,
           `<strong>Sold for:</strong> ${escapeHtml(formatMoney(trade.sold_for_usd))} | <strong>Cost:</strong> ${escapeHtml(formatMoney(trade.position_cost_usd))}`,
           `<strong>Broker truth:</strong> ${renderBrokerTruthPills(trade)}`,
+          trade.holding_period_bucket ? `<strong>Holding period:</strong> ${escapeHtml(formatHoldingPeriodLabel(trade.holding_period_bucket))}` : null,
           plannedLevels ? `<strong>Planned stop / target:</strong> ${escapeHtml(plannedLevels)}` : null,
           activeLevels ? `<strong>Active stop / target:</strong> ${escapeHtml(activeLevels)}` : null,
           trade.entry_notes ? `<strong>Entry notes:</strong> ${escapeHtml(trade.entry_notes)}` : null,
@@ -3700,6 +3717,7 @@
                 ${renderPaperDashboardBucket("Direction", insights.by_direction, 6, journalDataUnavailable, page.tradeLabel)}
                 ${renderPaperDashboardBucket("Setup Type", insights.by_setup_type, 6, journalDataUnavailable, page.tradeLabel)}
                 ${renderPaperDashboardBucket("Symbol", insights.by_symbol, 6, journalDataUnavailable, page.tradeLabel)}
+                ${renderPaperDashboardBucket("Holding Period", insights.by_holding_period, 6, journalDataUnavailable, page.tradeLabel)}
                 ${renderPaperDashboardBucket("Exit Reason", insights.by_exit_reason, 6, journalDataUnavailable, page.tradeLabel)}
               </div>
             </div>
