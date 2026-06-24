@@ -82,6 +82,53 @@ test("entry order policy allows balanced repricing up to midpoint", () => {
   assert.equal(result.estimatedRewardRiskR, 2.36);
 });
 
+test("entry order policy cancels stale wait decisions once the quote has moved beyond the working limit", () => {
+  const result = evaluateEntryOrderManagementDecision(
+    {
+      ...baseContext,
+      orderAgeSeconds: 45 * 60,
+      filledQuantity: 0,
+      remainingQuantity: 19,
+      originalLimitPrice: 1.05,
+      workingLimitPrice: 1.05,
+      averageFillPrice: null,
+      optionBid: 1.34,
+      optionAsk: 1.43,
+      optionMid: 1.385,
+      plannedRewardRiskR: 2.4,
+    },
+    decision({ action: "wait" }),
+    null,
+  );
+
+  assert.equal(result.allowed, true);
+  assert.equal(result.action, "cancel_remaining");
+  assert.match(result.reason, /stale after 45 minutes/);
+  assert.match(result.reason, /instead of waiting indefinitely or chasing the ask/);
+});
+
+test("entry order policy keeps waiting when the working limit is still near the bid", () => {
+  const result = evaluateEntryOrderManagementDecision(
+    {
+      ...baseContext,
+      orderAgeSeconds: 45 * 60,
+      filledQuantity: 0,
+      remainingQuantity: 8,
+      originalLimitPrice: 2.4,
+      workingLimitPrice: 2.4,
+      averageFillPrice: null,
+      optionBid: 2.4,
+      optionAsk: 2.65,
+      optionMid: 2.525,
+    },
+    decision({ action: "wait" }),
+    null,
+  );
+
+  assert.equal(result.allowed, true);
+  assert.equal(result.action, "wait");
+});
+
 test("entry order policy blocks excessive chase, above-ask, and above-midpoint replacements", () => {
   assert.match(
     evaluateEntryOrderManagementDecision(

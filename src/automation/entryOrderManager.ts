@@ -56,6 +56,8 @@ const MAX_ORIGINAL_LIMIT_WORSENING = 1.25;
 const MAX_WORKING_LIMIT_WORSENING = 1.35;
 const MAX_SPREAD_TO_MID_RATIO = 0.2;
 const MIN_REPRICED_REWARD_RISK_R = 1.5;
+const STALE_ENTRY_CANCEL_MIN_AGE_SECONDS = 30 * 60;
+const STALE_ENTRY_CANCEL_MIN_MID_WORSENING = 1.1;
 
 function extractJsonObject(text: string): string {
   const start = text.indexOf("{");
@@ -177,12 +179,50 @@ function estimateRepricedRewardRiskR(
   return Number((plannedRewardRiskR * (originalLimitPrice / newLimitPrice)).toFixed(2));
 }
 
+function buildStaleEntryCancelReason(context: EntryOrderManagementContext): string | null {
+  if (context.remainingQuantity <= 0) {
+    return null;
+  }
+  if (context.orderAgeSeconds === null || context.orderAgeSeconds < STALE_ENTRY_CANCEL_MIN_AGE_SECONDS) {
+    return null;
+  }
+  if (context.optionBid === null || context.optionBid <= context.workingLimitPrice) {
+    return null;
+  }
+
+  const referencePrice = context.optionMid ?? context.optionBid;
+  if (referencePrice < context.workingLimitPrice * STALE_ENTRY_CANCEL_MIN_MID_WORSENING) {
+    return null;
+  }
+
+  const ageMinutes = Math.floor(context.orderAgeSeconds / 60);
+  const fillText = context.filledQuantity > 0
+    ? `${context.filledQuantity} filled and ${context.remainingQuantity} still working`
+    : `${context.remainingQuantity} still unfilled`;
+  const midpointText = context.optionMid !== null
+    ? ` and midpoint ${context.optionMid.toFixed(2)}`
+    : "";
+
+  return `Opening order is stale after ${ageMinutes} minutes with ${fillText}; current bid ${context.optionBid.toFixed(2)}${midpointText} has moved beyond working limit ${context.workingLimitPrice.toFixed(2)}, so cancel the unfilled remainder instead of waiting indefinitely or chasing the ask.`;
+}
+
 export function evaluateEntryOrderManagementDecision(
   context: EntryOrderManagementContext,
   decision: AiEntryOrderDecision,
   normalizedNewLimitPrice: number | null,
 ): EntryOrderPolicyResult {
   if (decision.action === "wait") {
+    const staleCancelReason = buildStaleEntryCancelReason(context);
+    if (staleCancelReason !== null) {
+      return {
+        allowed: true,
+        action: "cancel_remaining",
+        limitPrice: null,
+        reason: staleCancelReason,
+        estimatedRewardRiskR: null,
+      };
+    }
+
     return {
       allowed: true,
       action: "wait",
