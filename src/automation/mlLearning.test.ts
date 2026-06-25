@@ -48,6 +48,7 @@ import {
   evaluateOpeningExitGuardForTest,
   readCloseOrderFillSnapshotForTest,
   readOpeningOrderSnapshotForTest,
+  resolveManagementActionAfterProfitProtectionForTest,
   selectResumableAutomatedScanStateFromRuns,
   validateEntryGeometryForTest,
 } from "./paperTrader.js";
@@ -559,11 +560,65 @@ test("paper trader preserves AI runners but closes premium-trailing exits", () =
   assert.ok(source.includes("profit_protection_exit_full"));
   assert.ok(source.includes('profitProtectionDecision.action === "exit_full"'));
   assert.ok(source.includes('reason: "manual_early_exit"'));
-  assert.ok(source.includes("const aiOrRuleScaleOut = !decision && liveQuantity > 1 && !alreadyScaledOut"));
+  assert.ok(source.includes("const ruleScaleOut ="));
+  assert.ok(source.includes('&& profitProtectionDecision.action === "scale_out";'));
+  assert.equal(source.includes("|| managementAction === \"scale_out\""), false);
   assert.equal(
     source.includes('profitProtectionDecision.action === "exit_full"\n          || aiDecision.action === "scale_out"'),
     false,
   );
+});
+
+test("paper trader blocks unearned AI scale-outs but preserves validated exits", () => {
+  const blockedHold = resolveManagementActionAfterProfitProtectionForTest({
+    aiAction: "scale_out",
+    profitProtectionAction: "none",
+    profitProtectionFullExit: false,
+    preserveRunnerPosition: false,
+    hasAllowedLevelUpdate: false,
+  });
+  assert.equal(blockedHold.action, "hold");
+  assert.match(blockedHold.blockedAiScaleOutReason ?? "", /profit-protection threshold has not been earned/i);
+
+  const blockedUpdate = resolveManagementActionAfterProfitProtectionForTest({
+    aiAction: "scale_out",
+    profitProtectionAction: "none",
+    profitProtectionFullExit: false,
+    preserveRunnerPosition: false,
+    hasAllowedLevelUpdate: true,
+  });
+  assert.equal(blockedUpdate.action, "update_levels");
+  assert.match(blockedUpdate.blockedAiScaleOutReason ?? "", /profit-protection threshold has not been earned/i);
+
+  const earnedScaleOut = resolveManagementActionAfterProfitProtectionForTest({
+    aiAction: "hold",
+    profitProtectionAction: "scale_out",
+    profitProtectionFullExit: false,
+    preserveRunnerPosition: false,
+    hasAllowedLevelUpdate: false,
+  });
+  assert.equal(earnedScaleOut.action, "scale_out");
+  assert.equal(earnedScaleOut.blockedAiScaleOutReason, null);
+
+  const deadThesisExit = resolveManagementActionAfterProfitProtectionForTest({
+    aiAction: "exit_now",
+    profitProtectionAction: "none",
+    profitProtectionFullExit: false,
+    preserveRunnerPosition: false,
+    hasAllowedLevelUpdate: false,
+  });
+  assert.equal(deadThesisExit.action, "exit_now");
+  assert.equal(deadThesisExit.blockedAiScaleOutReason, null);
+
+  const premiumTrailExit = resolveManagementActionAfterProfitProtectionForTest({
+    aiAction: "hold",
+    profitProtectionAction: "exit_full",
+    profitProtectionFullExit: true,
+    preserveRunnerPosition: false,
+    hasAllowedLevelUpdate: false,
+  });
+  assert.equal(premiumTrailExit.action, "exit_now");
+  assert.equal(premiumTrailExit.blockedAiScaleOutReason, null);
 });
 
 test("live opening exit guard suppresses ordinary early stop breaches", () => {

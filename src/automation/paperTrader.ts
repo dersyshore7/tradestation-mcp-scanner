@@ -41,6 +41,7 @@ import {
 import {
   calculateScaleOutQuantity,
   decideProfitProtection,
+  type ProfitProtectionDecision,
   type ProfitProtectionState,
 } from "./profitProtection.js";
 import {
@@ -256,6 +257,11 @@ type PaperTraderDecisionLogEntry = {
 };
 
 type PaperTraderStopSource = "original_chart" | "existing_active" | "ai_update" | "earned_protection";
+
+type PaperTraderResolvedManagementAction = {
+  action: PaperTraderManagementHistoryEntry["action"];
+  blockedAiScaleOutReason: string | null;
+};
 
 type PaperTraderTradeHistoryItem = {
   tradeId: string;
@@ -2434,6 +2440,57 @@ function determineStopSource(params: {
     return profitProtectionEarned ? "earned_protection" : "existing_active";
   }
   return "original_chart";
+}
+
+function resolveManagementActionAfterProfitProtection(params: {
+  aiAction: AiManagementDecision["action"];
+  profitProtectionAction: ProfitProtectionDecision["action"];
+  profitProtectionFullExit: boolean;
+  preserveRunnerPosition: boolean;
+  hasAllowedLevelUpdate: boolean;
+}): PaperTraderResolvedManagementAction {
+  if (params.profitProtectionFullExit) {
+    return {
+      action: "exit_now",
+      blockedAiScaleOutReason: null,
+    };
+  }
+
+  if (params.preserveRunnerPosition) {
+    return {
+      action: "hold",
+      blockedAiScaleOutReason: null,
+    };
+  }
+
+  if (params.profitProtectionAction === "scale_out" && params.aiAction !== "exit_now") {
+    return {
+      action: "scale_out",
+      blockedAiScaleOutReason: null,
+    };
+  }
+
+  if (params.aiAction === "scale_out") {
+    return {
+      action: params.hasAllowedLevelUpdate ? "update_levels" : "hold",
+      blockedAiScaleOutReason: "AI scale-out ignored because profit-protection threshold has not been earned.",
+    };
+  }
+
+  return {
+    action: params.aiAction,
+    blockedAiScaleOutReason: null,
+  };
+}
+
+export function resolveManagementActionAfterProfitProtectionForTest(params: {
+  aiAction: AiManagementDecision["action"];
+  profitProtectionAction: ProfitProtectionDecision["action"];
+  profitProtectionFullExit: boolean;
+  preserveRunnerPosition: boolean;
+  hasAllowedLevelUpdate: boolean;
+}): PaperTraderResolvedManagementAction {
+  return resolveManagementActionAfterProfitProtection(params);
 }
 
 function computeProgressToTargetPct(params: {
@@ -4801,7 +4858,6 @@ async function manageOpenPaperTrades(
         : {}),
     };
     let aiDecisionNote: string | null = null;
-    let managementAction: PaperTraderManagementHistoryEntry["action"] | null = null;
     let decision = null as ExitDecision | null;
     let inferredExitDecision = false;
 
@@ -4877,6 +4933,15 @@ async function manageOpenPaperTrades(
         profitProtectionStop: profitProtectionDecision.updatedStopUnderlying,
         profitProtectionEarned: stopProtectionEligible,
       });
+      const hasAllowedAiLevelUpdate =
+        (
+          effectiveAiStopUnderlying !== null
+          && !sameStopPrice(effectiveAiStopUnderlying, activeLevels.stopUnderlying)
+        )
+        || (
+          aiDecision.updatedTargetUnderlying !== null
+          && !sameStopPrice(aiDecision.updatedTargetUnderlying, activeLevels.targetUnderlying)
+        );
       const profitProtectionFullExit =
         profitProtectionDecision.action === "exit_full"
         && aiDecision.action !== "exit_now";
@@ -4890,6 +4955,13 @@ async function manageOpenPaperTrades(
       const preserveRunnerPosition =
         aiDecision.action !== "exit_now"
         && (preserveFinalRunner || preserveScaledRunnerBundle);
+      const resolvedManagementAction = resolveManagementActionAfterProfitProtection({
+        aiAction: aiDecision.action,
+        profitProtectionAction: profitProtectionDecision.action,
+        profitProtectionFullExit,
+        preserveRunnerPosition,
+        hasAllowedLevelUpdate: hasAllowedAiLevelUpdate,
+      });
       const historyNote = profitProtectionFullExit
         ? joinNoteParts([
             aiDecision.note,
@@ -4914,17 +4986,15 @@ async function manageOpenPaperTrades(
             aiStopTighteningBlockedReason,
             `Profit protection overrides management action: ${profitProtectionDecision.reason}`,
           ])
-        : joinNoteParts([aiDecision.note, thesisInvalidationEvidence, aiStopTighteningBlockedReason]);
+        : joinNoteParts([
+            aiDecision.note,
+            thesisInvalidationEvidence,
+            aiStopTighteningBlockedReason,
+            resolvedManagementAction.blockedAiScaleOutReason,
+          ]);
       const historyEntry: PaperTraderManagementHistoryEntry = {
         timestamp: nowIso,
-        action:
-          profitProtectionFullExit
-            ? "exit_now"
-            : preserveRunnerPosition
-            ? "hold"
-            : profitProtectionDecision.action === "scale_out" && aiDecision.action !== "exit_now"
-            ? "scale_out"
-            : aiDecision.action,
+        action: resolvedManagementAction.action,
         confidence: aiDecision.confidence,
         thesisStatus: aiDecision.thesisStatus,
         thesisInvalidationReasons: aiDecision.thesisInvalidationReasons,
@@ -4942,7 +5012,6 @@ async function manageOpenPaperTrades(
         stopUpdateBlockedReason: aiStopTighteningBlockedReason,
         stopSource,
       };
-      managementAction = historyEntry.action;
       const decisionLogEntry: PaperTraderDecisionLogEntry = {
         timestamp: nowIso,
         tradeId: trade.id,
@@ -5065,11 +5134,12 @@ async function manageOpenPaperTrades(
     }
 
     const alreadyScaledOut = Boolean(profitProtectionDecision.state.scaledOutAt);
-    const aiOrRuleScaleOut = !decision && liveQuantity > 1 && !alreadyScaledOut && (
-      profitProtectionDecision.action === "scale_out"
-      || managementAction === "scale_out"
-    );
-    if (aiOrRuleScaleOut) {
+    const ruleScaleOut =
+      !decision
+      && liveQuantity > 1
+      && !alreadyScaledOut
+      && profitProtectionDecision.action === "scale_out";
+    if (ruleScaleOut) {
       const fallbackScale = calculateScaleOutQuantity(liveQuantity);
       const plannedScaleQuantity = profitProtectionDecision.scaleQuantity > 0
         ? profitProtectionDecision.scaleQuantity
