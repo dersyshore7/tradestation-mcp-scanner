@@ -858,17 +858,25 @@
       }
       .ops-theoretical-base,
       .ops-theoretical-state,
+      .ops-theoretical-updated,
       .ops-theoretical-running {
         margin-top: 4px;
         color: var(--muted-text);
         font-size: 12px;
         line-height: 1.35;
       }
+      .ops-theoretical-value-label {
+        margin-top: 7px;
+        color: var(--muted-text);
+        font-size: 11px;
+        font-weight: 800;
+        line-height: 1.25;
+      }
       .ops-theoretical-running strong {
         font-weight: 800;
       }
       .ops-theoretical-value {
-        margin-top: 7px;
+        margin-top: 2px;
         font-size: 20px;
         font-weight: 400;
         line-height: 1.15;
@@ -2837,12 +2845,17 @@
       function readLiveTheoreticalDailyBaseline(dateKey) {
         const state = readLiveTheoreticalStorage(liveTheoreticalBalanceConfig.dailyBaselineStorageKey);
         const balanceABaselineUsd = asNumber(state?.balanceABaselineUsd);
-        if (state?.dateKey !== dateKey || balanceABaselineUsd === null) {
+        const accountValueUsd = asNumber(state?.accountValueUsd);
+        if (
+          state?.dateKey !== dateKey
+          || (balanceABaselineUsd === null && accountValueUsd === null)
+        ) {
           return null;
         }
         return {
           dateKey,
           balanceABaselineUsd,
+          accountValueUsd,
           capturedAt: typeof state?.capturedAt === "string" ? state.capturedAt : "",
         };
       }
@@ -2850,35 +2863,66 @@
       function writeLiveTheoreticalDailyBaseline(state) {
         writeLiveTheoreticalStorage(liveTheoreticalBalanceConfig.dailyBaselineStorageKey, {
           dateKey: state.dateKey,
-          balanceABaselineUsd: Number(state.balanceABaselineUsd).toFixed(2),
+          balanceABaselineUsd: state.balanceABaselineUsd === null
+            ? null
+            : Number(state.balanceABaselineUsd).toFixed(2),
+          accountValueUsd: state.accountValueUsd === null
+            ? null
+            : Number(state.accountValueUsd).toFixed(2),
           capturedAt: state.capturedAt,
         });
       }
 
-      function getLiveTheoreticalDailyBaseline(accountValueUsd, dateKey) {
+      function getLiveTheoreticalDailyBaseline(accountValueUsd, balanceABaselineUsd, dateKey) {
         const existingState = readLiveTheoreticalDailyBaseline(dateKey);
-        if (existingState || accountValueUsd === null) {
+        if ((existingState && existingState.accountValueUsd !== null) || accountValueUsd === null) {
           return existingState;
         }
         const capturedState = {
           dateKey,
-          balanceABaselineUsd: accountValueUsd,
+          balanceABaselineUsd: existingState?.balanceABaselineUsd ?? balanceABaselineUsd ?? accountValueUsd,
+          accountValueUsd,
           capturedAt: new Date().toISOString(),
         };
         writeLiveTheoreticalDailyBaseline(capturedState);
         return capturedState;
       }
 
+      function roundMoneyValue(value) {
+        return Number(value.toFixed(2));
+      }
+
+      function calculateLiveTheoreticalRunningPl(balance, accountValueUsd, share, activationState, depositActive) {
+        if (accountValueUsd === null) {
+          return null;
+        }
+        if (!depositActive) {
+          if (balance.key !== "A") {
+            return 0;
+          }
+          return balance.baseUsd === null ? null : roundMoneyValue(accountValueUsd - balance.baseUsd);
+        }
+        if (activationState === null) {
+          return null;
+        }
+        const postActivationPlUsd = accountValueUsd - activationState.activationAccountValueUsd;
+        return balance.key === "A"
+          ? roundMoneyValue(activationState.balanceAPlAtActivationUsd + (postActivationPlUsd * share))
+          : roundMoneyValue(postActivationPlUsd * share);
+      }
+
       function renderTheoreticalBalanceCard(row) {
-        const valueTone = row.plUsd === null ? "tone-neutral" : numberToneClass(row.plUsd);
-        const runningValue = row.plUsd === null ? "n/a" : formatMoney(row.plUsd);
+        const todayTone = row.todayPlUsd === null ? "tone-neutral" : numberToneClass(row.todayPlUsd);
+        const runningTone = row.runningPlUsd === null ? "tone-neutral" : numberToneClass(row.runningPlUsd);
         return `
           <div class="ops-theoretical-card">
             <div class="ops-theoretical-label">${escapeHtml(row.label)}</div>
             <div class="ops-theoretical-base">Base ${escapeHtml(formatMoney(row.baseUsd))}</div>
-            <div class="ops-theoretical-value ${escapeHtml(valueTone)}">${escapeHtml(row.plUsd === null ? "n/a" : formatMoney(row.plUsd))}</div>
+            <div class="ops-theoretical-value-label">Today P/L</div>
+            <div class="ops-theoretical-value ${escapeHtml(todayTone)}">${escapeHtml(row.todayPlUsd === null ? "n/a" : formatMoney(row.todayPlUsd))}</div>
             <div class="ops-theoretical-state">${escapeHtml(row.state)}</div>
-            <div class="ops-theoretical-running"><strong>Running P/L</strong> <span class="${escapeHtml(valueTone)}">${escapeHtml(runningValue)}</span></div>
+            <div class="ops-theoretical-updated"><strong>Updated balance</strong> ${escapeHtml(row.updatedBalanceUsd === null ? "n/a" : formatMoney(row.updatedBalanceUsd))}</div>
+            <div class="ops-theoretical-running"><strong>Running P/L</strong> <span class="${escapeHtml(runningTone)}">${escapeHtml(row.runningPlUsd === null ? "n/a" : formatMoney(row.runningPlUsd))}</span></div>
           </div>
         `;
       }
@@ -2890,16 +2934,18 @@
 
         const config = liveTheoreticalBalanceConfig;
         const accountValueUsd = asNumber(accountSnapshot?.accountValueUsd);
+        const beginningOfDayAccountValueUsd = asNumber(accountSnapshot?.beginningOfDayAccountValueUsd);
         const todayChicagoDateKey = getChicagoDateKey();
         let activationState = readLiveTheoreticalBalanceActivationState();
         let depositActive = activationState !== null;
-        const existingDailyBaselineState = depositActive
-          ? null
-          : readLiveTheoreticalDailyBaseline(todayChicagoDateKey);
-        const dailyBaselineState = existingDailyBaselineState
-          ?? (!depositActive && !config.depositFunded
-            ? getLiveTheoreticalDailyBaseline(accountValueUsd, todayChicagoDateKey)
-            : null);
+        let dailyBaselineState = readLiveTheoreticalDailyBaseline(todayChicagoDateKey);
+        if (
+          !depositActive
+          && !config.depositFunded
+          && (dailyBaselineState === null || dailyBaselineState.balanceABaselineUsd === null)
+        ) {
+          dailyBaselineState = getLiveTheoreticalDailyBaseline(accountValueUsd, accountValueUsd, todayChicagoDateKey);
+        }
         let balanceABaselineUsd = activationState?.balanceABaselineUsd
           ?? dailyBaselineState?.balanceABaselineUsd
           ?? null;
@@ -2954,6 +3000,11 @@
           combinedActivatedCapitalUsd = fundedCombinedCapitalUsd;
           writeLiveTheoreticalBalanceActivationState(activationState);
         }
+        dailyBaselineState = getLiveTheoreticalDailyBaseline(
+          accountValueUsd,
+          balanceABaselineUsd,
+          todayChicagoDateKey,
+        ) ?? dailyBaselineState;
 
         const balances = [
           { key: "A", label: "Balance A", baseUsd: balanceABaselineUsd },
@@ -2963,23 +3014,49 @@
         const postActivationPlUsd = depositActive && accountValueUsd !== null && activationState !== null
           ? Number((accountValueUsd - activationState.activationAccountValueUsd).toFixed(2))
           : null;
+        let openingAccountValueUsd = null;
+        let todayBaselineLabel = null;
+        if (depositActive && activationState?.activationDateKey === todayChicagoDateKey) {
+          openingAccountValueUsd = activationState.activationAccountValueUsd;
+          todayBaselineLabel = `Today P/L starts from activation net worth ${formatMoney(openingAccountValueUsd)}`;
+        } else if (beginningOfDayAccountValueUsd !== null) {
+          openingAccountValueUsd = beginningOfDayAccountValueUsd;
+          todayBaselineLabel = `Today P/L starts from TradeStation beginning-of-day net worth ${formatMoney(openingAccountValueUsd)}`;
+        } else if (dailyBaselineState?.accountValueUsd !== null) {
+          openingAccountValueUsd = dailyBaselineState.accountValueUsd;
+          todayBaselineLabel = `Today P/L starts from first dashboard snapshot ${formatMoney(openingAccountValueUsd)}`;
+        }
         const rows = balances.map((balance) => {
           const share = combinedActivatedCapitalUsd !== null && combinedActivatedCapitalUsd > 0 && balance.baseUsd !== null
             ? balance.baseUsd / combinedActivatedCapitalUsd
             : 0;
-          let plUsd = null;
-          if (accountValueUsd !== null) {
-            if (!depositActive) {
-              plUsd = balance.key === "A" ? balanceAAccountDeltaUsd : 0;
-            } else if (balance.key === "A") {
-              plUsd = Number((activationState.balanceAPlAtActivationUsd + ((postActivationPlUsd ?? 0) * share)).toFixed(2));
-            } else {
-              plUsd = Number(((postActivationPlUsd ?? 0) * share).toFixed(2));
-            }
-          }
+          const runningPlUsd = calculateLiveTheoreticalRunningPl(
+            balance,
+            accountValueUsd,
+            share,
+            activationState,
+            depositActive,
+          );
+          const openingRunningPlUsd = openingAccountValueUsd === null
+            ? null
+            : calculateLiveTheoreticalRunningPl(
+              balance,
+              openingAccountValueUsd,
+              share,
+              activationState,
+              depositActive,
+            );
+          const todayPlUsd = runningPlUsd === null || openingRunningPlUsd === null
+            ? null
+            : roundMoneyValue(runningPlUsd - openingRunningPlUsd);
+          const updatedBalanceUsd = balance.baseUsd === null || runningPlUsd === null
+            ? null
+            : roundMoneyValue(balance.baseUsd + runningPlUsd);
           return {
             ...balance,
-            plUsd,
+            todayPlUsd,
+            runningPlUsd,
+            updatedBalanceUsd,
             state: depositActive || config.depositFunded || balance.key === "A" ? "Funded" : "Pending deposit",
           };
         });
@@ -2990,15 +3067,16 @@
           : depositDetected
             ? "Deposit detected"
             : `Deposit pending ${formatMoney(config.pendingDepositUsd)}`;
+        const todayBaselineMeta = todayBaselineLabel ?? "Today P/L baseline unavailable";
         const meta = accountValueUsd === null
           ? `${depositState}. Broker net worth unavailable.`
           : depositActive
             ? activationState?.activationReason === "post_deposit_cutover"
-              ? `${depositState}. Future P/L is split from activation net worth ${formatMoney(activationState.activationAccountValueUsd)}. Balance A starts as current net worth minus ${formatMoney(config.pendingDepositUsd)}.`
-              : `${depositState}. Balance A baseline ${formatMoney(activationState?.balanceABaselineUsd)}; net worth ${formatMoney(accountValueUsd)}; post-deposit P/L ${formatMoney(postActivationPlUsd ?? 0)}.`
+              ? `${depositState}. ${todayBaselineMeta}. Running P/L is split from activation net worth ${formatMoney(activationState.activationAccountValueUsd)}. Balance A starts as current net worth minus ${formatMoney(config.pendingDepositUsd)}.`
+              : `${depositState}. ${todayBaselineMeta}. Balance A baseline ${formatMoney(activationState?.balanceABaselineUsd)}; net worth ${formatMoney(accountValueUsd)}; running P/L ${formatMoney(postActivationPlUsd ?? 0)}.`
             : balanceABaselineUsd === null
               ? `${depositState}. Waiting for Balance A baseline from the first live snapshot today.`
-              : `${depositState}. Balance A baseline captured from first live snapshot today: ${formatMoney(balanceABaselineUsd)}. Net worth ${formatMoney(accountValueUsd)}; Balance A P/L ${formatMoney(balanceAAccountDeltaUsd)}.`;
+              : `${depositState}. ${todayBaselineMeta}. Balance A baseline ${formatMoney(balanceABaselineUsd)}; net worth ${formatMoney(accountValueUsd)}; Balance A running P/L ${formatMoney(balanceAAccountDeltaUsd)}.`;
 
         return `
           <section class="ops-panel ops-theoretical-balances">

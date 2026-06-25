@@ -25,6 +25,7 @@ import {
 import { buildLearningOutcomeAudit } from "./learningOutcomeAudit.js";
 import { buildLearningReviewRepairPlan } from "./learningRepair.js";
 import {
+  buildAiManagementPromptForTest,
   enforceAiManagementGuardrails,
   normalizeAiManagementDecisionForTest,
   type AiManagementDecision,
@@ -42,6 +43,7 @@ import { calculateScaleOutQuantity, decideProfitProtection } from "./profitProte
 import {
   readAutomatedScanStateFromPaperTraderRun,
   buildEntryPolicyEffectivenessSummaryForTest,
+  buildPaperTraderThesisChecklistForTest,
   chooseJournalExitPriceForTest,
   evaluateOpeningExitGuardForTest,
   readCloseOrderFillSnapshotForTest,
@@ -154,6 +156,10 @@ function buildAutomatedScanState(
   };
 }
 
+function minutesAgoIso(minutes: number): string {
+  return new Date(Date.now() - (minutes * 60 * 1000)).toISOString();
+}
+
 function buildPaperTraderRunForTest(params: {
   id: string;
   createdAt: string;
@@ -263,7 +269,7 @@ test("latest running scan state remains resumable", () => {
   });
   const latestRunningRun = buildPaperTraderRunForTest({
     id: "run-latest",
-    createdAt: "2026-06-24T14:39:40.000Z",
+    createdAt: minutesAgoIso(5),
     rawResult: {
       entry: {
         attempted: true,
@@ -292,7 +298,7 @@ test("newer non-entry runs do not invalidate running scan state", () => {
   });
   const olderRunningRun = buildPaperTraderRunForTest({
     id: "run-running",
-    createdAt: "2026-06-24T14:39:40.000Z",
+    createdAt: minutesAgoIso(10),
     rawResult: {
       entry: {
         attempted: true,
@@ -308,7 +314,7 @@ test("newer non-entry runs do not invalidate running scan state", () => {
   });
   const newerOutsideMarketHoursRun = buildPaperTraderRunForTest({
     id: "run-outside-market",
-    createdAt: "2026-06-24T14:44:40.000Z",
+    createdAt: minutesAgoIso(5),
     outcome: "outside_market_hours",
     rawResult: {
       entry: {
@@ -724,6 +730,90 @@ test("paper trader guards AI stop tightening until protection is earned", () => 
   assert.ok(source.includes("stopProtectionEligible"));
   assert.ok(source.includes("stopUpdateBlockedReason"));
   assert.ok(source.includes("stopSource"));
+});
+
+test("paper trader builds structured thesis checklist from entry rationale and levels", () => {
+  const checklist = buildPaperTraderThesisChecklistForTest({
+    direction: "CALL",
+    setupType: "bullish_continuation",
+    entryReasoning: {
+      conciseReasoning: "Breakout held above prior resistance.",
+      whyThisWon: "AAPL survived confirmation and trade-card validation.",
+      tradeRationale: "Bullish continuation with clean 2R geometry.",
+      optionChosen: "AAPL CALL",
+      chartGeometry: null,
+    },
+    tradeCard: null,
+    originalRationale: "Bullish continuation from a clean breakout.",
+    invalidationUnderlying: 98.5,
+    targetUnderlying: 110,
+    timeExitDate: "2026-07-16",
+  });
+
+  assert.equal(checklist.setupDirection, "CALL");
+  assert.equal(checklist.originalRationale, "Bullish continuation from a clean breakout.");
+  assert.match(checklist.mustRemainTrue, /98\.50/);
+  assert.match(checklist.mustRemainTrue, /110\.00/);
+  assert.ok(checklist.woundedIf.some((item) => item.includes("not fully failed")));
+  assert.ok(checklist.deadIf.some((item) => item.includes("98.50")));
+});
+
+test("AI management prompt includes thesis checklist and chart-review safeguards", () => {
+  const prompt = buildAiManagementPromptForTest({
+    symbol: "AAPL",
+    direction: "CALL",
+    setupType: "bullish_continuation",
+    confidenceBucket: "75-84",
+    entryDate: "2026-06-24",
+    expirationDate: "2026-07-17",
+    dteAtEntry: 23,
+    underlyingEntryPrice: 100,
+    optionEntryPrice: 5,
+    currentUnderlyingPrice: 99,
+    currentOptionMid: 4.5,
+    currentStopUnderlying: 98.5,
+    currentTargetUnderlying: 110,
+    originalStopUnderlying: 98.5,
+    originalTargetUnderlying: 110,
+    timeExitDate: "2026-07-16",
+    progressToTargetPct: -10,
+    optionReturnPct: -10,
+    rationale: "Bullish continuation from a clean breakout.",
+    thesisChecklist: {
+      setupDirection: "CALL",
+      setupType: "bullish_continuation",
+      originalRationale: "Bullish continuation from a clean breakout.",
+      entrySummary: "AAPL survived confirmation and trade-card validation.",
+      mustRemainTrue: "AAPL must hold 98.50 and keep a path to 110.00.",
+      woundedIf: ["Pullback tests the breakout but does not invalidate it."],
+      deadIf: ["Breaks below 98.50 with bearish volume."],
+      invalidationUnderlying: 98.5,
+      targetUnderlying: 110,
+      timeExitDate: "2026-07-16",
+    },
+    currentChartReviewSummary: "Current multi-timeframe chart conclusion: unavailable.",
+    lastManagementNote: null,
+    lastManagementThesis: null,
+    managementHistorySummary: null,
+    policyFeedbackSummary: null,
+    trainedPolicySummary: null,
+    trainedPolicyRecommendedAction: null,
+  });
+
+  assert.match(prompt, /Structured entry thesis checklist/);
+  assert.match(prompt, /Fresh read-only multi-timeframe chart review/);
+  assert.match(prompt, /unavailability alone cannot be a thesisInvalidationReason/);
+  assert.match(prompt, /AAPL must hold 98\.50/);
+});
+
+test("paper trader wires fresh chart review into normal management telemetry", () => {
+  const source = readFileSync(new URL("./paperTrader.ts", import.meta.url), "utf8");
+
+  assert.ok(source.includes("const chartReview = await readCurrentChartReview"));
+  assert.ok(source.includes("const currentChartReviewSummary = buildChartReviewSummary(chartReview);"));
+  assert.ok(source.includes("currentChartReviewSummary"));
+  assert.ok(source.includes("chartReviewConclusion: chartReview.conclusion"));
+  assert.ok(source.includes("thesisChecklist"));
 });
 
 test("AI management allows thesis-dead exit with two invalidation reasons", () => {

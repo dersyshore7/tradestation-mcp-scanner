@@ -3,6 +3,19 @@ import type { TradeDirection } from "../journal/types.js";
 
 export type ThesisStatus = "intact" | "wounded" | "dead";
 
+export type AiManagementThesisChecklist = {
+  setupDirection: TradeDirection;
+  setupType: string | null;
+  originalRationale: string | null;
+  entrySummary: string | null;
+  mustRemainTrue: string;
+  woundedIf: string[];
+  deadIf: string[];
+  invalidationUnderlying: number | null;
+  targetUnderlying: number | null;
+  timeExitDate: string | null;
+};
+
 export type AiManagementDecision = {
   action: "hold" | "update_levels" | "exit_now" | "scale_out";
   updatedStopUnderlying: number | null;
@@ -37,6 +50,7 @@ export type AiManagementInput = {
   progressToTargetPct: number | null;
   optionReturnPct: number | null;
   rationale: string | null;
+  thesisChecklist?: AiManagementThesisChecklist | null;
   currentChartReviewSummary?: string | null;
   lastManagementNote: string | null;
   lastManagementThesis: string | null;
@@ -240,11 +254,13 @@ function buildPrompt(input: AiManagementInput): string {
     "- For CALL trades, any new stop must be greater than or equal to the current stop.",
     "- For PUT trades, any new stop must be less than or equal to the current stop.",
     "- Prefer hold over unnecessary changes.",
+    "- Judge thesisStatus against the structured entry thesis checklist plus the fresh chart review when available.",
     '- Use thesisStatus "intact" when the original setup still has a reasonable recovery path.',
     '- Use thesisStatus "wounded" when the setup is damaged but not invalidated; prefer update_levels or hold.',
     '- Use thesisStatus "dead" only when concrete chart/option evidence shows the original setup failed.',
     "- Do not call a normal red pullback or ordinary consolidation a dead thesis.",
-    "- For thesisStatus dead, include at least two specific thesisInvalidationReasons from concrete evidence: trade-direction chart alignment flipped or failed, key support/resistance/invalidation area failed, continuation or volume structure broke, chart R:R/recovery chance collapsed, or DTE/time decay makes recovery unlikely.",
+    "- If the fresh chart review is unavailable, that unavailability alone cannot be a thesisInvalidationReason or justify thesisStatus dead.",
+    "- For thesisStatus dead, include at least two specific thesisInvalidationReasons tied to the checklist and concrete evidence: trade-direction chart alignment flipped or failed, key support/resistance/invalidation area failed, continuation or volume structure broke, chart R:R/recovery chance collapsed, or DTE/time decay makes recovery unlikely.",
     "- Use exit_now for thesis invalidation only when thesisStatus is dead and you can provide at least two concrete invalidation reasons.",
     "- Existing hard exits such as stop hit, target hit, or time exit are handled outside this AI response.",
     "Return JSON with exactly these keys:",
@@ -265,6 +281,10 @@ function buildPrompt(input: AiManagementInput): string {
       ? `If the live state agrees, the current trained-policy recommendation is: ${input.trainedPolicyRecommendedAction}.`
       : "No confident trained-policy action recommendation is available yet.",
     "",
+    input.thesisChecklist
+      ? `Structured entry thesis checklist:\n${JSON.stringify(input.thesisChecklist)}`
+      : "Structured entry thesis checklist: unavailable; use the original rationale and current trade state conservatively.",
+    "",
     input.managementHistorySummary
       ? `Current trade management history:\n${input.managementHistorySummary}`
       : "Current trade management history: none yet.",
@@ -275,6 +295,10 @@ function buildPrompt(input: AiManagementInput): string {
     "",
     `Trade context: ${JSON.stringify(input)}`,
   ].join("\n");
+}
+
+export function buildAiManagementPromptForTest(input: AiManagementInput): string {
+  return buildPrompt(input);
 }
 
 export async function decideAiManagementAction(

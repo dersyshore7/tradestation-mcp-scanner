@@ -26,6 +26,7 @@ import {
   decideAiManagementAction,
   enforceAiManagementGuardrails,
   type AiManagementDecision,
+  type AiManagementThesisChecklist,
   type ThesisStatus,
 } from "./aiManager.js";
 import {
@@ -80,6 +81,11 @@ import {
   recordPaperTraderRun,
   type PaperTraderRunRecord,
 } from "./paperTraderHistory.js";
+import {
+  buildChartReviewSummary,
+  readCurrentChartReview,
+  type CurrentChartReviewResult,
+} from "../review/currentChartReview.js";
 import {
   buildPaperLearningTradeSet,
   filterRecordsForPaperLearning,
@@ -157,11 +163,15 @@ type AutomationSnapshot = {
       lastManagementNote?: string;
       lastManagementThesis?: string;
       lastManagementAt?: string;
+      lastChartReviewConclusion?: CurrentChartReviewResult["conclusion"] | null;
+      lastChartReviewAlignment?: boolean | null;
+      lastChartReviewAt?: string | null;
       managementHistory?: PaperTraderManagementHistoryEntry[];
       entryOrderManagementHistory?: PaperTraderEntryOrderManagementHistoryEntry[];
       decisionLog?: PaperTraderDecisionLogEntry[];
       profitProtectionState?: ProfitProtectionState;
       entryReasoning?: PaperTraderEntryReasoning;
+      thesisChecklist?: PaperTraderThesisChecklist;
       accountValueAtEntry?: number | null;
       maxPositionPct?: number;
       maxPositionCostUsd?: number | null;
@@ -184,6 +194,8 @@ type PaperTraderManagementHistoryEntry = {
   optionReturnPct?: number | null;
   note: string;
   thesis?: string | null;
+  chartReviewConclusion?: CurrentChartReviewResult["conclusion"] | null;
+  chartReviewAlignment?: boolean | null;
   rewardR?: number | null;
   stopProtectionEligible?: boolean;
   stopUpdateBlockedReason?: string | null;
@@ -220,6 +232,9 @@ type PaperTraderDecisionLogEntry = {
   thesisStatus?: ThesisStatus | null;
   thesisInvalidationReasons?: string[];
   plainEnglishExplanation?: string | null;
+  chartReviewConclusion?: CurrentChartReviewResult["conclusion"] | null;
+  chartReviewAlignment?: boolean | null;
+  thesisChecklist?: PaperTraderThesisChecklist | null;
   optionSymbol?: string | null;
   orderId?: string | null;
   quantity?: number | null;
@@ -354,6 +369,7 @@ export type PaperTraderStatus = {
   staleOpenJournalTrades: number | null;
   sizing: {
     accountValueUsd: number | null;
+    beginningOfDayAccountValueUsd: number | null;
     cashBalanceUsd: number | null;
     unrealizedPlUsd: number | null;
     equitiesBuyingPowerUsd: number | null;
@@ -410,6 +426,8 @@ type PaperTraderEntryReasoning = {
   optionChosen: string | null;
   chartGeometry: Record<string, unknown> | null;
 };
+
+type PaperTraderThesisChecklist = AiManagementThesisChecklist;
 
 type PaperTraderEntryCandidateEvaluation = {
   symbol: string | null;
@@ -560,6 +578,10 @@ type PaperTraderRunResult = {
         | "profit_protection_exit_full";
       stopUnderlying: number | null;
       targetUnderlying: number | null;
+      thesisStatus?: ThesisStatus | null;
+      thesisInvalidationReasons?: string[];
+      chartReviewConclusion?: CurrentChartReviewResult["conclusion"] | null;
+      chartReviewAlignment?: boolean | null;
       note: string;
     }[];
     exitsTriggered: {
@@ -824,6 +846,67 @@ function buildEntryReasoning(
     optionChosen: presentationSummary.tradeCard?.optionChosen ?? null,
     chartGeometry: presentationSummary.finalChartGeometry,
   };
+}
+
+function formatLevel(value: number | null): string {
+  return value === null ? "n/a" : value.toFixed(2);
+}
+
+function buildPaperTraderThesisChecklist(params: {
+  direction: JournalTradeDetail["direction"];
+  setupType: string | null;
+  entryReasoning: PaperTraderEntryReasoning | null;
+  tradeCard: TradeConstructionResult | null;
+  originalRationale: string | null;
+  invalidationUnderlying: number | null;
+  targetUnderlying: number | null;
+  timeExitDate: string | null;
+}): PaperTraderThesisChecklist {
+  const directionLabel = params.direction === "CALL" ? "bullish CALL" : "bearish PUT";
+  const invalidationAction = params.direction === "CALL" ? "break below" : "break above";
+  const targetAction = params.direction === "CALL" ? "continue toward or above" : "continue toward or below";
+  const invalidationText = formatLevel(params.invalidationUnderlying);
+  const targetText = formatLevel(params.targetUnderlying);
+  const timeText = params.timeExitDate ?? "the planned time exit";
+  const originalRationale =
+    params.originalRationale
+    ?? params.entryReasoning?.tradeRationale
+    ?? params.tradeCard?.rationale
+    ?? params.entryReasoning?.conciseReasoning
+    ?? null;
+  const entrySummary =
+    params.entryReasoning?.whyThisWon
+    ?? params.entryReasoning?.conciseReasoning
+    ?? originalRationale;
+
+  return {
+    setupDirection: params.direction,
+    setupType: params.setupType,
+    originalRationale,
+    entrySummary,
+    mustRemainTrue:
+      `${directionLabel} thesis must keep respecting the intended invalidation area ${invalidationText}, `
+      + `maintain a plausible chart path to ${targetText}, and avoid time-decay collapse before ${timeText}.`,
+    woundedIf: [
+      `Fresh chart direction stops cleanly aligning with the ${directionLabel} thesis, but the invalidation area has not fully failed.`,
+      `Price/structure weakens near ${invalidationText} while option premium is red, but recovery toward ${targetText} remains plausible.`,
+      "Continuation quality or volume weakens without a confirmed support/resistance failure.",
+    ],
+    deadIf: [
+      `Underlying appears to ${invalidationAction} the intended invalidation area ${invalidationText}.`,
+      "Fresh chart direction flips against the trade with support/resistance failure or continuation/volume breakdown.",
+      `Chart reward/risk or recovery path collapses so the trade can no longer reasonably ${targetAction} ${targetText} before ${timeText}.`,
+    ],
+    invalidationUnderlying: params.invalidationUnderlying,
+    targetUnderlying: params.targetUnderlying,
+    timeExitDate: params.timeExitDate,
+  };
+}
+
+export function buildPaperTraderThesisChecklistForTest(
+  params: Parameters<typeof buildPaperTraderThesisChecklist>[0],
+): PaperTraderThesisChecklist {
+  return buildPaperTraderThesisChecklist(params);
 }
 
 function buildScanRunId(): string {
@@ -1444,6 +1527,7 @@ async function loadPaperTraderSizingSnapshot(
   if (!config.accountId) {
     return {
       accountValueUsd: null,
+      beginningOfDayAccountValueUsd: null,
       cashBalanceUsd: null,
       unrealizedPlUsd: null,
       equitiesBuyingPowerUsd: null,
@@ -1462,6 +1546,12 @@ async function loadPaperTraderSizingSnapshot(
   try {
     const client = await createAutomationTradeStationClient(config.automationBaseUrl);
     const balancesPayload = await client.getBalances(config.accountId);
+    let beginningOfDayBalancesPayload: unknown = null;
+    try {
+      beginningOfDayBalancesPayload = await client.getBeginningOfDayBalances(config.accountId);
+    } catch {
+      beginningOfDayBalancesPayload = null;
+    }
     let positionsPayload: unknown = null;
     try {
       positionsPayload = await client.getPositions(config.accountId);
@@ -1470,11 +1560,15 @@ async function loadPaperTraderSizingSnapshot(
     }
     const positionSizing = buildPositionSizingSnapshot(positionsPayload);
     const accountValueUsd = extractAccountValue(balancesPayload);
+    const beginningOfDayAccountValueUsd = beginningOfDayBalancesPayload === null
+      ? null
+      : extractAccountValue(beginningOfDayBalancesPayload);
     const cashBalanceUsd = extractCashBalance(balancesPayload);
     const unrealizedPlUsd = extractUnrealizedPl(balancesPayload)
       ?? extractPositionsUnrealizedPl(positionsPayload);
     return {
       accountValueUsd,
+      beginningOfDayAccountValueUsd,
       cashBalanceUsd,
       unrealizedPlUsd,
       equitiesBuyingPowerUsd: extractEquitiesBuyingPower(balancesPayload),
@@ -1492,6 +1586,7 @@ async function loadPaperTraderSizingSnapshot(
   } catch (error) {
     return {
       accountValueUsd: null,
+      beginningOfDayAccountValueUsd: null,
       cashBalanceUsd: null,
       unrealizedPlUsd: null,
       equitiesBuyingPowerUsd: null,
@@ -4644,6 +4739,35 @@ async function manageOpenPaperTrades(
       readNumber(trade.option_entry_price),
       optionQuote.mid,
     );
+    const originalTradeRationale = readTradeRationale(trade);
+    const thesisChecklist = automation.thesisChecklist ?? buildPaperTraderThesisChecklist({
+      direction: trade.direction,
+      setupType: trade.setup_type,
+      entryReasoning: automation.entryReasoning ?? null,
+      tradeCard: null,
+      originalRationale: originalTradeRationale,
+      invalidationUnderlying:
+        automation.intendedStopUnderlying
+        ?? readNumber(trade.intended_stop_underlying),
+      targetUnderlying:
+        automation.intendedTargetUnderlying
+        ?? readNumber(trade.intended_target_underlying),
+      timeExitDate: automation.timeExitDate ?? null,
+    });
+    if (!automation.thesisChecklist) {
+      currentSnapshotUpdates = {
+        ...currentSnapshotUpdates,
+        thesisChecklist,
+      };
+    }
+    const chartReview = await readCurrentChartReview({
+      symbol: trade.symbol,
+      direction: trade.direction,
+      currentUnderlyingPrice: underlyingQuote.last,
+      optionReturnPct,
+      baseUrl: config.automationBaseUrl,
+    });
+    const currentChartReviewSummary = buildChartReviewSummary(chartReview);
     const trainedPolicyRecommendation = recommendPolicyAction(trainedPolicyModel, {
       direction: trade.direction,
       setupType: trade.setup_type,
@@ -4711,7 +4835,9 @@ async function manageOpenPaperTrades(
           timeExitDate: automation.timeExitDate ?? null,
           progressToTargetPct,
           optionReturnPct,
-          rationale: readTradeRationale(trade),
+          rationale: originalTradeRationale,
+          thesisChecklist,
+          currentChartReviewSummary,
           lastManagementNote: automation.lastManagementNote ?? null,
           lastManagementThesis: automation.lastManagementThesis ?? null,
           managementHistorySummary: summarizeCurrentManagementHistory(managementHistory),
@@ -4810,6 +4936,8 @@ async function manageOpenPaperTrades(
         optionReturnPct,
         note: historyNote,
         thesis: aiDecision.thesis,
+        chartReviewConclusion: chartReview.conclusion,
+        chartReviewAlignment: chartReview.alignsWithTradeDirection,
         stopProtectionEligible,
         stopUpdateBlockedReason: aiStopTighteningBlockedReason,
         stopSource,
@@ -4827,6 +4955,9 @@ async function manageOpenPaperTrades(
         thesisStatus: aiDecision.thesisStatus,
         thesisInvalidationReasons: aiDecision.thesisInvalidationReasons,
         plainEnglishExplanation: aiDecision.plainEnglishExplanation,
+        chartReviewConclusion: chartReview.conclusion,
+        chartReviewAlignment: chartReview.alignsWithTradeDirection,
+        thesisChecklist,
         optionSymbol: automation.optionSymbol,
         quantity: automation.quantity,
         stopUnderlying: nextStopUnderlying,
@@ -4840,6 +4971,7 @@ async function manageOpenPaperTrades(
       };
       decisionLog = appendDecisionLog(decisionLog, decisionLogEntry);
       currentSnapshotUpdates = {
+        ...currentSnapshotUpdates,
         activeStopUnderlying: nextStopUnderlying,
         activeTargetUnderlying: nextTargetUnderlying,
         profitProtectionState: profitProtectionDecision.state,
@@ -4849,6 +4981,9 @@ async function manageOpenPaperTrades(
         lastManagementNote: historyEntry.note,
         lastManagementThesis: aiDecision.thesis,
         lastManagementAt: nowIso,
+        lastChartReviewConclusion: chartReview.conclusion,
+        lastChartReviewAlignment: chartReview.alignsWithTradeDirection,
+        lastChartReviewAt: nowIso,
         managementHistory: appendManagementHistory(managementHistory, historyEntry),
         decisionLog,
       };
@@ -4874,6 +5009,9 @@ async function manageOpenPaperTrades(
         lastManagementNote: historyEntry.note,
         lastManagementThesis: aiDecision.thesis,
         lastManagementAt: nowIso,
+        lastChartReviewConclusion: chartReview.conclusion,
+        lastChartReviewAlignment: chartReview.alignsWithTradeDirection,
+        lastChartReviewAt: nowIso,
         profitProtectionState: profitProtectionDecision.state,
       };
 
@@ -4892,6 +5030,10 @@ async function manageOpenPaperTrades(
                 : "ai_exit_now",
         stopUnderlying: nextStopUnderlying,
         targetUnderlying: nextTargetUnderlying,
+        thesisStatus: aiDecision.thesisStatus,
+        thesisInvalidationReasons: aiDecision.thesisInvalidationReasons,
+        chartReviewConclusion: chartReview.conclusion,
+        chartReviewAlignment: chartReview.alignsWithTradeDirection,
         note: historyEntry.note,
       });
 
@@ -4909,6 +5051,8 @@ async function manageOpenPaperTrades(
         action: "ai_fallback",
         stopUnderlying: activeLevels.stopUnderlying,
         targetUnderlying: activeLevels.targetUnderlying,
+        chartReviewConclusion: chartReview.conclusion,
+        chartReviewAlignment: chartReview.alignsWithTradeDirection,
         note: `AI manager unavailable; falling back to hard exits. ${message}`,
       });
     }
@@ -6298,6 +6442,16 @@ async function maybeEnterNewPaperTrade(params: {
       telemetry: scan.telemetry ?? null,
       tradeCard,
     });
+    const thesisChecklist = buildPaperTraderThesisChecklist({
+      direction: tradeCard.plannedJournalFields.direction,
+      setupType: tradeCard.plannedJournalFields.setup_type,
+      entryReasoning,
+      tradeCard,
+      originalRationale: tradeCard.rationale,
+      invalidationUnderlying: automation.intendedStopUnderlying,
+      targetUnderlying: automation.intendedTargetUnderlying,
+      timeExitDate: automation.timeExitDate,
+    });
     const entryPolicyModelSummary = summarizeEntryRewardModel(entryRewardModel);
     const entryDecisionLog: PaperTraderDecisionLogEntry[] = [{
       timestamp: now.toISOString(),
@@ -6320,6 +6474,7 @@ async function maybeEnterNewPaperTrade(params: {
       stopUnderlying: automation.intendedStopUnderlying,
       targetUnderlying: automation.intendedTargetUnderlying,
       reasoning: entryReasoning,
+      thesisChecklist,
       entryPolicy: entryPolicyRecommendation,
     }];
 
@@ -6387,6 +6542,7 @@ async function maybeEnterNewPaperTrade(params: {
             entryOrderManagementHistory: [],
             decisionLog: entryDecisionLog,
             entryReasoning,
+            thesisChecklist,
             entryFeatures,
             entryPolicyRecommendation,
             entryPolicyModelSummary,
