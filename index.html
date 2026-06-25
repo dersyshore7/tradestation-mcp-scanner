@@ -2746,16 +2746,18 @@
       }
 
       const liveTheoreticalBalanceConfig = {
-        activationStorageKey: "liveTheoreticalBalanceActivationStateV3",
-        dailyBaselineStorageKey: "liveTheoreticalBalanceDailyBaselineV1",
+        dailyBaselineStorageKey: "liveTheoreticalBalanceDailyBaselineV2",
         legacyStorageKeys: [
           "liveTheoreticalBalanceActivationPlUsd",
           "liveTheoreticalBalanceActivationStateV2",
+          "liveTheoreticalBalanceActivationStateV3",
+          "liveTheoreticalBalanceDailyBaselineV1",
         ],
+        balanceABaselineUsd: 4771.91,
         balanceJBaselineUsd: 3000,
         balanceDBaselineUsd: 2640,
-        pendingDepositUsd: 5640,
-        depositFunded: true,
+        balanceJPriorPlUsd: 177.91,
+        balanceDPriorPlUsd: 156.56,
         chicagoTimeZone: "America/Chicago",
       };
 
@@ -2804,57 +2806,14 @@
         }
       }
 
-      function readLiveTheoreticalBalanceActivationState() {
-        const state = readLiveTheoreticalStorage(liveTheoreticalBalanceConfig.activationStorageKey);
-        const activationAccountValueUsd = asNumber(state?.activationAccountValueUsd);
-        const balanceAPlAtActivationUsd = asNumber(state?.balanceAPlAtActivationUsd);
-        const balanceABaselineUsd = asNumber(state?.balanceABaselineUsd);
-        const combinedActivatedCapitalUsd = asNumber(state?.combinedActivatedCapitalUsd);
-        if (
-          activationAccountValueUsd === null
-          || balanceAPlAtActivationUsd === null
-          || balanceABaselineUsd === null
-          || combinedActivatedCapitalUsd === null
-        ) {
-          return null;
-        }
-        return {
-          activationDateKey: typeof state?.activationDateKey === "string" ? state.activationDateKey : "",
-          baselineCapturedAt: typeof state?.baselineCapturedAt === "string" ? state.baselineCapturedAt : "",
-          activationReason: typeof state?.activationReason === "string" ? state.activationReason : "",
-          activationAccountValueUsd,
-          balanceAPlAtActivationUsd,
-          balanceABaselineUsd,
-          combinedActivatedCapitalUsd,
-        };
-      }
-
-      function writeLiveTheoreticalBalanceActivationState(state) {
-        writeLiveTheoreticalStorage(liveTheoreticalBalanceConfig.activationStorageKey, {
-          activationDateKey: state.activationDateKey,
-          baselineCapturedAt: state.baselineCapturedAt,
-          activationReason: state.activationReason,
-          activationAccountValueUsd: Number(state.activationAccountValueUsd).toFixed(2),
-          balanceAPlAtActivationUsd: Number(state.balanceAPlAtActivationUsd).toFixed(2),
-          balanceABaselineUsd: Number(state.balanceABaselineUsd).toFixed(2),
-          combinedActivatedCapitalUsd: Number(state.combinedActivatedCapitalUsd).toFixed(2),
-        });
-        removeLiveTheoreticalStorage(liveTheoreticalBalanceConfig.legacyStorageKeys);
-      }
-
       function readLiveTheoreticalDailyBaseline(dateKey) {
         const state = readLiveTheoreticalStorage(liveTheoreticalBalanceConfig.dailyBaselineStorageKey);
-        const balanceABaselineUsd = asNumber(state?.balanceABaselineUsd);
         const accountValueUsd = asNumber(state?.accountValueUsd);
-        if (
-          state?.dateKey !== dateKey
-          || (balanceABaselineUsd === null && accountValueUsd === null)
-        ) {
+        if (state?.dateKey !== dateKey || accountValueUsd === null) {
           return null;
         }
         return {
           dateKey,
-          balanceABaselineUsd,
           accountValueUsd,
           capturedAt: typeof state?.capturedAt === "string" ? state.capturedAt : "",
         };
@@ -2863,9 +2822,6 @@
       function writeLiveTheoreticalDailyBaseline(state) {
         writeLiveTheoreticalStorage(liveTheoreticalBalanceConfig.dailyBaselineStorageKey, {
           dateKey: state.dateKey,
-          balanceABaselineUsd: state.balanceABaselineUsd === null
-            ? null
-            : Number(state.balanceABaselineUsd).toFixed(2),
           accountValueUsd: state.accountValueUsd === null
             ? null
             : Number(state.accountValueUsd).toFixed(2),
@@ -2873,14 +2829,13 @@
         });
       }
 
-      function getLiveTheoreticalDailyBaseline(accountValueUsd, balanceABaselineUsd, dateKey) {
+      function getLiveTheoreticalDailyBaseline(accountValueUsd, dateKey) {
         const existingState = readLiveTheoreticalDailyBaseline(dateKey);
         if ((existingState && existingState.accountValueUsd !== null) || accountValueUsd === null) {
           return existingState;
         }
         const capturedState = {
           dateKey,
-          balanceABaselineUsd: existingState?.balanceABaselineUsd ?? balanceABaselineUsd ?? accountValueUsd,
           accountValueUsd,
           capturedAt: new Date().toISOString(),
         };
@@ -2892,23 +2847,59 @@
         return Number(value.toFixed(2));
       }
 
-      function calculateLiveTheoreticalRunningPl(balance, accountValueUsd, share, activationState, depositActive) {
-        if (accountValueUsd === null) {
-          return null;
+      function sumMoneyValues(values) {
+        return roundMoneyValue(values.reduce((sum, value) => sum + value, 0));
+      }
+
+      function buildSeededTheoreticalBalances(openingAccountValueUsd, config) {
+        const balances = [
+          { key: "A", label: "Balance A", baseUsd: config.balanceABaselineUsd, priorPlUsd: null },
+          { key: "J", label: "Balance J", baseUsd: config.balanceJBaselineUsd, priorPlUsd: config.balanceJPriorPlUsd },
+          { key: "D", label: "Balance D", baseUsd: config.balanceDBaselineUsd, priorPlUsd: config.balanceDPriorPlUsd },
+        ];
+        if (openingAccountValueUsd === null) {
+          return balances;
         }
-        if (!depositActive) {
-          if (balance.key !== "A") {
-            return 0;
+
+        const totalOriginalBaseUsd = sumMoneyValues(balances.map((balance) => balance.baseUsd));
+        const knownPriorPlUsd = sumMoneyValues(
+          balances
+            .filter((balance) => balance.key !== "A")
+            .map((balance) => balance.priorPlUsd ?? 0),
+        );
+        return balances.map((balance) => balance.key === "A"
+          ? {
+              ...balance,
+              priorPlUsd: roundMoneyValue(openingAccountValueUsd - totalOriginalBaseUsd - knownPriorPlUsd),
+            }
+          : balance);
+      }
+
+      function allocateTodayPlByStartBalance(balances, todayTotalPlUsd) {
+        if (todayTotalPlUsd === null || balances.some((balance) => balance.priorPlUsd === null)) {
+          return {};
+        }
+        const openingBalances = balances.map((balance) => ({
+          ...balance,
+          openingBalanceUsd: roundMoneyValue(balance.baseUsd + balance.priorPlUsd),
+        }));
+        const openingBalanceTotalUsd = sumMoneyValues(openingBalances.map((balance) => balance.openingBalanceUsd));
+        if (openingBalanceTotalUsd <= 0) {
+          return {};
+        }
+
+        let nonAAllocationUsd = 0;
+        const allocations = {};
+        openingBalances.forEach((balance) => {
+          if (balance.key === "A") {
+            return;
           }
-          return balance.baseUsd === null ? null : roundMoneyValue(accountValueUsd - balance.baseUsd);
-        }
-        if (activationState === null) {
-          return null;
-        }
-        const postActivationPlUsd = accountValueUsd - activationState.activationAccountValueUsd;
-        return balance.key === "A"
-          ? roundMoneyValue(activationState.balanceAPlAtActivationUsd + (postActivationPlUsd * share))
-          : roundMoneyValue(postActivationPlUsd * share);
+          const allocationUsd = roundMoneyValue(todayTotalPlUsd * (balance.openingBalanceUsd / openingBalanceTotalUsd));
+          allocations[balance.key] = allocationUsd;
+          nonAAllocationUsd = roundMoneyValue(nonAAllocationUsd + allocationUsd);
+        });
+        allocations.A = roundMoneyValue(todayTotalPlUsd - nonAAllocationUsd);
+        return allocations;
       }
 
       function renderTheoreticalBalanceCard(row) {
@@ -2936,120 +2927,29 @@
         const accountValueUsd = asNumber(accountSnapshot?.accountValueUsd);
         const beginningOfDayAccountValueUsd = asNumber(accountSnapshot?.beginningOfDayAccountValueUsd);
         const todayChicagoDateKey = getChicagoDateKey();
-        let activationState = readLiveTheoreticalBalanceActivationState();
-        let depositActive = activationState !== null;
         let dailyBaselineState = readLiveTheoreticalDailyBaseline(todayChicagoDateKey);
-        if (
-          !depositActive
-          && !config.depositFunded
-          && (dailyBaselineState === null || dailyBaselineState.balanceABaselineUsd === null)
-        ) {
-          dailyBaselineState = getLiveTheoreticalDailyBaseline(accountValueUsd, accountValueUsd, todayChicagoDateKey);
+        removeLiveTheoreticalStorage(config.legacyStorageKeys);
+        if (beginningOfDayAccountValueUsd === null) {
+          dailyBaselineState = getLiveTheoreticalDailyBaseline(accountValueUsd, todayChicagoDateKey);
         }
-        let balanceABaselineUsd = activationState?.balanceABaselineUsd
-          ?? dailyBaselineState?.balanceABaselineUsd
-          ?? null;
-        let combinedActivatedCapitalUsd = activationState?.combinedActivatedCapitalUsd
-          ?? (balanceABaselineUsd === null
-            ? null
-            : Number((balanceABaselineUsd + config.balanceJBaselineUsd + config.balanceDBaselineUsd).toFixed(2)));
-        const depositThresholdUsd = balanceABaselineUsd === null
-          ? null
-          : Number((balanceABaselineUsd + config.pendingDepositUsd).toFixed(2));
-        const balanceAAccountDeltaUsd = accountValueUsd === null || balanceABaselineUsd === null
-          ? null
-          : Number((accountValueUsd - balanceABaselineUsd).toFixed(2));
-        const depositDetected = accountValueUsd !== null && depositThresholdUsd !== null && accountValueUsd >= depositThresholdUsd;
-
-        if (
-          !depositActive
-          && depositDetected
-          && accountValueUsd !== null
-          && balanceABaselineUsd !== null
-          && combinedActivatedCapitalUsd !== null
-        ) {
-          activationState = {
-            activationDateKey: todayChicagoDateKey,
-            baselineCapturedAt: dailyBaselineState?.capturedAt || new Date().toISOString(),
-            activationReason: "deposit_threshold",
-            activationAccountValueUsd: accountValueUsd,
-            balanceAPlAtActivationUsd: Number((accountValueUsd - depositThresholdUsd).toFixed(2)),
-            balanceABaselineUsd,
-            combinedActivatedCapitalUsd,
-          };
-          depositActive = true;
-          writeLiveTheoreticalBalanceActivationState(activationState);
-        } else if (!depositActive && config.depositFunded && accountValueUsd !== null) {
-          const fundedBalanceABaselineUsd = Number((accountValueUsd - config.pendingDepositUsd).toFixed(2));
-          const fundedCombinedCapitalUsd = Number((
-            fundedBalanceABaselineUsd
-            + config.balanceJBaselineUsd
-            + config.balanceDBaselineUsd
-          ).toFixed(2));
-          activationState = {
-            activationDateKey: todayChicagoDateKey,
-            baselineCapturedAt: new Date().toISOString(),
-            activationReason: "post_deposit_cutover",
-            activationAccountValueUsd: accountValueUsd,
-            balanceAPlAtActivationUsd: 0,
-            balanceABaselineUsd: fundedBalanceABaselineUsd,
-            combinedActivatedCapitalUsd: fundedCombinedCapitalUsd,
-          };
-          depositActive = true;
-          balanceABaselineUsd = fundedBalanceABaselineUsd;
-          combinedActivatedCapitalUsd = fundedCombinedCapitalUsd;
-          writeLiveTheoreticalBalanceActivationState(activationState);
-        }
-        dailyBaselineState = getLiveTheoreticalDailyBaseline(
-          accountValueUsd,
-          balanceABaselineUsd,
-          todayChicagoDateKey,
-        ) ?? dailyBaselineState;
-
-        const balances = [
-          { key: "A", label: "Balance A", baseUsd: balanceABaselineUsd },
-          { key: "J", label: "Balance J", baseUsd: config.balanceJBaselineUsd },
-          { key: "D", label: "Balance D", baseUsd: config.balanceDBaselineUsd },
-        ];
-        const postActivationPlUsd = depositActive && accountValueUsd !== null && activationState !== null
-          ? Number((accountValueUsd - activationState.activationAccountValueUsd).toFixed(2))
-          : null;
-        let openingAccountValueUsd = null;
+        const openingAccountValueUsd = beginningOfDayAccountValueUsd ?? dailyBaselineState?.accountValueUsd ?? null;
         let todayBaselineLabel = null;
-        if (depositActive && activationState?.activationDateKey === todayChicagoDateKey) {
-          openingAccountValueUsd = activationState.activationAccountValueUsd;
-          todayBaselineLabel = `Today P/L starts from activation net worth ${formatMoney(openingAccountValueUsd)}`;
-        } else if (beginningOfDayAccountValueUsd !== null) {
-          openingAccountValueUsd = beginningOfDayAccountValueUsd;
+        if (beginningOfDayAccountValueUsd !== null) {
           todayBaselineLabel = `Today P/L starts from TradeStation beginning-of-day net worth ${formatMoney(openingAccountValueUsd)}`;
         } else if (dailyBaselineState?.accountValueUsd !== null) {
-          openingAccountValueUsd = dailyBaselineState.accountValueUsd;
           todayBaselineLabel = `Today P/L starts from first dashboard snapshot ${formatMoney(openingAccountValueUsd)}`;
         }
+        const todayTotalPlUsd = accountValueUsd === null || openingAccountValueUsd === null
+          ? null
+          : roundMoneyValue(accountValueUsd - openingAccountValueUsd);
+        const balances = buildSeededTheoreticalBalances(openingAccountValueUsd, config);
+        const todayPlByKey = allocateTodayPlByStartBalance(balances, todayTotalPlUsd);
         const rows = balances.map((balance) => {
-          const share = combinedActivatedCapitalUsd !== null && combinedActivatedCapitalUsd > 0 && balance.baseUsd !== null
-            ? balance.baseUsd / combinedActivatedCapitalUsd
-            : 0;
-          const runningPlUsd = calculateLiveTheoreticalRunningPl(
-            balance,
-            accountValueUsd,
-            share,
-            activationState,
-            depositActive,
-          );
-          const openingRunningPlUsd = openingAccountValueUsd === null
+          const todayPlUsd = todayPlByKey[balance.key] ?? null;
+          const runningPlUsd = balance.priorPlUsd === null
             ? null
-            : calculateLiveTheoreticalRunningPl(
-              balance,
-              openingAccountValueUsd,
-              share,
-              activationState,
-              depositActive,
-            );
-          const todayPlUsd = runningPlUsd === null || openingRunningPlUsd === null
-            ? null
-            : roundMoneyValue(runningPlUsd - openingRunningPlUsd);
-          const updatedBalanceUsd = balance.baseUsd === null || runningPlUsd === null
+            : roundMoneyValue(balance.priorPlUsd + (todayPlUsd ?? 0));
+          const updatedBalanceUsd = runningPlUsd === null
             ? null
             : roundMoneyValue(balance.baseUsd + runningPlUsd);
           return {
@@ -3057,26 +2957,15 @@
             todayPlUsd,
             runningPlUsd,
             updatedBalanceUsd,
-            state: depositActive || config.depositFunded || balance.key === "A" ? "Funded" : "Pending deposit",
+            state: "Funded",
           };
         });
-        const depositState = depositActive
-          ? "Deposit active"
-          : config.depositFunded
-            ? "Deposit funded"
-          : depositDetected
-            ? "Deposit detected"
-            : `Deposit pending ${formatMoney(config.pendingDepositUsd)}`;
         const todayBaselineMeta = todayBaselineLabel ?? "Today P/L baseline unavailable";
         const meta = accountValueUsd === null
-          ? `${depositState}. Broker net worth unavailable.`
-          : depositActive
-            ? activationState?.activationReason === "post_deposit_cutover"
-              ? `${depositState}. ${todayBaselineMeta}. Running P/L is split from activation net worth ${formatMoney(activationState.activationAccountValueUsd)}. Balance A starts as current net worth minus ${formatMoney(config.pendingDepositUsd)}.`
-              : `${depositState}. ${todayBaselineMeta}. Balance A baseline ${formatMoney(activationState?.balanceABaselineUsd)}; net worth ${formatMoney(accountValueUsd)}; running P/L ${formatMoney(postActivationPlUsd ?? 0)}.`
-            : balanceABaselineUsd === null
-              ? `${depositState}. Waiting for Balance A baseline from the first live snapshot today.`
-              : `${depositState}. ${todayBaselineMeta}. Balance A baseline ${formatMoney(balanceABaselineUsd)}; net worth ${formatMoney(accountValueUsd)}; Balance A running P/L ${formatMoney(balanceAAccountDeltaUsd)}.`;
+          ? `Seeded split active. Broker net worth unavailable. ${todayBaselineMeta}.`
+          : openingAccountValueUsd === null
+            ? `Seeded split active. Broker beginning-of-day net worth unavailable, so today's P/L cannot be split yet.`
+            : `Seeded split active. ${todayBaselineMeta}. Today's total P/L ${formatMoney(todayTotalPlUsd)} is split by start-of-day updated balances. Balance A prior P/L is the broker remainder after J ${formatMoney(config.balanceJPriorPlUsd)} and D ${formatMoney(config.balanceDPriorPlUsd)}.`;
 
         return `
           <section class="ops-panel ops-theoretical-balances">
