@@ -856,31 +856,17 @@
         line-height: 1.25;
         text-transform: uppercase;
       }
-      .ops-theoretical-base,
-      .ops-theoretical-state,
-      .ops-theoretical-updated,
-      .ops-theoretical-running {
-        margin-top: 4px;
+      .ops-theoretical-field {
+        margin-top: 6px;
         color: var(--muted-text);
         font-size: 12px;
         line-height: 1.35;
       }
-      .ops-theoretical-value-label {
-        margin-top: 7px;
-        color: var(--muted-text);
-        font-size: 11px;
-        font-weight: 800;
-        line-height: 1.25;
-      }
-      .ops-theoretical-running strong {
+      .ops-theoretical-field strong {
         font-weight: 800;
       }
-      .ops-theoretical-value {
-        margin-top: 2px;
-        font-size: 20px;
-        font-weight: 400;
-        line-height: 1.15;
-        overflow-wrap: anywhere;
+      .ops-theoretical-amount {
+        color: var(--text);
       }
       .ops-theoretical-meta {
         color: var(--muted-text);
@@ -2746,57 +2732,19 @@
       }
 
       const liveTheoreticalBalanceConfig = {
-        dailyBaselineStorageKey: "liveTheoreticalBalanceDailyBaselineV2",
         legacyStorageKeys: [
           "liveTheoreticalBalanceActivationPlUsd",
           "liveTheoreticalBalanceActivationStateV2",
           "liveTheoreticalBalanceActivationStateV3",
           "liveTheoreticalBalanceDailyBaselineV1",
+          "liveTheoreticalBalanceDailyBaselineV2",
         ],
-        balanceABaselineUsd: 4771.91,
-        balanceJBaselineUsd: 3000,
-        balanceDBaselineUsd: 2640,
-        balanceJPriorPlUsd: 177.91,
-        balanceDPriorPlUsd: 156.56,
-        chicagoTimeZone: "America/Chicago",
+        balances: [
+          { key: "A", label: "Balance A", baseUsd: 4771.91, ratio: 0.45831 },
+          { key: "J", label: "Balance J", baseUsd: 3000, ratio: 0.28813 },
+          { key: "D", label: "Balance D", baseUsd: 2640, ratio: 0.25356 },
+        ],
       };
-
-      function getChicagoDateKey(date = new Date()) {
-        try {
-          const parts = new Intl.DateTimeFormat("en-US", {
-            timeZone: liveTheoreticalBalanceConfig.chicagoTimeZone,
-            year: "numeric",
-            month: "2-digit",
-            day: "2-digit",
-          }).formatToParts(date).reduce((acc, part) => {
-            acc[part.type] = part.value;
-            return acc;
-          }, {});
-          if (parts.year && parts.month && parts.day) {
-            return `${parts.year}-${parts.month}-${parts.day}`;
-          }
-        } catch {
-          // Fall through to a stable browser-safe fallback.
-        }
-        return date.toISOString().slice(0, 10);
-      }
-
-      function readLiveTheoreticalStorage(key) {
-        try {
-          const rawState = window.localStorage.getItem(key);
-          return rawState ? JSON.parse(rawState) : null;
-        } catch {
-          return null;
-        }
-      }
-
-      function writeLiveTheoreticalStorage(key, state) {
-        try {
-          window.localStorage.setItem(key, JSON.stringify(state));
-        } catch {
-          // Ignore browsers where localStorage is unavailable.
-        }
-      }
 
       function removeLiveTheoreticalStorage(keys) {
         try {
@@ -2806,114 +2754,32 @@
         }
       }
 
-      function readLiveTheoreticalDailyBaseline(dateKey) {
-        const state = readLiveTheoreticalStorage(liveTheoreticalBalanceConfig.dailyBaselineStorageKey);
-        const accountValueUsd = asNumber(state?.accountValueUsd);
-        if (state?.dateKey !== dateKey || accountValueUsd === null) {
-          return null;
-        }
-        return {
-          dateKey,
-          accountValueUsd,
-          capturedAt: typeof state?.capturedAt === "string" ? state.capturedAt : "",
-        };
-      }
-
-      function writeLiveTheoreticalDailyBaseline(state) {
-        writeLiveTheoreticalStorage(liveTheoreticalBalanceConfig.dailyBaselineStorageKey, {
-          dateKey: state.dateKey,
-          accountValueUsd: state.accountValueUsd === null
-            ? null
-            : Number(state.accountValueUsd).toFixed(2),
-          capturedAt: state.capturedAt,
-        });
-      }
-
-      function getLiveTheoreticalDailyBaseline(accountValueUsd, dateKey) {
-        const existingState = readLiveTheoreticalDailyBaseline(dateKey);
-        if ((existingState && existingState.accountValueUsd !== null) || accountValueUsd === null) {
-          return existingState;
-        }
-        const capturedState = {
-          dateKey,
-          accountValueUsd,
-          capturedAt: new Date().toISOString(),
-        };
-        writeLiveTheoreticalDailyBaseline(capturedState);
-        return capturedState;
-      }
-
       function roundMoneyValue(value) {
         return Number(value.toFixed(2));
       }
 
-      function sumMoneyValues(values) {
-        return roundMoneyValue(values.reduce((sum, value) => sum + value, 0));
-      }
-
-      function buildSeededTheoreticalBalances(openingAccountValueUsd, config) {
-        const balances = [
-          { key: "A", label: "Balance A", baseUsd: config.balanceABaselineUsd, priorPlUsd: null },
-          { key: "J", label: "Balance J", baseUsd: config.balanceJBaselineUsd, priorPlUsd: config.balanceJPriorPlUsd },
-          { key: "D", label: "Balance D", baseUsd: config.balanceDBaselineUsd, priorPlUsd: config.balanceDPriorPlUsd },
-        ];
-        if (openingAccountValueUsd === null) {
-          return balances;
+      function formatTheoreticalMoney(value) {
+        const parsed = asNumber(value);
+        if (parsed === null) {
+          return renderMaybe(value);
         }
-
-        const totalOriginalBaseUsd = sumMoneyValues(balances.map((balance) => balance.baseUsd));
-        const knownPriorPlUsd = sumMoneyValues(
-          balances
-            .filter((balance) => balance.key !== "A")
-            .map((balance) => balance.priorPlUsd ?? 0),
-        );
-        return balances.map((balance) => balance.key === "A"
-          ? {
-              ...balance,
-              priorPlUsd: roundMoneyValue(openingAccountValueUsd - totalOriginalBaseUsd - knownPriorPlUsd),
-            }
-          : balance);
-      }
-
-      function allocateTodayPlByStartBalance(balances, todayTotalPlUsd) {
-        if (todayTotalPlUsd === null || balances.some((balance) => balance.priorPlUsd === null)) {
-          return {};
-        }
-        const openingBalances = balances.map((balance) => ({
-          ...balance,
-          openingBalanceUsd: roundMoneyValue(balance.baseUsd + balance.priorPlUsd),
-        }));
-        const openingBalanceTotalUsd = sumMoneyValues(openingBalances.map((balance) => balance.openingBalanceUsd));
-        if (openingBalanceTotalUsd <= 0) {
-          return {};
-        }
-
-        let nonAAllocationUsd = 0;
-        const allocations = {};
-        openingBalances.forEach((balance) => {
-          if (balance.key === "A") {
-            return;
-          }
-          const allocationUsd = roundMoneyValue(todayTotalPlUsd * (balance.openingBalanceUsd / openingBalanceTotalUsd));
-          allocations[balance.key] = allocationUsd;
-          nonAAllocationUsd = roundMoneyValue(nonAAllocationUsd + allocationUsd);
-        });
-        allocations.A = roundMoneyValue(todayTotalPlUsd - nonAAllocationUsd);
-        return allocations;
+        return `$${parsed.toLocaleString("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`;
       }
 
       function renderTheoreticalBalanceCard(row) {
         const todayTone = row.todayPlUsd === null ? "tone-neutral" : numberToneClass(row.todayPlUsd);
         const runningTone = row.runningPlUsd === null ? "tone-neutral" : numberToneClass(row.runningPlUsd);
+        const currentTone = row.currentBalanceUsd === null ? "tone-neutral" : numberToneClass(row.currentBalanceUsd - row.baseUsd);
         return `
           <div class="ops-theoretical-card">
             <div class="ops-theoretical-label">${escapeHtml(row.label)}</div>
-            <div class="ops-theoretical-base">Base ${escapeHtml(formatMoney(row.baseUsd))}</div>
-            <div class="ops-theoretical-value-label">Today P/L</div>
-            <div class="ops-theoretical-value ${escapeHtml(todayTone)}">${escapeHtml(row.todayPlUsd === null ? "n/a" : formatMoney(row.todayPlUsd))}</div>
-            <div class="ops-theoretical-state">${escapeHtml(row.state)}</div>
-            <div class="ops-theoretical-updated"><strong>Updated balance</strong> ${escapeHtml(row.updatedBalanceUsd === null ? "n/a" : formatMoney(row.updatedBalanceUsd))}</div>
-            <div class="ops-theoretical-running"><strong>Running P/L</strong> <span class="${escapeHtml(runningTone)}">${escapeHtml(row.runningPlUsd === null ? "n/a" : formatMoney(row.runningPlUsd))}</span></div>
+            <div class="ops-theoretical-field"><strong>Base Invested Amount:</strong> <span class="ops-theoretical-amount">${escapeHtml(formatTheoreticalMoney(row.baseUsd))}</span></div>
+            <div class="ops-theoretical-field"><strong>Current Balance:</strong> <span class="${escapeHtml(currentTone)}">${escapeHtml(row.currentBalanceUsd === null ? "n/a" : formatTheoreticalMoney(row.currentBalanceUsd))}</span></div>
+            <div class="ops-theoretical-field"><strong>Today's P/L:</strong> <span class="${escapeHtml(todayTone)}">${escapeHtml(row.todayPlUsd === null ? "n/a" : formatTheoreticalMoney(row.todayPlUsd))}</span></div>
+            <div class="ops-theoretical-field"><strong>Running P/L:</strong> <span class="${escapeHtml(runningTone)}">${escapeHtml(row.runningPlUsd === null ? "n/a" : formatTheoreticalMoney(row.runningPlUsd))}</span></div>
           </div>
         `;
       }
@@ -2926,46 +2792,32 @@
         const config = liveTheoreticalBalanceConfig;
         const accountValueUsd = asNumber(accountSnapshot?.accountValueUsd);
         const beginningOfDayAccountValueUsd = asNumber(accountSnapshot?.beginningOfDayAccountValueUsd);
-        const todayChicagoDateKey = getChicagoDateKey();
-        let dailyBaselineState = readLiveTheoreticalDailyBaseline(todayChicagoDateKey);
         removeLiveTheoreticalStorage(config.legacyStorageKeys);
-        if (beginningOfDayAccountValueUsd === null) {
-          dailyBaselineState = getLiveTheoreticalDailyBaseline(accountValueUsd, todayChicagoDateKey);
-        }
-        const openingAccountValueUsd = beginningOfDayAccountValueUsd ?? dailyBaselineState?.accountValueUsd ?? null;
-        let todayBaselineLabel = null;
-        if (beginningOfDayAccountValueUsd !== null) {
-          todayBaselineLabel = `Today P/L starts from TradeStation beginning-of-day net worth ${formatMoney(openingAccountValueUsd)}`;
-        } else if (dailyBaselineState?.accountValueUsd !== null) {
-          todayBaselineLabel = `Today P/L starts from first dashboard snapshot ${formatMoney(openingAccountValueUsd)}`;
-        }
-        const todayTotalPlUsd = accountValueUsd === null || openingAccountValueUsd === null
+        const todayTotalPlUsd = accountValueUsd === null || beginningOfDayAccountValueUsd === null
           ? null
-          : roundMoneyValue(accountValueUsd - openingAccountValueUsd);
-        const balances = buildSeededTheoreticalBalances(openingAccountValueUsd, config);
-        const todayPlByKey = allocateTodayPlByStartBalance(balances, todayTotalPlUsd);
-        const rows = balances.map((balance) => {
-          const todayPlUsd = todayPlByKey[balance.key] ?? null;
-          const runningPlUsd = balance.priorPlUsd === null
+          : roundMoneyValue(accountValueUsd - beginningOfDayAccountValueUsd);
+        const rows = config.balances.map((balance) => {
+          const currentBalanceUsd = accountValueUsd === null
             ? null
-            : roundMoneyValue(balance.priorPlUsd + (todayPlUsd ?? 0));
-          const updatedBalanceUsd = runningPlUsd === null
+            : roundMoneyValue(accountValueUsd * balance.ratio);
+          const todayPlUsd = todayTotalPlUsd === null
             ? null
-            : roundMoneyValue(balance.baseUsd + runningPlUsd);
+            : roundMoneyValue(todayTotalPlUsd * balance.ratio);
+          const runningPlUsd = currentBalanceUsd === null
+            ? null
+            : roundMoneyValue(currentBalanceUsd - balance.baseUsd);
           return {
             ...balance,
+            currentBalanceUsd,
             todayPlUsd,
             runningPlUsd,
-            updatedBalanceUsd,
-            state: "Funded",
           };
         });
-        const todayBaselineMeta = todayBaselineLabel ?? "Today P/L baseline unavailable";
         const meta = accountValueUsd === null
-          ? `Seeded split active. Broker net worth unavailable. ${todayBaselineMeta}.`
-          : openingAccountValueUsd === null
-            ? `Seeded split active. Broker beginning-of-day net worth unavailable, so today's P/L cannot be split yet.`
-            : `Seeded split active. ${todayBaselineMeta}. Today's total P/L ${formatMoney(todayTotalPlUsd)} is split by start-of-day updated balances. Balance A prior P/L is the broker remainder after J ${formatMoney(config.balanceJPriorPlUsd)} and D ${formatMoney(config.balanceDPriorPlUsd)}.`;
+          ? "Fixed reporting split active. Broker net worth unavailable, so current balances and P/L cannot be calculated."
+          : beginningOfDayAccountValueUsd === null
+            ? "Fixed reporting split active. Current balances use the live TradeStation net worth. Today's P/L is unavailable until TradeStation beginning-of-day net worth is available."
+            : `Fixed reporting split active. Current balances use live TradeStation net worth ${formatTheoreticalMoney(accountValueUsd)}. Today's total P/L ${formatTheoreticalMoney(todayTotalPlUsd)} is split by the fixed reporting ratios.`;
 
         return `
           <section class="ops-panel ops-theoretical-balances">
