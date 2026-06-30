@@ -46,6 +46,8 @@ import {
   buildPaperTraderThesisChecklistForTest,
   chooseJournalExitPriceForTest,
   evaluateOpeningExitGuardForTest,
+  evaluateWeekendCarryGuardForTest,
+  evaluateWeekendEntryGuardForTest,
   readCloseOrderFillSnapshotForTest,
   readOpeningOrderSnapshotForTest,
   resolveManagementActionAfterProfitProtectionForTest,
@@ -621,9 +623,30 @@ test("paper trader blocks unearned AI scale-outs but preserves validated exits",
   assert.equal(premiumTrailExit.blockedAiScaleOutReason, null);
 });
 
-test("live opening exit guard suppresses ordinary early stop breaches", () => {
+test("live opening exit guard lets stops bypass when configured", () => {
+  const bypassed = evaluateOpeningExitGuardForTest({
+    accountMode: "live",
+    openingStopBypassEnabled: true,
+    nowIso: "2026-06-17T13:35:00.000Z",
+    decision: {
+      reason: "stop_hit",
+      note: "Underlying fell to 187.50 at/below stop 187.66.",
+    },
+    direction: "CALL",
+    entryUnderlyingPrice: 189.45,
+    currentUnderlyingPrice: 187.5,
+    stopUnderlying: 187.66,
+    targetUnderlying: 192.14,
+    originalStopUnderlying: 187.66,
+    entryOptionPrice: 8.1,
+    currentOptionMid: 7.5,
+  });
+
+  assert.equal(bypassed.blocked, false);
+
   const guarded = evaluateOpeningExitGuardForTest({
     accountMode: "live",
+    openingStopBypassEnabled: false,
     nowIso: "2026-06-17T13:35:00.000Z",
     decision: {
       reason: "stop_hit",
@@ -644,6 +667,7 @@ test("live opening exit guard suppresses ordinary early stop breaches", () => {
 
   const afterWindow = evaluateOpeningExitGuardForTest({
     accountMode: "live",
+    openingStopBypassEnabled: false,
     nowIso: "2026-06-17T13:40:00.000Z",
     decision: {
       reason: "stop_hit",
@@ -663,6 +687,7 @@ test("live opening exit guard suppresses ordinary early stop breaches", () => {
 
   const paperLane = evaluateOpeningExitGuardForTest({
     accountMode: "paper",
+    openingStopBypassEnabled: false,
     nowIso: "2026-06-17T13:35:00.000Z",
     decision: {
       reason: "stop_hit",
@@ -681,9 +706,50 @@ test("live opening exit guard suppresses ordinary early stop breaches", () => {
   assert.equal(paperLane.blocked, false);
 });
 
+test("live opening exit guard still suppresses targets and non-crash manual exits", () => {
+  const target = evaluateOpeningExitGuardForTest({
+    accountMode: "live",
+    openingStopBypassEnabled: true,
+    nowIso: "2026-06-17T13:35:00.000Z",
+    decision: {
+      reason: "target_hit",
+      note: "Underlying reached the target.",
+    },
+    direction: "CALL",
+    entryUnderlyingPrice: 189.45,
+    currentUnderlyingPrice: 192.2,
+    stopUnderlying: 187.66,
+    targetUnderlying: 192.14,
+    originalStopUnderlying: 187.66,
+    entryOptionPrice: 8.1,
+    currentOptionMid: 8.9,
+  });
+  assert.equal(target.blocked, true);
+
+  const manual = evaluateOpeningExitGuardForTest({
+    accountMode: "live",
+    openingStopBypassEnabled: true,
+    nowIso: "2026-06-17T13:35:00.000Z",
+    decision: {
+      reason: "manual_early_exit",
+      note: "AI manager chose exit-now.",
+    },
+    direction: "CALL",
+    entryUnderlyingPrice: 189.45,
+    currentUnderlyingPrice: 187.5,
+    stopUnderlying: 187.66,
+    targetUnderlying: 192.14,
+    originalStopUnderlying: 187.66,
+    entryOptionPrice: 8.1,
+    currentOptionMid: 7.5,
+  });
+  assert.equal(manual.blocked, true);
+});
+
 test("live opening exit guard allows severe gap or option crash exits", () => {
   const severeGap = evaluateOpeningExitGuardForTest({
     accountMode: "live",
+    openingStopBypassEnabled: false,
     nowIso: "2026-06-17T13:35:00.000Z",
     decision: {
       reason: "stop_hit",
@@ -703,6 +769,7 @@ test("live opening exit guard allows severe gap or option crash exits", () => {
 
   const optionCrash = evaluateOpeningExitGuardForTest({
     accountMode: "live",
+    openingStopBypassEnabled: true,
     nowIso: "2026-06-17T13:35:00.000Z",
     decision: {
       reason: "manual_early_exit",
@@ -719,6 +786,113 @@ test("live opening exit guard allows severe gap or option crash exits", () => {
   });
 
   assert.equal(optionCrash.blocked, false);
+});
+
+test("weekend entry guard blocks only live entries after the Friday cutoff", () => {
+  const blocked = evaluateWeekendEntryGuardForTest({
+    accountMode: "live",
+    weekendGuardEnabled: true,
+    nowIso: "2026-06-26T19:30:00.000Z",
+    entryCutoffMinutesCt: (14 * 60) + 30,
+  });
+  assert.equal(blocked.blocked, true);
+  assert.match(blocked.note ?? "", /blocked new LIVE entries/);
+
+  const beforeCutoff = evaluateWeekendEntryGuardForTest({
+    accountMode: "live",
+    weekendGuardEnabled: true,
+    nowIso: "2026-06-26T19:29:00.000Z",
+    entryCutoffMinutesCt: (14 * 60) + 30,
+  });
+  assert.equal(beforeCutoff.blocked, false);
+
+  const disabled = evaluateWeekendEntryGuardForTest({
+    accountMode: "live",
+    weekendGuardEnabled: false,
+    nowIso: "2026-06-26T19:30:00.000Z",
+    entryCutoffMinutesCt: (14 * 60) + 30,
+  });
+  assert.equal(disabled.blocked, false);
+
+  const paperLane = evaluateWeekendEntryGuardForTest({
+    accountMode: "paper",
+    weekendGuardEnabled: true,
+    nowIso: "2026-06-26T19:30:00.000Z",
+    entryCutoffMinutesCt: (14 * 60) + 30,
+  });
+  assert.equal(paperLane.blocked, false);
+});
+
+test("weekend carry guard forces only unprotected live positions after the Friday cutoff", () => {
+  const unprotected = evaluateWeekendCarryGuardForTest({
+    accountMode: "live",
+    weekendGuardEnabled: true,
+    nowIso: "2026-06-26T19:45:00.000Z",
+    exitCutoffMinutesCt: (14 * 60) + 45,
+    profitProtectionState: {},
+  });
+  assert.equal(unprotected.decision?.reason, "manual_early_exit");
+  assert.equal(unprotected.protected, false);
+  assert.match(unprotected.decision?.note ?? "", /closed before weekend carry/);
+
+  const peakProtected = evaluateWeekendCarryGuardForTest({
+    accountMode: "live",
+    weekendGuardEnabled: true,
+    nowIso: "2026-06-26T19:45:00.000Z",
+    exitCutoffMinutesCt: (14 * 60) + 45,
+    profitProtectionState: { peakOptionReturnPct: 20 },
+  });
+  assert.equal(peakProtected.decision, null);
+  assert.equal(peakProtected.protected, true);
+
+  const triggeredProtected = evaluateWeekendCarryGuardForTest({
+    accountMode: "live",
+    weekendGuardEnabled: true,
+    nowIso: "2026-06-26T19:45:00.000Z",
+    exitCutoffMinutesCt: (14 * 60) + 45,
+    profitProtectionState: { triggeredAt: "2026-06-26T18:00:00.000Z" },
+  });
+  assert.equal(triggeredProtected.decision, null);
+  assert.equal(triggeredProtected.protected, true);
+
+  const beforeCutoff = evaluateWeekendCarryGuardForTest({
+    accountMode: "live",
+    weekendGuardEnabled: true,
+    nowIso: "2026-06-26T19:44:00.000Z",
+    exitCutoffMinutesCt: (14 * 60) + 45,
+    profitProtectionState: {},
+  });
+  assert.equal(beforeCutoff.decision, null);
+
+  const paperLane = evaluateWeekendCarryGuardForTest({
+    accountMode: "paper",
+    weekendGuardEnabled: true,
+    nowIso: "2026-06-26T19:45:00.000Z",
+    exitCutoffMinutesCt: (14 * 60) + 45,
+    profitProtectionState: {},
+  });
+  assert.equal(paperLane.decision, null);
+});
+
+test("weekend entry guard runs after reconciliation and open-trade management", () => {
+  const source = readFileSync(new URL("./paperTrader.ts", import.meta.url), "utf8");
+  const runCycle = source.slice(
+    source.indexOf("export async function runPaperTraderCycle"),
+    source.indexOf("const decisionLogTrades"),
+  );
+
+  const openReconciliationIndex = runCycle.indexOf("const reconciliation = await reconcileOpenPaperOrders");
+  const closedExitReconciliationIndex = runCycle.indexOf("const closedExitReconciliation = await reconcileClosedLiveJournalExits");
+  const managementIndex = runCycle.indexOf("const management = await manageOpenPaperTrades");
+  const weekendGuardIndex = runCycle.indexOf("const weekendEntryGuard = evaluateWeekendEntryGuard");
+  const entryIndex = runCycle.indexOf("await maybeEnterNewPaperTrade");
+
+  assert.ok(openReconciliationIndex >= 0);
+  assert.ok(closedExitReconciliationIndex > openReconciliationIndex);
+  assert.ok(managementIndex > closedExitReconciliationIndex);
+  assert.ok(weekendGuardIndex > managementIndex);
+  assert.ok(entryIndex > weekendGuardIndex);
+  assert.ok(source.includes("newEntriesAllowed: !weekendEntryGuard.blocked"));
 });
 
 test("paper trader cancels partial opening remainders before live exit orders", () => {

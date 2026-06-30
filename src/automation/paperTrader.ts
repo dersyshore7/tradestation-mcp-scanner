@@ -108,6 +108,7 @@ const OPENING_EXIT_GUARD_START_MINUTES_CT = (8 * 60) + 30;
 const OPENING_EXIT_GUARD_END_MINUTES_CT = (8 * 60) + 40;
 const OPENING_EXIT_GUARD_SEVERE_STOP_DISTANCE_MULTIPLE = 2;
 const OPENING_EXIT_GUARD_OPTION_CRASH_RETURN_PCT = -50;
+const WEEKEND_CARRY_PROTECTION_RETURN_PCT = 20;
 
 type PaperTraderRunOptions = {
   mode?: AutomationLane;
@@ -311,6 +312,17 @@ type OpeningExitGuardDecision = {
   note: string | null;
 };
 
+type WeekendEntryGuardDecision = {
+  blocked: boolean;
+  note: string | null;
+};
+
+type WeekendCarryGuardDecision = {
+  decision: ExitDecision | null;
+  protected: boolean;
+  note: string | null;
+};
+
 type TradeStationCloseFillSource = "order_response" | "executions" | "orders";
 
 type TradeStationCloseOrderFillSnapshot = {
@@ -458,6 +470,10 @@ type PaperTraderRunResult = {
     maxDailyLossUsd: number | null;
     maxPositionPct: number;
     entryOrderManagementEnabled: boolean;
+    weekendGuardEnabled: boolean;
+    weekendEntryCutoffMinutesCt: number;
+    weekendExitCutoffMinutesCt: number;
+    openingStopBypassEnabled: boolean;
   };
   guards: {
     openPaperTrades: number;
@@ -771,6 +787,105 @@ function isRegularUsEquitySession(date = new Date()): boolean {
   return minutes >= (8 * 60) + 30 && minutes < 15 * 60;
 }
 
+function formatCutoffMinutesCt(minutes: number): string {
+  const hour = Math.floor(minutes / 60);
+  const minute = minutes % 60;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")} CT`;
+}
+
+function isFridayAtOrAfterCutoff(nowIso: string, cutoffMinutesCt: number): boolean {
+  const chicago = formatChicagoParts(new Date(nowIso));
+  if (chicago.weekday !== "Fri") {
+    return false;
+  }
+
+  const minutes = (chicago.hour * 60) + chicago.minute;
+  return minutes >= cutoffMinutesCt;
+}
+
+function hasEarnedWeekendCarryProtection(state: ProfitProtectionState | null | undefined): boolean {
+  if (!state) {
+    return false;
+  }
+
+  return Boolean(state.triggeredAt)
+    || Boolean(state.premiumTrailActivatedAt)
+    || Boolean(state.scaledOutAt)
+    || (
+      typeof state.peakOptionReturnPct === "number"
+      && Number.isFinite(state.peakOptionReturnPct)
+      && state.peakOptionReturnPct >= WEEKEND_CARRY_PROTECTION_RETURN_PCT
+    );
+}
+
+function evaluateWeekendEntryGuard(params: {
+  accountMode: AccountMode;
+  weekendGuardEnabled: boolean;
+  nowIso: string;
+  entryCutoffMinutesCt: number;
+}): WeekendEntryGuardDecision {
+  if (
+    params.accountMode !== "live"
+    || !params.weekendGuardEnabled
+    || !isFridayAtOrAfterCutoff(params.nowIso, params.entryCutoffMinutesCt)
+  ) {
+    return { blocked: false, note: null };
+  }
+
+  return {
+    blocked: true,
+    note:
+      `Weekend carry guard blocked new LIVE entries after Friday ${formatCutoffMinutesCt(params.entryCutoffMinutesCt)}. `
+      + "Open positions are still reconciled and managed.",
+  };
+}
+
+export function evaluateWeekendEntryGuardForTest(
+  params: Parameters<typeof evaluateWeekendEntryGuard>[0],
+): ReturnType<typeof evaluateWeekendEntryGuard> {
+  return evaluateWeekendEntryGuard(params);
+}
+
+function evaluateWeekendCarryGuard(params: {
+  accountMode: AccountMode;
+  weekendGuardEnabled: boolean;
+  nowIso: string;
+  exitCutoffMinutesCt: number;
+  profitProtectionState: ProfitProtectionState | null | undefined;
+}): WeekendCarryGuardDecision {
+  const protectedForWeekend = hasEarnedWeekendCarryProtection(params.profitProtectionState);
+  if (
+    params.accountMode !== "live"
+    || !params.weekendGuardEnabled
+    || protectedForWeekend
+    || !isFridayAtOrAfterCutoff(params.nowIso, params.exitCutoffMinutesCt)
+  ) {
+    return {
+      decision: null,
+      protected: protectedForWeekend,
+      note: null,
+    };
+  }
+
+  const note =
+    `Unprotected live option closed before weekend carry after Friday ${formatCutoffMinutesCt(params.exitCutoffMinutesCt)}. `
+    + `Profit protection was not earned (${WEEKEND_CARRY_PROTECTION_RETURN_PCT}% option-return trigger or existing protection state required).`;
+  return {
+    decision: {
+      reason: "manual_early_exit",
+      note,
+    },
+    protected: false,
+    note,
+  };
+}
+
+export function evaluateWeekendCarryGuardForTest(
+  params: Parameters<typeof evaluateWeekendCarryGuard>[0],
+): ReturnType<typeof evaluateWeekendCarryGuard> {
+  return evaluateWeekendCarryGuard(params);
+}
+
 function formatTradeStationEnvironmentLabel(config: PaperTraderConfig): string {
   return config.tradeStationEnvironment === "live" ? "LIVE" : "SIM";
 }
@@ -801,6 +916,10 @@ function buildRunResultConfig(config: PaperTraderConfig): PaperTraderRunResult["
     maxDailyLossUsd: config.maxDailyLossUsd,
     maxPositionPct: config.maxPositionPct,
     entryOrderManagementEnabled: config.manageEntryOrders,
+    weekendGuardEnabled: config.weekendGuardEnabled,
+    weekendEntryCutoffMinutesCt: config.weekendEntryCutoffMinutesCt,
+    weekendExitCutoffMinutesCt: config.weekendExitCutoffMinutesCt,
+    openingStopBypassEnabled: config.openingStopBypassEnabled,
   };
 }
 
@@ -2716,6 +2835,7 @@ function isOpeningOptionCrash(params: {
 
 function evaluateOpeningExitGuard(params: {
   accountMode: AccountMode;
+  openingStopBypassEnabled: boolean;
   nowIso: string;
   decision: ExitDecision | null;
   direction: JournalTradeDetail["direction"];
@@ -2733,6 +2853,10 @@ function evaluateOpeningExitGuard(params: {
     || !isGuardedOpeningExitReason(params.decision.reason)
     || !isOpeningExitGuardWindow(params.nowIso)
   ) {
+    return { blocked: false, note: null };
+  }
+
+  if (params.openingStopBypassEnabled && params.decision.reason === "stop_hit") {
     return { blocked: false, note: null };
   }
 
@@ -5446,6 +5570,33 @@ async function manageOpenPaperTrades(
     }
 
     if (!decision) {
+      const weekendCarryGuard = evaluateWeekendCarryGuard({
+        accountMode: config.accountMode,
+        weekendGuardEnabled: config.weekendGuardEnabled,
+        nowIso,
+        exitCutoffMinutesCt: config.weekendExitCutoffMinutesCt,
+        profitProtectionState: profitProtectionDecision.state,
+      });
+      if (weekendCarryGuard.decision) {
+        decision = weekendCarryGuard.decision;
+        decisionLog = appendDecisionLog(decisionLog, {
+          timestamp: nowIso,
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          kind: "exit",
+          action: "weekend_carry_guard",
+          reason: decision.reason,
+          note: weekendCarryGuard.note ?? decision.note,
+          optionSymbol: automation.optionSymbol,
+          orderId: automation.orderId ?? null,
+          quantity: automation.quantity,
+          currentUnderlyingPrice: underlyingQuote.last,
+          currentOptionMid: optionQuote.mid,
+        });
+      }
+    }
+
+    if (!decision) {
       skipped.push({
         tradeId: trade.id,
         symbol: trade.symbol,
@@ -5457,6 +5608,7 @@ async function manageOpenPaperTrades(
     const openingExitGuard = inferredExitDecision
       ? evaluateOpeningExitGuard({
           accountMode: config.accountMode,
+          openingStopBypassEnabled: config.openingStopBypassEnabled,
           nowIso,
           decision,
           direction: trade.direction,
@@ -6817,12 +6969,25 @@ export async function runPaperTraderCycle(
         (exit) => exit.tradeId === trade.id && exit.action === "closed",
       ),
   );
+  const weekendEntryGuard = evaluateWeekendEntryGuard({
+    accountMode: config.accountMode,
+    weekendGuardEnabled: config.weekendGuardEnabled,
+    nowIso: new Date().toISOString(),
+    entryCutoffMinutesCt: config.weekendEntryCutoffMinutesCt,
+  });
   const entry = options.skipNewEntry
       ? {
         attempted: false,
         outcome: "monitor_only" as const,
         symbol: null,
         reason: "This run skipped new entries by request.",
+      }
+    : weekendEntryGuard.blocked
+      ? {
+        attempted: false,
+        outcome: "skipped_after_guard" as const,
+        symbol: null,
+        reason: weekendEntryGuard.note ?? "Weekend carry guard blocked new entries.",
       }
     : await maybeEnterNewPaperTrade({
         config,
@@ -6847,7 +7012,7 @@ export async function runPaperTraderCycle(
       liveSimPositions: null,
       staleOpenJournalTrades: reconciliation.staleArchived,
       todayRealizedPlUsd,
-      newEntriesAllowed: true,
+      newEntriesAllowed: !weekendEntryGuard.blocked,
     },
     reconciliation,
     closedExitReconciliation,

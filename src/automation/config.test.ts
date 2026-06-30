@@ -32,6 +32,10 @@ const ENV_KEYS = [
   "LIVE_AUTO_TRADER_MANAGE_ENTRY_ORDERS",
   "LIVE_AUTO_TRADER_MAX_POSITION_PCT",
   "LIVE_AUTO_TRADER_SCAN_PROMPT",
+  "LIVE_AUTO_TRADER_WEEKEND_GUARD_ENABLED",
+  "LIVE_AUTO_TRADER_WEEKEND_ENTRY_CUTOFF_CT",
+  "LIVE_AUTO_TRADER_WEEKEND_EXIT_CUTOFF_CT",
+  "LIVE_AUTO_TRADER_OPENING_STOP_BYPASS_ENABLED",
 ] as const;
 
 function withEnv<T>(values: Partial<Record<(typeof ENV_KEYS)[number], string>>, run: () => T): T {
@@ -94,6 +98,41 @@ test("paper trader config reads explicit LIVE lane values", () => {
     assert.equal(config.allowOrderPlacement, true);
     assert.equal(config.manageEntryOrders, true);
     assert.equal(config.maxPositionPct, 0.1);
+    assert.equal(config.weekendGuardEnabled, true);
+    assert.equal(config.weekendEntryCutoffMinutesCt, 870);
+    assert.equal(config.weekendExitCutoffMinutesCt, 885);
+    assert.equal(config.openingStopBypassEnabled, true);
+  });
+});
+
+test("paper trader config reads explicit LIVE risk guard values", () => {
+  withEnv({
+    LIVE_TRADESTATION_AUTOMATION_BASE_URL: TRADESTATION_LIVE_AUTOMATION_BASE_URL,
+    LIVE_TRADESTATION_AUTOMATION_ACCOUNT_ID: "LIVE123",
+    LIVE_AUTO_TRADER_WEEKEND_GUARD_ENABLED: "false",
+    LIVE_AUTO_TRADER_WEEKEND_ENTRY_CUTOFF_CT: "13:55",
+    LIVE_AUTO_TRADER_WEEKEND_EXIT_CUTOFF_CT: "14:05",
+    LIVE_AUTO_TRADER_OPENING_STOP_BYPASS_ENABLED: "0",
+  }, () => {
+    const config = readPaperTraderConfig("live");
+
+    assert.equal(config.weekendGuardEnabled, false);
+    assert.equal(config.weekendEntryCutoffMinutesCt, 835);
+    assert.equal(config.weekendExitCutoffMinutesCt, 845);
+    assert.equal(config.openingStopBypassEnabled, false);
+  });
+});
+
+test("paper trader config rejects invalid LIVE risk guard cutoff times", () => {
+  withEnv({
+    LIVE_TRADESTATION_AUTOMATION_BASE_URL: TRADESTATION_LIVE_AUTOMATION_BASE_URL,
+    LIVE_TRADESTATION_AUTOMATION_ACCOUNT_ID: "LIVE123",
+    LIVE_AUTO_TRADER_WEEKEND_ENTRY_CUTOFF_CT: "25:00",
+  }, () => {
+    assert.throws(
+      () => readPaperTraderConfig("live"),
+      /LIVE_AUTO_TRADER_WEEKEND_ENTRY_CUTOFF_CT must be in HH:MM 24-hour Central time/,
+    );
   });
 });
 
@@ -128,6 +167,24 @@ test("paper lane does not inherit legacy live automation envs", () => {
     assert.equal(config.accountId, null);
     assert.equal(config.allowOrderPlacement, false);
     assert.equal(config.maxPositionPct, 0.1);
+    assert.equal(config.weekendGuardEnabled, false);
+    assert.equal(config.openingStopBypassEnabled, false);
+  });
+});
+
+test("paper lane ignores LIVE risk guard envs", () => {
+  withEnv({
+    LIVE_AUTO_TRADER_WEEKEND_GUARD_ENABLED: "1",
+    LIVE_AUTO_TRADER_WEEKEND_ENTRY_CUTOFF_CT: "invalid",
+    LIVE_AUTO_TRADER_WEEKEND_EXIT_CUTOFF_CT: "invalid",
+    LIVE_AUTO_TRADER_OPENING_STOP_BYPASS_ENABLED: "1",
+  }, () => {
+    const config = readPaperTraderConfig("paper");
+
+    assert.equal(config.weekendGuardEnabled, false);
+    assert.equal(config.weekendEntryCutoffMinutesCt, 870);
+    assert.equal(config.weekendExitCutoffMinutesCt, 885);
+    assert.equal(config.openingStopBypassEnabled, false);
   });
 });
 
@@ -178,6 +235,10 @@ test("paper trader config assertion rejects crafted unknown automation base URLs
     accountMode: "paper",
     lane: "paper",
     accountId: "123",
+    weekendGuardEnabled: false,
+    weekendEntryCutoffMinutesCt: 870,
+    weekendExitCutoffMinutesCt: 885,
+    openingStopBypassEnabled: false,
   };
 
   assert.equal(readTradeStationEnvironment(TRADESTATION_SIM_AUTOMATION_BASE_URL), "sim");

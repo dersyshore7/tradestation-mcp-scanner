@@ -16,6 +16,12 @@ const LIVE_AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV = "LIVE_AUTO_TRADER_ALLOW_ORDER
 const LIVE_AUTO_TRADER_MANAGE_ENTRY_ORDERS_ENV = "LIVE_AUTO_TRADER_MANAGE_ENTRY_ORDERS";
 const LIVE_AUTO_TRADER_MAX_POSITION_PCT_ENV = "LIVE_AUTO_TRADER_MAX_POSITION_PCT";
 const LIVE_AUTO_TRADER_SCAN_PROMPT_ENV = "LIVE_AUTO_TRADER_SCAN_PROMPT";
+const LIVE_AUTO_TRADER_WEEKEND_GUARD_ENABLED_ENV = "LIVE_AUTO_TRADER_WEEKEND_GUARD_ENABLED";
+const LIVE_AUTO_TRADER_WEEKEND_ENTRY_CUTOFF_CT_ENV = "LIVE_AUTO_TRADER_WEEKEND_ENTRY_CUTOFF_CT";
+const LIVE_AUTO_TRADER_WEEKEND_EXIT_CUTOFF_CT_ENV = "LIVE_AUTO_TRADER_WEEKEND_EXIT_CUTOFF_CT";
+const LIVE_AUTO_TRADER_OPENING_STOP_BYPASS_ENABLED_ENV = "LIVE_AUTO_TRADER_OPENING_STOP_BYPASS_ENABLED";
+const DEFAULT_LIVE_WEEKEND_ENTRY_CUTOFF_CT = "14:30";
+const DEFAULT_LIVE_WEEKEND_EXIT_CUTOFF_CT = "14:45";
 export const TRADESTATION_SIM_AUTOMATION_BASE_URL = "https://sim-api.tradestation.com/v3";
 export const TRADESTATION_LIVE_AUTOMATION_BASE_URL = "https://api.tradestation.com/v3";
 
@@ -36,6 +42,10 @@ export type PaperTraderConfig = {
   accountMode: AccountMode;
   lane: AutomationLane;
   accountId: string | null;
+  weekendGuardEnabled: boolean;
+  weekendEntryCutoffMinutesCt: number;
+  weekendExitCutoffMinutesCt: number;
+  openingStopBypassEnabled: boolean;
 };
 
 function readStringEnv(name: string): string | null {
@@ -78,6 +88,19 @@ function readPositiveRatioEnv(name: string, fallback: number): number {
 function readPositiveRatioEnvFrom(names: string[], fallback: number): number {
   const name = names.find((candidate) => readStringEnv(candidate) !== null);
   return name ? readPositiveRatioEnv(name, fallback) : fallback;
+}
+
+function parseTimeOfDayMinutes(value: string, name: string): number {
+  const match = value.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (!match?.[1] || !match[2]) {
+    throw new Error(`${name} must be in HH:MM 24-hour Central time.`);
+  }
+
+  return (Number(match[1]) * 60) + Number(match[2]);
+}
+
+function readTimeOfDayMinutesEnv(name: string, fallback: string): number {
+  return parseTimeOfDayMinutes(readStringEnv(name) ?? fallback, name);
 }
 
 function readBooleanEnvFrom(names: string[], defaultValue: boolean): boolean {
@@ -224,6 +247,24 @@ export function readPaperTraderConfig(lane: AutomationLane = "paper"): PaperTrad
     accountMode: lane,
     lane,
     accountId: readStringEnvFrom(accountIdEnvNamesForLane(lane)),
+    weekendGuardEnabled: lane === "live"
+      ? readBooleanEnv(LIVE_AUTO_TRADER_WEEKEND_GUARD_ENABLED_ENV, true)
+      : false,
+    weekendEntryCutoffMinutesCt: lane === "live"
+      ? readTimeOfDayMinutesEnv(
+          LIVE_AUTO_TRADER_WEEKEND_ENTRY_CUTOFF_CT_ENV,
+          DEFAULT_LIVE_WEEKEND_ENTRY_CUTOFF_CT,
+        )
+      : parseTimeOfDayMinutes(DEFAULT_LIVE_WEEKEND_ENTRY_CUTOFF_CT, "DEFAULT_LIVE_WEEKEND_ENTRY_CUTOFF_CT"),
+    weekendExitCutoffMinutesCt: lane === "live"
+      ? readTimeOfDayMinutesEnv(
+          LIVE_AUTO_TRADER_WEEKEND_EXIT_CUTOFF_CT_ENV,
+          DEFAULT_LIVE_WEEKEND_EXIT_CUTOFF_CT,
+        )
+      : parseTimeOfDayMinutes(DEFAULT_LIVE_WEEKEND_EXIT_CUTOFF_CT, "DEFAULT_LIVE_WEEKEND_EXIT_CUTOFF_CT"),
+    openingStopBypassEnabled: lane === "live"
+      ? readBooleanEnv(LIVE_AUTO_TRADER_OPENING_STOP_BYPASS_ENABLED_ENV, true)
+      : false,
   };
 }
 
