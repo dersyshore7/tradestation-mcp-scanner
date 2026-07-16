@@ -51,6 +51,10 @@ export type TradeConstructionInput = {
   confirmedConfidence?: ScanConfidence;
   finalizedTradeGeometry?: FinalizedTradeGeometry;
   tradestationBaseUrlOverride?: string;
+  accountEquityOverride?: number;
+  targetDteMin?: number;
+  targetDteMax?: number;
+  targetDteCenter?: number;
 };
 
 export type TradeCardAutomationMetadata = {
@@ -428,7 +432,21 @@ function findFirstNumberByKeys(value: unknown, keys: string[]): number | null {
   return null;
 }
 
-async function resolveAccountEquity(get: (path: string) => Promise<Response>): Promise<{ equity: number; source: string }> {
+async function resolveAccountEquity(
+  get: (path: string) => Promise<Response>,
+  accountEquityOverride?: number,
+): Promise<{ equity: number; source: string }> {
+  if (
+    typeof accountEquityOverride === "number"
+    && Number.isFinite(accountEquityOverride)
+    && accountEquityOverride > 0
+  ) {
+    return {
+      equity: accountEquityOverride,
+      source: "virtual automation equity override",
+    };
+  }
+
   const fallbackText = process.env[FALLBACK_EQUITY_ENV];
   const fallbackValue = fallbackText ? Number(fallbackText) : null;
 
@@ -501,6 +519,12 @@ async function buildTradeInputs(
   direction: ScanDirection,
   finalizedTradeGeometryOverride?: FinalizedTradeGeometry,
   tradestationBaseUrlOverride?: string,
+  options: {
+    accountEquityOverride?: number;
+    targetDteMin?: number;
+    targetDteMax?: number;
+    targetDteCenter?: number;
+  } = {},
 ): Promise<{ tradeInputs: TradeInputs; diagnostics: TradeConstructionDiagnostics }> {
   const get = await createTradeStationGetFetcher(tradestationBaseUrlOverride);
 
@@ -541,7 +565,10 @@ async function buildTradeInputs(
       throw new Error(diagnostics.failureReason);
     }
 
-    const targetExpiration = pickTargetExpiration(expirations, TARGET_DTE_MIN, TARGET_DTE_MAX, TARGET_DTE_CENTER);
+    const targetDteMin = options.targetDteMin ?? TARGET_DTE_MIN;
+    const targetDteMax = options.targetDteMax ?? TARGET_DTE_MAX;
+    const targetDteCenter = options.targetDteCenter ?? TARGET_DTE_CENTER;
+    const targetExpiration = pickTargetExpiration(expirations, targetDteMin, targetDteMax, targetDteCenter);
     if (!targetExpiration) {
       diagnostics.failureReason = `Unable to pick target expiration for ${symbol}.`;
       throw new Error(diagnostics.failureReason);
@@ -625,7 +652,7 @@ async function buildTradeInputs(
     }
     const entryPricing = entryPricingResult.pricing;
 
-    const { equity, source } = await resolveAccountEquity(get);
+    const { equity, source } = await resolveAccountEquity(get, options.accountEquityOverride);
     const allocation = equity * TARGET_ALLOCATION_PCT;
 
     const chartLevels = finalizedTradeGeometryOverride
@@ -747,6 +774,12 @@ export async function constructTradeCard(input: TradeConstructionInput): Promise
     direction,
     input.finalizedTradeGeometry,
     input.tradestationBaseUrlOverride,
+    {
+      ...(input.accountEquityOverride !== undefined ? { accountEquityOverride: input.accountEquityOverride } : {}),
+      ...(input.targetDteMin !== undefined ? { targetDteMin: input.targetDteMin } : {}),
+      ...(input.targetDteMax !== undefined ? { targetDteMax: input.targetDteMax } : {}),
+      ...(input.targetDteCenter !== undefined ? { targetDteCenter: input.targetDteCenter } : {}),
+    },
   );
   const timing = classifyExpectedTiming(confidence, trade);
   const practicalOptionFit = evaluatePracticalImmediateEntryOptionFit(

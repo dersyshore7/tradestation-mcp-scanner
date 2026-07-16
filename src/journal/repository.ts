@@ -1,5 +1,10 @@
 import { buildJournalInsights } from "./insights.js";
 import {
+  LEGACY_PAPER_AUTOMATION_KEY,
+  type PaperAutomationKey,
+  paperAutomationColumnFilter,
+} from "../automation/paperAutomationBots.js";
+import {
   supabaseDelete,
   supabaseInsertAndSelectOne,
   supabaseSelect,
@@ -28,6 +33,7 @@ const JOURNAL_TRADE_RECORD_SELECT_WITHOUT_SIGNAL = [
   "updated_at",
   "scan_run_id",
   "account_mode",
+  "paper_automation_key",
   "entry_date",
   "entry_time",
   "symbol",
@@ -53,12 +59,14 @@ const JOURNAL_TRADE_RECORD_SELECT_WITHOUT_SIGNAL = [
 type JournalTradeListOptions = {
   includeSignalSnapshot?: boolean;
   accountMode?: AccountMode;
+  paperAutomationKey?: PaperAutomationKey;
   status?: TradeStatus;
 };
 
 type JournalInsightsOptions = {
   includeReasoning?: boolean;
   accountMode?: AccountMode;
+  paperAutomationKey?: PaperAutomationKey;
 };
 
 export type JournalExitBrokerFillUpdateInput = {
@@ -259,6 +267,7 @@ function toListItem(detail: JournalTradeDetail): JournalTradeListItem {
     setup_type: detail.setup_type,
     status: detail.status,
     account_mode: detail.account_mode,
+    paper_automation_key: detail.paper_automation_key,
     position_cost_usd: detail.position_cost_usd,
     underlying_entry_price: detail.underlying_entry_price,
     option_entry_price: detail.option_entry_price,
@@ -282,6 +291,7 @@ function toListItem(detail: JournalTradeDetail): JournalTradeListItem {
 function normalizeJournalTradeRecord(record: JournalTradeRecord): JournalTradeRecord {
   return {
     ...record,
+    paper_automation_key: record.paper_automation_key ?? LEGACY_PAPER_AUTOMATION_KEY,
     signal_snapshot_json: record.signal_snapshot_json ?? null,
   };
 }
@@ -296,6 +306,7 @@ async function listJournalTradeRecords(
     select: includeSignalSnapshot ? "*" : JOURNAL_TRADE_RECORD_SELECT_WITHOUT_SIGNAL,
     filters: [
       ...(options.accountMode ? [`account_mode=eq.${options.accountMode}`] : []),
+      ...(options.paperAutomationKey ? [paperAutomationColumnFilter(options.paperAutomationKey)] : []),
       ...(options.status ? [`status=eq.${options.status}`] : []),
     ],
     order: ["entry_date.desc", "created_at.desc"],
@@ -498,6 +509,7 @@ export async function createJournalTrade(input: JournalTradeCreateInput): Promis
   const insertPayload = {
     scan_run_id: planned.scan_run_id ?? null,
     account_mode: entry.account_mode,
+    paper_automation_key: entry.paper_automation_key ?? LEGACY_PAPER_AUTOMATION_KEY,
     entry_date: entry.entry_date,
     entry_time: entry.entry_time ?? null,
     symbol: planned.symbol,
@@ -626,6 +638,7 @@ export async function updateJournalTrade(id: string, input: JournalTradeUpdateIn
     filters: [`id=eq.${id}`],
     values: {
       account_mode: input.account_mode ?? trade.account_mode,
+      paper_automation_key: input.paper_automation_key ?? trade.paper_automation_key,
       entry_date: entryDate,
       entry_time: input.entry_time !== undefined ? input.entry_time : trade.entry_time,
       contracts,
@@ -929,6 +942,7 @@ export async function getJournalInsights(limit = 500, options: JournalInsightsOp
   const details = await listJournalTradeDetails(limit, {
     includeSignalSnapshot: includeReasoning,
     ...(options.accountMode ? { accountMode: options.accountMode } : {}),
+    ...(options.paperAutomationKey ? { paperAutomationKey: options.paperAutomationKey } : {}),
   });
   return buildJournalInsights(details, { reasoningIncluded: includeReasoning });
 }

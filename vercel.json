@@ -44,6 +44,22 @@
       "schedule": "*/5 13-21 * * 1-5"
     },
     {
+      "path": "/api/paper-trader-run?mode=paper&automation=politician_replica",
+      "schedule": "1-59/5 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/paper-trader-run?mode=paper&automation=news_reasoning_ai",
+      "schedule": "2-59/5 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/paper-trader-run?mode=paper&automation=leaps_investor_ai",
+      "schedule": "3-59/5 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/paper-trader-run?mode=paper&automation=support_resistance_ai",
+      "schedule": "4-59/5 13-21 * * 1-5"
+    },
+    {
       "path": "/api/paper-trader-run?mode=live&reconcileOrders=true",
       "schedule": "*/5 13-21 * * 1-5"
     }

@@ -3,11 +3,17 @@ import {
   supabaseSelect,
 } from "../supabase/serverClient.js";
 import type { AccountMode } from "../journal/types.js";
+import {
+  LEGACY_PAPER_AUTOMATION_KEY,
+  paperAutomationColumnFilter,
+  type PaperAutomationKey,
+} from "./paperAutomationBots.js";
 
 export type PaperTraderRunRecord = {
   id: string;
   created_at: string;
   mode: AccountMode;
+  paper_automation_key?: PaperAutomationKey;
   dry_run: boolean;
   outcome: string;
   symbol: string | null;
@@ -17,6 +23,7 @@ export type PaperTraderRunRecord = {
 
 export type PaperTraderRunCreateInput = {
   mode: AccountMode;
+  paperAutomationKey?: PaperAutomationKey;
   dryRun: boolean;
   outcome: string;
   symbol: string | null;
@@ -56,6 +63,7 @@ function buildCompactRunResult(rawResult: Record<string, unknown>): Record<strin
 
   return {
     mode: rawResult.mode ?? "paper",
+    paperAutomationKey: rawResult.paperAutomationKey ?? LEGACY_PAPER_AUTOMATION_KEY,
     timestamp: rawResult.timestamp ?? null,
     dryRun: rawResult.dryRun ?? null,
     dryRunReason: rawResult.dryRunReason ?? null,
@@ -148,6 +156,7 @@ export async function recordPaperTraderRun(
       table: "paper_trader_runs",
       values: {
         mode: input.mode,
+        paper_automation_key: input.paperAutomationKey ?? LEGACY_PAPER_AUTOMATION_KEY,
         dry_run: input.dryRun,
         outcome: input.outcome,
         symbol: input.symbol,
@@ -165,15 +174,18 @@ export async function recordPaperTraderRun(
 
 export async function listRecentPaperTraderRuns(
   limit = 50,
-  options: { includeRawResult?: boolean; mode?: AccountMode } = {},
+  options: { includeRawResult?: boolean; mode?: AccountMode; paperAutomationKey?: PaperAutomationKey } = {},
 ): Promise<PaperTraderRunHistoryResult> {
   try {
     const runs = await supabaseSelect<PaperTraderRunRecord>({
       table: "paper_trader_runs",
       select: options.includeRawResult
-        ? "id,created_at,mode,dry_run,outcome,symbol,reason,raw_result_json"
-        : "id,created_at,mode,dry_run,outcome,symbol,reason",
-      filters: options.mode ? [`mode=eq.${options.mode}`] : [],
+        ? "id,created_at,mode,paper_automation_key,dry_run,outcome,symbol,reason,raw_result_json"
+        : "id,created_at,mode,paper_automation_key,dry_run,outcome,symbol,reason",
+      filters: [
+        ...(options.mode ? [`mode=eq.${options.mode}`] : []),
+        paperAutomationColumnFilter(options.paperAutomationKey ?? LEGACY_PAPER_AUTOMATION_KEY),
+      ],
       order: ["created_at.desc"],
       limit,
     });
@@ -200,12 +212,15 @@ export async function listRecentPaperTraderRuns(
 }
 
 export async function loadLatestPaperTraderRunWithRaw(
-  options: { dryRun: boolean },
+  options: { dryRun: boolean; paperAutomationKey?: PaperAutomationKey },
 ): Promise<PaperTraderRunRecord | null> {
   const runs = await supabaseSelect<PaperTraderRunRecord>({
     table: "paper_trader_runs",
-    select: "id,created_at,mode,dry_run,outcome,symbol,reason,raw_result_json",
-    filters: [`dry_run=eq.${options.dryRun}`],
+    select: "id,created_at,mode,paper_automation_key,dry_run,outcome,symbol,reason,raw_result_json",
+    filters: [
+      `dry_run=eq.${options.dryRun}`,
+      paperAutomationColumnFilter(options.paperAutomationKey ?? LEGACY_PAPER_AUTOMATION_KEY),
+    ],
     order: ["created_at.desc"],
     limit: 1,
   });

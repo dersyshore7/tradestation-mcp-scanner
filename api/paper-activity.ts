@@ -4,6 +4,12 @@ import {
   type PaperEntryCandidateRecord,
 } from "../src/automation/entryCandidateHistory.js";
 import { readAutomationLane, type AutomationLane } from "../src/automation/config.js";
+import {
+  LEGACY_PAPER_AUTOMATION_KEY,
+  readPaperAutomationKey,
+  isVirtualPaperAutomationKey,
+  type PaperAutomationKey,
+} from "../src/automation/paperAutomationBots.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 type CandidateActivity = Pick<
@@ -25,6 +31,10 @@ function parseLimit(value: string | string[] | undefined): number {
 
 function parseMode(value: string | string[] | undefined): AutomationLane {
   return readAutomationLane(firstQueryValue(value)) ?? "paper";
+}
+
+function parseAutomation(value: string | string[] | undefined): PaperAutomationKey {
+  return readPaperAutomationKey(firstQueryValue(value)) ?? LEGACY_PAPER_AUTOMATION_KEY;
 }
 
 function formatWarning(error: unknown): string {
@@ -55,7 +65,7 @@ function readRunScanRunId(run: { raw_result_json: Record<string, unknown> | null
   return typeof state?.scanRunId === "string" ? state.scanRunId : null;
 }
 
-async function loadCandidateActivity(scanRunIds: Set<string>): Promise<{
+async function loadCandidateActivity(scanRunIds: Set<string>, paperAutomationKey: PaperAutomationKey): Promise<{
   candidates: CandidateActivity[];
   warning: string | null;
 }> {
@@ -64,7 +74,7 @@ async function loadCandidateActivity(scanRunIds: Set<string>): Promise<{
   }
 
   try {
-    const result = await listRecentPaperEntryCandidates(75);
+    const result = await listRecentPaperEntryCandidates(75, { paperAutomationKey });
     const candidates = result.candidates
       .filter((candidate) =>
         typeof candidate.scan_run_id === "string" && scanRunIds.has(candidate.scan_run_id)
@@ -98,16 +108,22 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
 
   try {
     const mode = parseMode(req.query?.mode);
+    const automation = parseAutomation(req.query?.automation);
+    if (mode === "live" && isVirtualPaperAutomationKey(automation)) {
+      sendError(res, 400, "Virtual paper automations are paper-only and cannot run on the live lane.");
+      return;
+    }
     const result = await listRecentPaperTraderRuns(parseLimit(req.query?.limit), {
       includeRawResult: true,
       mode,
+      paperAutomationKey: automation,
     });
     const scanRunIds = new Set(
       result.runs
         .map(readRunScanRunId)
         .filter((scanRunId): scanRunId is string => scanRunId !== null),
     );
-    const candidateActivity = await loadCandidateActivity(scanRunIds);
+    const candidateActivity = await loadCandidateActivity(scanRunIds, automation);
     const dataWarnings = [
       result.migrationMessage,
       candidateActivity.warning,

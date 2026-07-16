@@ -1,3 +1,5 @@
+import type { PaperAutomationKey } from "../automation/paperAutomationBots.js";
+
 export const ACCOUNT_MODES = ["paper", "live"] as const;
 export const TRADE_DIRECTIONS = ["CALL", "PUT"] as const;
 export const TRADE_STATUSES = ["open", "closed"] as const;
@@ -43,6 +45,7 @@ export type PlannedTradeSnapshot = {
 
 export type JournalTradeCreateInput = {
   account_mode: AccountMode;
+  paper_automation_key?: PaperAutomationKey;
   entry_date: string;
   entry_time?: string | null;
   contracts?: number | null;
@@ -76,6 +79,7 @@ export type JournalTradePartialExitInput = JournalTradeCloseInput & {
 
 export type JournalTradeUpdateInput = {
   account_mode?: AccountMode;
+  paper_automation_key?: PaperAutomationKey;
   entry_date?: string;
   entry_time?: string | null;
   contracts?: number | null;
@@ -95,6 +99,7 @@ export type JournalTradeRecord = {
   updated_at: string;
   scan_run_id: string | null;
   account_mode: AccountMode;
+  paper_automation_key: PaperAutomationKey;
   entry_date: string;
   entry_time: string | null;
   symbol: string;
@@ -168,6 +173,7 @@ export type JournalTradeListItem = Pick<
   | "setup_type"
   | "status"
   | "account_mode"
+  | "paper_automation_key"
   | "position_cost_usd"
   | "underlying_entry_price"
   | "option_entry_price"

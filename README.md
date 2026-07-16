@@ -277,6 +277,25 @@ LIVE_AUTO_TRADER_SCAN_PROMPT=Run a new Scan for this week
 
 The legacy `TRADESTATION_AUTOMATION_BASE_URL`, `TRADESTATION_AUTOMATION_ACCOUNT_ID`, and `TRADESTATION_ACCOUNT_ID` variables are treated as LIVE-lane fallbacks only. The PAPER lane does not inherit them.
 
+### Virtual paper automation dashboards
+
+The website also exposes four paper-only virtual automations that share read-only TradeStation market data but keep separate `$10,000` journal ledgers:
+
+- `politician_replica`
+- `news_reasoning_ai`
+- `leaps_investor_ai`
+- `support_resistance_ai`
+
+Use `automation=<key>` with the existing paper endpoints, for example:
+
+```bash
+curl "https://your-deployment.vercel.app/api/paper-dashboard?mode=paper&automation=politician_replica"
+curl "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&automation=news_reasoning_ai" \
+  -H "Authorization: Bearer your_long_random_secret"
+```
+
+These virtual bots never place TradeStation orders. They write journal-only entries and exits scoped by `paper_automation_key`, while the live lane remains unchanged. Congressional-disclosure and news-backed bots use Financial Modeling Prep when `FMP_API_KEY` is configured; without it they record a no-trade/source-warning cycle.
+
 Dry-run example:
 
 ```bash

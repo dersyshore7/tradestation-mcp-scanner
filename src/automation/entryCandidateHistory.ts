@@ -7,11 +7,17 @@ import {
   type EntryPolicyRecommendation,
   type EntryRewardFeatureInput,
 } from "./entryRewardModel.js";
+import {
+  LEGACY_PAPER_AUTOMATION_KEY,
+  paperAutomationColumnFilter,
+  type PaperAutomationKey,
+} from "./paperAutomationBots.js";
 
 export type PaperEntryCandidateRecord = {
   id: string;
   created_at: string;
   scan_run_id: string | null;
+  paper_automation_key?: PaperAutomationKey;
   source: "paper_trader";
   dry_run: boolean;
   symbol: string | null;
@@ -48,6 +54,7 @@ export type PaperEntryCandidateRecord = {
 
 export type PaperEntryCandidateCreateInput = {
   scanRunId: string;
+  paperAutomationKey?: PaperAutomationKey;
   dryRun: boolean;
   symbol: string | null;
   decision: string;
@@ -192,6 +199,7 @@ export async function recordPaperEntryCandidate(
   const buckets = featureSnapshot?.buckets ?? null;
   const baseValues = {
     scan_run_id: input.scanRunId,
+    paper_automation_key: input.paperAutomationKey ?? LEGACY_PAPER_AUTOMATION_KEY,
     source: "paper_trader",
     dry_run: input.dryRun,
     symbol: input.symbol,
@@ -252,6 +260,7 @@ export async function recordPaperEntryCandidate(
 
 export async function listRecentPaperEntryCandidates(
   limit = 50,
+  options: { paperAutomationKey?: PaperAutomationKey } = {},
 ): Promise<PaperEntryCandidateHistoryResult> {
   try {
     const candidates = await supabaseSelect<PaperEntryCandidateRecord>({
@@ -260,6 +269,7 @@ export async function listRecentPaperEntryCandidates(
         "id",
         "created_at",
         "scan_run_id",
+        "paper_automation_key",
         "source",
         "dry_run",
         "symbol",
@@ -286,6 +296,7 @@ export async function listRecentPaperEntryCandidates(
         "entry_policy_matched_key",
         "entry_policy_summary",
       ].join(","),
+      filters: [paperAutomationColumnFilter(options.paperAutomationKey ?? LEGACY_PAPER_AUTOMATION_KEY)],
       order: ["created_at.desc"],
       limit,
     });

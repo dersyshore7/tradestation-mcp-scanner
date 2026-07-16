@@ -1184,6 +1184,10 @@
         <button class="nav-link is-active" type="button" data-page-target="manual-scan">Manual Scan</button>
         <button class="nav-link" type="button" data-page-target="original-process">Original Process</button>
         <button class="nav-link" type="button" data-page-target="paper-trader">Paper Trader</button>
+        <button class="nav-link" type="button" data-page-target="politician-replica">Politician Replica</button>
+        <button class="nav-link" type="button" data-page-target="news-reasoning-ai">News Reasoning AI</button>
+        <button class="nav-link" type="button" data-page-target="leaps-investor-ai">LEAPS Investor AI</button>
+        <button class="nav-link" type="button" data-page-target="support-resistance-ai">Support/Resistance AI</button>
         <button class="nav-link" type="button" data-page-target="live-trader">Live Trader</button>
         <button class="nav-link" type="button" data-page-target="journal">Journal</button>
       </div>
@@ -1336,6 +1340,218 @@
         </details>
 
         <div id="paperTraderArea" class="muted">Load status to confirm the TradeStation automation configuration.</div>
+      </div>
+      </section>
+
+      <section id="politician-replica-page" class="page-view" data-page="politician-replica">
+        <section class="page-header">
+          <div class="page-kicker">Virtual Paper Automation</div>
+          <h1>Politician Replica</h1>
+          <p class="page-subtitle">Replicate public congressional disclosures at reduced virtual scale with a separate $10,000 paper book.</p>
+        </section>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Virtual Dashboard</h2>
+            <p class="section-description">Journal-derived performance for this bot only. TradeStation remains a shared read-only context source.</p>
+          </div>
+          <div class="actions">
+            <button id="refreshPoliticianDashboardButton" class="secondary">Refresh Dashboard</button>
+          </div>
+        </div>
+        <div id="politicianDashboardArea" class="muted">Loading politician replica dashboard...</div>
+      </div>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Automation Activity</h2>
+            <p class="section-description">Latest virtual cycles, disclosures reviewed, and journal-only entries for this bot.</p>
+          </div>
+          <div class="actions">
+            <button id="refreshPoliticianAutomationActivityButton" class="secondary">Refresh Activity</button>
+          </div>
+        </div>
+        <div id="politicianAutomationActivityArea" class="muted">Loading automation activity...</div>
+      </div>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Virtual Controls</h2>
+            <p class="section-description">Runs a virtual ledger cycle only. No TradeStation order is placed.</p>
+          </div>
+          <div class="actions">
+            <button id="loadPoliticianTraderStatusButton" class="secondary">Load Status</button>
+            <button id="checkPoliticianTraderOrdersButton" class="secondary">Run Monitor</button>
+            <button id="runPoliticianTraderDryButton" class="secondary">Run Dry Cycle</button>
+            <button id="runPoliticianTraderLiveButton">Run Virtual Cycle</button>
+          </div>
+        </div>
+        <label for="politicianTraderSecret">Automation secret</label>
+        <input id="politicianTraderSecret" type="password" placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET" autocomplete="off" />
+        <div class="field-note">Required only when protected controls are enabled. Virtual cycles use read-only market data and journal-only fills.</div>
+        <div id="politicianTraderArea" class="muted">Load status to confirm the virtual paper automation.</div>
+      </div>
+      </section>
+
+      <section id="news-reasoning-ai-page" class="page-view" data-page="news-reasoning-ai">
+        <section class="page-header">
+          <div class="page-kicker">Virtual Paper Automation</div>
+          <h1>News Reasoning AI</h1>
+          <p class="page-subtitle">Reason over configured stock news and validate candidates before entering a virtual paper trade.</p>
+        </section>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Virtual Dashboard</h2>
+            <p class="section-description">Journal-derived performance for this bot only. TradeStation remains a shared read-only context source.</p>
+          </div>
+          <div class="actions">
+            <button id="refreshNewsDashboardButton" class="secondary">Refresh Dashboard</button>
+          </div>
+        </div>
+        <div id="newsDashboardArea" class="muted">Loading news AI dashboard...</div>
+      </div>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Automation Activity</h2>
+            <p class="section-description">Latest virtual cycles, news-backed candidates, and journal-only entries for this bot.</p>
+          </div>
+          <div class="actions">
+            <button id="refreshNewsAutomationActivityButton" class="secondary">Refresh Activity</button>
+          </div>
+        </div>
+        <div id="newsAutomationActivityArea" class="muted">Loading automation activity...</div>
+      </div>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Virtual Controls</h2>
+            <p class="section-description">Runs a virtual ledger cycle only. No TradeStation order is placed.</p>
+          </div>
+          <div class="actions">
+            <button id="loadNewsTraderStatusButton" class="secondary">Load Status</button>
+            <button id="checkNewsTraderOrdersButton" class="secondary">Run Monitor</button>
+            <button id="runNewsTraderDryButton" class="secondary">Run Dry Cycle</button>
+            <button id="runNewsTraderLiveButton">Run Virtual Cycle</button>
+          </div>
+        </div>
+        <label for="newsTraderSecret">Automation secret</label>
+        <input id="newsTraderSecret" type="password" placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET" autocomplete="off" />
+        <div class="field-note">Required only when protected controls are enabled. Virtual cycles use read-only market data and journal-only fills.</div>
+        <div id="newsTraderArea" class="muted">Load status to confirm the virtual paper automation.</div>
+      </div>
+      </section>
+
+      <section id="leaps-investor-ai-page" class="page-view" data-page="leaps-investor-ai">
+        <section class="page-header">
+          <div class="page-kicker">Virtual Paper Automation</div>
+          <h1>LEAPS Investor AI</h1>
+          <p class="page-subtitle">Trade long-dated options from a separate $10,000 virtual paper book.</p>
+        </section>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Virtual Dashboard</h2>
+            <p class="section-description">Journal-derived performance for this bot only. TradeStation remains a shared read-only context source.</p>
+          </div>
+          <div class="actions">
+            <button id="refreshLeapsDashboardButton" class="secondary">Refresh Dashboard</button>
+          </div>
+        </div>
+        <div id="leapsDashboardArea" class="muted">Loading LEAPS AI dashboard...</div>
+      </div>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Automation Activity</h2>
+            <p class="section-description">Latest virtual cycles, long-dated candidates, and journal-only entries for this bot.</p>
+          </div>
+          <div class="actions">
+            <button id="refreshLeapsAutomationActivityButton" class="secondary">Refresh Activity</button>
+          </div>
+        </div>
+        <div id="leapsAutomationActivityArea" class="muted">Loading automation activity...</div>
+      </div>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Virtual Controls</h2>
+            <p class="section-description">Runs a virtual ledger cycle only. No TradeStation order is placed.</p>
+          </div>
+          <div class="actions">
+            <button id="loadLeapsTraderStatusButton" class="secondary">Load Status</button>
+            <button id="checkLeapsTraderOrdersButton" class="secondary">Run Monitor</button>
+            <button id="runLeapsTraderDryButton" class="secondary">Run Dry Cycle</button>
+            <button id="runLeapsTraderLiveButton">Run Virtual Cycle</button>
+          </div>
+        </div>
+        <label for="leapsTraderSecret">Automation secret</label>
+        <input id="leapsTraderSecret" type="password" placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET" autocomplete="off" />
+        <div class="field-note">Required only when protected controls are enabled. Virtual cycles use read-only market data and journal-only fills.</div>
+        <div id="leapsTraderArea" class="muted">Load status to confirm the virtual paper automation.</div>
+      </div>
+      </section>
+
+      <section id="support-resistance-ai-page" class="page-view" data-page="support-resistance-ai">
+        <section class="page-header">
+          <div class="page-kicker">Virtual Paper Automation</div>
+          <h1>Support/Resistance AI</h1>
+          <p class="page-subtitle">Trade only chart-anchored support and resistance setups from a separate $10,000 virtual paper book.</p>
+        </section>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Virtual Dashboard</h2>
+            <p class="section-description">Journal-derived performance for this bot only. TradeStation remains a shared read-only context source.</p>
+          </div>
+          <div class="actions">
+            <button id="refreshSupportDashboardButton" class="secondary">Refresh Dashboard</button>
+          </div>
+        </div>
+        <div id="supportDashboardArea" class="muted">Loading support/resistance AI dashboard...</div>
+      </div>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Automation Activity</h2>
+            <p class="section-description">Latest virtual cycles, support/resistance candidates, and journal-only entries for this bot.</p>
+          </div>
+          <div class="actions">
+            <button id="refreshSupportAutomationActivityButton" class="secondary">Refresh Activity</button>
+          </div>
+        </div>
+        <div id="supportAutomationActivityArea" class="muted">Loading automation activity...</div>
+      </div>
+
+      <div class="card">
+        <div class="panel-header">
+          <div>
+            <h2>Virtual Controls</h2>
+            <p class="section-description">Runs a virtual ledger cycle only. No TradeStation order is placed.</p>
+          </div>
+          <div class="actions">
+            <button id="loadSupportTraderStatusButton" class="secondary">Load Status</button>
+            <button id="checkSupportTraderOrdersButton" class="secondary">Run Monitor</button>
+            <button id="runSupportTraderDryButton" class="secondary">Run Dry Cycle</button>
+            <button id="runSupportTraderLiveButton">Run Virtual Cycle</button>
+          </div>
+        </div>
+        <label for="supportTraderSecret">Automation secret</label>
+        <input id="supportTraderSecret" type="password" placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET" autocomplete="off" />
+        <div class="field-note">Required only when protected controls are enabled. Virtual cycles use read-only market data and journal-only fills.</div>
+        <div id="supportTraderArea" class="muted">Load status to confirm the virtual paper automation.</div>
       </div>
       </section>
 
@@ -1755,6 +1971,46 @@
       const checkPaperTraderOrdersButton = document.getElementById("checkPaperTraderOrdersButton");
       const runPaperTraderDryButton = document.getElementById("runPaperTraderDryButton");
       const runPaperTraderLiveButton = document.getElementById("runPaperTraderLiveButton");
+      const politicianTraderSecretInput = document.getElementById("politicianTraderSecret");
+      const politicianDashboardArea = document.getElementById("politicianDashboardArea");
+      const refreshPoliticianDashboardButton = document.getElementById("refreshPoliticianDashboardButton");
+      const politicianAutomationActivityArea = document.getElementById("politicianAutomationActivityArea");
+      const refreshPoliticianAutomationActivityButton = document.getElementById("refreshPoliticianAutomationActivityButton");
+      const politicianTraderArea = document.getElementById("politicianTraderArea");
+      const loadPoliticianTraderStatusButton = document.getElementById("loadPoliticianTraderStatusButton");
+      const checkPoliticianTraderOrdersButton = document.getElementById("checkPoliticianTraderOrdersButton");
+      const runPoliticianTraderDryButton = document.getElementById("runPoliticianTraderDryButton");
+      const runPoliticianTraderLiveButton = document.getElementById("runPoliticianTraderLiveButton");
+      const newsTraderSecretInput = document.getElementById("newsTraderSecret");
+      const newsDashboardArea = document.getElementById("newsDashboardArea");
+      const refreshNewsDashboardButton = document.getElementById("refreshNewsDashboardButton");
+      const newsAutomationActivityArea = document.getElementById("newsAutomationActivityArea");
+      const refreshNewsAutomationActivityButton = document.getElementById("refreshNewsAutomationActivityButton");
+      const newsTraderArea = document.getElementById("newsTraderArea");
+      const loadNewsTraderStatusButton = document.getElementById("loadNewsTraderStatusButton");
+      const checkNewsTraderOrdersButton = document.getElementById("checkNewsTraderOrdersButton");
+      const runNewsTraderDryButton = document.getElementById("runNewsTraderDryButton");
+      const runNewsTraderLiveButton = document.getElementById("runNewsTraderLiveButton");
+      const leapsTraderSecretInput = document.getElementById("leapsTraderSecret");
+      const leapsDashboardArea = document.getElementById("leapsDashboardArea");
+      const refreshLeapsDashboardButton = document.getElementById("refreshLeapsDashboardButton");
+      const leapsAutomationActivityArea = document.getElementById("leapsAutomationActivityArea");
+      const refreshLeapsAutomationActivityButton = document.getElementById("refreshLeapsAutomationActivityButton");
+      const leapsTraderArea = document.getElementById("leapsTraderArea");
+      const loadLeapsTraderStatusButton = document.getElementById("loadLeapsTraderStatusButton");
+      const checkLeapsTraderOrdersButton = document.getElementById("checkLeapsTraderOrdersButton");
+      const runLeapsTraderDryButton = document.getElementById("runLeapsTraderDryButton");
+      const runLeapsTraderLiveButton = document.getElementById("runLeapsTraderLiveButton");
+      const supportTraderSecretInput = document.getElementById("supportTraderSecret");
+      const supportDashboardArea = document.getElementById("supportDashboardArea");
+      const refreshSupportDashboardButton = document.getElementById("refreshSupportDashboardButton");
+      const supportAutomationActivityArea = document.getElementById("supportAutomationActivityArea");
+      const refreshSupportAutomationActivityButton = document.getElementById("refreshSupportAutomationActivityButton");
+      const supportTraderArea = document.getElementById("supportTraderArea");
+      const loadSupportTraderStatusButton = document.getElementById("loadSupportTraderStatusButton");
+      const checkSupportTraderOrdersButton = document.getElementById("checkSupportTraderOrdersButton");
+      const runSupportTraderDryButton = document.getElementById("runSupportTraderDryButton");
+      const runSupportTraderLiveButton = document.getElementById("runSupportTraderLiveButton");
       const liveTraderSecretInput = document.getElementById("liveTraderSecret");
       const liveTraderPromptInput = document.getElementById("liveTraderPrompt");
       const liveDashboardArea = document.getElementById("liveDashboardArea");
@@ -1787,10 +2043,12 @@
       const traderPages = {
         paper: {
           mode: "paper",
+          automationKey: null,
           pageKey: "paper-trader",
           label: "Paper",
           tradeLabel: "paper",
           environmentLabel: "SIM",
+          virtual: false,
           dashboardArea: paperDashboardArea,
           refreshDashboardButton: refreshPaperDashboardButton,
           activityArea: paperAutomationActivityArea,
@@ -1808,12 +2066,114 @@
           outcomeDetailsExpanded: false,
           outcomeFilter: "all",
         },
+        politician_replica: {
+          mode: "paper",
+          automationKey: "politician_replica",
+          pageKey: "politician-replica",
+          label: "Politician Replica",
+          tradeLabel: "politician-replica",
+          environmentLabel: "SIM",
+          virtual: true,
+          dashboardArea: politicianDashboardArea,
+          refreshDashboardButton: refreshPoliticianDashboardButton,
+          activityArea: politicianAutomationActivityArea,
+          refreshActivityButton: refreshPoliticianAutomationActivityButton,
+          traderArea: politicianTraderArea,
+          loadStatusButton: loadPoliticianTraderStatusButton,
+          checkOrdersButton: checkPoliticianTraderOrdersButton,
+          runDryButton: runPoliticianTraderDryButton,
+          runOrderButton: runPoliticianTraderLiveButton,
+          secretInput: politicianTraderSecretInput,
+          promptInput: null,
+          secretStorageKey: "politicianTraderApiSecret",
+          dashboardHasLoaded: false,
+          activityHasLoaded: false,
+          outcomeDetailsExpanded: false,
+          outcomeFilter: "all",
+        },
+        news_reasoning_ai: {
+          mode: "paper",
+          automationKey: "news_reasoning_ai",
+          pageKey: "news-reasoning-ai",
+          label: "News Reasoning AI",
+          tradeLabel: "news-AI",
+          environmentLabel: "SIM",
+          virtual: true,
+          dashboardArea: newsDashboardArea,
+          refreshDashboardButton: refreshNewsDashboardButton,
+          activityArea: newsAutomationActivityArea,
+          refreshActivityButton: refreshNewsAutomationActivityButton,
+          traderArea: newsTraderArea,
+          loadStatusButton: loadNewsTraderStatusButton,
+          checkOrdersButton: checkNewsTraderOrdersButton,
+          runDryButton: runNewsTraderDryButton,
+          runOrderButton: runNewsTraderLiveButton,
+          secretInput: newsTraderSecretInput,
+          promptInput: null,
+          secretStorageKey: "newsTraderApiSecret",
+          dashboardHasLoaded: false,
+          activityHasLoaded: false,
+          outcomeDetailsExpanded: false,
+          outcomeFilter: "all",
+        },
+        leaps_investor_ai: {
+          mode: "paper",
+          automationKey: "leaps_investor_ai",
+          pageKey: "leaps-investor-ai",
+          label: "LEAPS Investor AI",
+          tradeLabel: "LEAPS-AI",
+          environmentLabel: "SIM",
+          virtual: true,
+          dashboardArea: leapsDashboardArea,
+          refreshDashboardButton: refreshLeapsDashboardButton,
+          activityArea: leapsAutomationActivityArea,
+          refreshActivityButton: refreshLeapsAutomationActivityButton,
+          traderArea: leapsTraderArea,
+          loadStatusButton: loadLeapsTraderStatusButton,
+          checkOrdersButton: checkLeapsTraderOrdersButton,
+          runDryButton: runLeapsTraderDryButton,
+          runOrderButton: runLeapsTraderLiveButton,
+          secretInput: leapsTraderSecretInput,
+          promptInput: null,
+          secretStorageKey: "leapsTraderApiSecret",
+          dashboardHasLoaded: false,
+          activityHasLoaded: false,
+          outcomeDetailsExpanded: false,
+          outcomeFilter: "all",
+        },
+        support_resistance_ai: {
+          mode: "paper",
+          automationKey: "support_resistance_ai",
+          pageKey: "support-resistance-ai",
+          label: "Support/Resistance AI",
+          tradeLabel: "support/resistance-AI",
+          environmentLabel: "SIM",
+          virtual: true,
+          dashboardArea: supportDashboardArea,
+          refreshDashboardButton: refreshSupportDashboardButton,
+          activityArea: supportAutomationActivityArea,
+          refreshActivityButton: refreshSupportAutomationActivityButton,
+          traderArea: supportTraderArea,
+          loadStatusButton: loadSupportTraderStatusButton,
+          checkOrdersButton: checkSupportTraderOrdersButton,
+          runDryButton: runSupportTraderDryButton,
+          runOrderButton: runSupportTraderLiveButton,
+          secretInput: supportTraderSecretInput,
+          promptInput: null,
+          secretStorageKey: "supportTraderApiSecret",
+          dashboardHasLoaded: false,
+          activityHasLoaded: false,
+          outcomeDetailsExpanded: false,
+          outcomeFilter: "all",
+        },
         live: {
           mode: "live",
+          automationKey: null,
           pageKey: "live-trader",
           label: "Live",
           tradeLabel: "live",
           environmentLabel: "LIVE",
+          virtual: false,
           dashboardArea: liveDashboardArea,
           refreshDashboardButton: refreshLiveDashboardButton,
           activityArea: liveAutomationActivityArea,
@@ -1836,9 +2196,24 @@
         "manual-scan": "Manual Scan",
         "original-process": "Original Process",
         "paper-trader": "Paper Trader",
+        "politician-replica": "Politician Replica",
+        "news-reasoning-ai": "News Reasoning AI",
+        "leaps-investor-ai": "LEAPS Investor AI",
+        "support-resistance-ai": "Support/Resistance AI",
         "live-trader": "Live Trader",
         journal: "Journal",
       };
+
+      function resolveTraderPage(value = "paper") {
+        if (value && typeof value === "object") {
+          return value;
+        }
+        return traderPages[value]
+          || Object.values(traderPages).find((page) =>
+            page.pageKey === value || page.automationKey === value
+          )
+          || traderPages.paper;
+      }
 
       function closeNavigation() {
         appNav?.classList.remove("is-open");
@@ -1870,10 +2245,10 @@
         const traderPage = Object.values(traderPages).find((page) => page.pageKey === nextPage);
         if (traderPage) {
           if (!traderPage.dashboardHasLoaded) {
-            loadPaperDashboard(traderPage.mode);
+            loadPaperDashboard(traderPage);
           }
           if (!traderPage.activityHasLoaded) {
-            loadPaperAutomationActivity(traderPage.mode);
+            loadPaperAutomationActivity(traderPage);
           }
         }
       }
@@ -3427,6 +3802,7 @@
 
         const totals = insights.totals || {};
         const accountSnapshot = insights.account_snapshot || insights.sim_account || null;
+        const virtualAccount = insights.virtual_account || null;
         const dataWarnings = Array.isArray(insights.dataWarnings) ? insights.dataWarnings : [];
         const scopeLabel = insights.scopeLabel || "Current learning epoch";
         const learningStartLabel = formatCentralTimestamp(insights.learningStartAt);
@@ -3460,7 +3836,9 @@
             .map((bucket) => String(bucket.label || bucket.key || "").toUpperCase())
             .filter(Boolean),
         );
-        const journalNotLive = [...journalOpenUnderlyings].filter((symbol) => !simPositionUnderlyings.has(symbol));
+        const journalNotLive = page.virtual
+          ? []
+          : [...journalOpenUnderlyings].filter((symbol) => !simPositionUnderlyings.has(symbol));
         const hasArchivedTrades = (excludedTradeCount ?? 0) > 0;
         const syncWarnings = [
           journalNotLive.length > 0
@@ -3468,7 +3846,7 @@
             : null,
         ].filter(Boolean);
         const syncWarningLabel = "Position sync warning:";
-        const outcomeDetailsId = `${page.mode}OutcomeDetails`;
+        const outcomeDetailsId = `${page.pageKey || page.mode}OutcomeDetails`;
         const warningItems = [
           accountSnapshot?.error,
           ...dataWarnings,
@@ -3486,6 +3864,14 @@
             ${renderOpsWarningBand(warningItems)}
 
             <div class="ops-kpi-groups">
+              ${virtualAccount ? renderOpsMetricGroup("Virtual Book", "Journal-only paper ledger", [
+                renderOpsMetric("Starting balance", formatMoney(virtualAccount.startingBalanceUsd)),
+                renderOpsMetric("Current balance", formatMoney(virtualAccount.currentBalanceUsd), numberToneClass((asNumber(virtualAccount.currentBalanceUsd) ?? 0) - (asNumber(virtualAccount.startingBalanceUsd) ?? 0))),
+                renderOpsMetric("Realized P/L", formatMoney(virtualAccount.realizedPlUsd), numberToneClass(virtualAccount.realizedPlUsd)),
+                renderOpsMetric("Buying power", formatMoney(virtualAccount.buyingPowerUsd)),
+                renderOpsMetric("Open cost", formatMoney(virtualAccount.openPositionCostUsd)),
+                renderOpsMetric("Open trades", renderMaybe(virtualAccount.openTradeCount, "0")),
+              ]) : ""}
               ${renderOpsMetricGroup("Broker Snapshot", "TradeStation read-only", [
                 renderOpsMetric("Net worth", formatMoney(accountSnapshot?.accountValueUsd)),
                 renderOpsMetric("Cash", formatMoney(accountSnapshot?.cashBalanceUsd)),
@@ -3763,13 +4149,13 @@
             <div class="row"><strong>Route secret required:</strong> ${escapeHtml(formatBoolean(status?.requiresSecret))}</div>
             <div class="row"><strong>Configuration checks:</strong> ${configurationIssues.length > 0 ? renderList(configurationIssues) : `<span class="muted">${escapeHtml(environmentLabel)} configuration is ready.</span>`}</div>
             ${dataWarnings.length > 0 ? `<div class="row"><strong>Data warnings:</strong> ${renderList(dataWarnings)}</div>` : ""}
-            <div class="row"><strong>Autonomous cron:</strong> Every 5 minutes on weekdays via <code>/api/paper-trader-run?mode=${escapeHtml(page.mode)}&reconcileOrders=true</code>; can reconcile fills, manage exits, and enter new ${escapeHtml(accountModeLabel.toLowerCase())} trades when guards allow.</div>
-            <div class="row"><strong>Entry order management:</strong> ${escapeHtml(status?.entryOrderManagementEnabled ? `Enabled for working ${environmentLabel} buy-to-open limits.` : "Off; working entry orders are monitored but not repriced/canceled by AI.")}</div>
-            <div class="row"><strong>Entry cadence:</strong> Every full cron cycle can scan for another excellent setup and enter one additional non-duplicate ticker if the trade card passes.</div>
-            <div class="row"><strong>Position size guard:</strong> New ${escapeHtml(accountModeLabel.toLowerCase())} entries are capped at ${escapeHtml(formatPercent(status?.maxPositionPct, 0))} of the TradeStation ${escapeHtml(environmentLabel)} account value${sizing?.maxPositionCostUsd === null || sizing?.maxPositionCostUsd === undefined ? "." : ` (${escapeHtml(formatMoney(sizing.maxPositionCostUsd))}).`}</div>
+            <div class="row"><strong>Autonomous cron:</strong> ${page.virtual ? `Staggered weekdays via <code>/api/paper-trader-run?mode=paper&amp;automation=${escapeHtml(page.automationKey)}</code>; uses read-only quotes and journal-only virtual fills.` : `Every 5 minutes on weekdays via <code>/api/paper-trader-run?mode=${escapeHtml(page.mode)}&amp;reconcileOrders=true</code>; can reconcile fills, manage exits, and enter new ${escapeHtml(accountModeLabel.toLowerCase())} trades when guards allow.`}</div>
+            <div class="row"><strong>Entry order management:</strong> ${escapeHtml(page.virtual ? "Not applicable; virtual bots do not create working broker orders." : status?.entryOrderManagementEnabled ? `Enabled for working ${environmentLabel} buy-to-open limits.` : "Off; working entry orders are monitored but not repriced/canceled by AI.")}</div>
+            <div class="row"><strong>Entry cadence:</strong> ${escapeHtml(page.virtual ? "Each virtual cycle manages open journal-only positions, then may enter one new non-duplicate virtual trade if the source and trade card pass." : "Every full cron cycle can scan for another excellent setup and enter one additional non-duplicate ticker if the trade card passes.")}</div>
+            <div class="row"><strong>Position size guard:</strong> ${escapeHtml(page.virtual ? `New virtual entries are capped at ${formatPercent(status?.maxPositionPct, 0)} of that bot's virtual book.` : `New ${accountModeLabel.toLowerCase()} entries are capped at ${formatPercent(status?.maxPositionPct, 0)} of the TradeStation ${environmentLabel} account value${sizing?.maxPositionCostUsd === null || sizing?.maxPositionCostUsd === undefined ? "." : ` (${formatMoney(sizing.maxPositionCostUsd)}).`}`)}</div>
             ${sizing?.error ? `<div class="row"><strong>Sizing read:</strong> ${escapeHtml(sizing.error)}</div>` : ""}
-            <div class="row"><strong>Daily loss guard:</strong> Unlimited for automation learning, so the system can keep collecting loss examples and improve its policy memory.</div>
-            <div class="row"><strong>Manual order check:</strong> The Check Orders button still uses read-only monitor mode for diagnostics.</div>
+            <div class="row"><strong>Daily loss guard:</strong> ${escapeHtml(page.virtual ? "Virtual book drawdown is isolated to this bot and cannot affect live trading." : "Unlimited for automation learning, so the system can keep collecting loss examples and improve its policy memory.")}</div>
+            <div class="row"><strong>Manual monitor:</strong> ${escapeHtml(page.virtual ? "Run Monitor manages existing virtual positions without opening a new one." : "The Check Orders button still uses read-only monitor mode for diagnostics.")}</div>
             <div class="row"><strong>Learning set:</strong> ${escapeHtml(renderMaybe(closedLearningTrades, "0"))} closed automation trade(s) since ${escapeHtml(formatCentralTimestamp(learning?.learningStartAt))} (${escapeHtml(renderMaybe(closedPaperTrades, "0"))} paper, ${escapeHtml(renderMaybe(closedLiveTrades, "0"))} live), ${escapeHtml(renderMaybe(learning?.learnedContexts, "0"))} management contexts, ${escapeHtml(renderMaybe(learning?.entryLearnedContexts, "0"))} entry contexts${Number.isFinite(Number(learning?.excludedLearningTrades)) ? `; ${escapeHtml(renderMaybe(learning?.excludedLearningTrades, "0"))} earlier trade(s) kept in history but excluded from learning` : ""}</div>
             <div class="row"><strong>Entry policy:</strong></div>
             <pre>${escapeHtml(learning?.entryPolicySummary || "No closed automation-entry outcomes yet; new entries use the scanner/trade-card rules and become training data after close.")}</pre>
@@ -3959,7 +4345,7 @@
       }
 
       async function loadPaperDashboard(mode = "paper") {
-        const page = traderPages[mode] || traderPages.paper;
+        const page = resolveTraderPage(mode);
         if (!page.dashboardArea) {
           return;
         }
@@ -3974,6 +4360,9 @@
             mode: page.mode,
             limit: "300",
           });
+          if (page.automationKey) {
+            params.set("automation", page.automationKey);
+          }
           const response = await fetch(`/api/paper-dashboard?${params.toString()}`);
           const data = await readJsonResponse(response, `Failed to load ${page.tradeLabel} dashboard.`);
           renderPaperDashboard(data?.dashboard || null, page);
@@ -3987,7 +4376,7 @@
       }
 
       async function loadPaperAutomationActivity(mode = "paper") {
-        const page = traderPages[mode] || traderPages.paper;
+        const page = resolveTraderPage(mode);
         if (!page.activityArea) {
           return;
         }
@@ -4002,6 +4391,9 @@
             mode: page.mode,
             limit: "25",
           });
+          if (page.automationKey) {
+            params.set("automation", page.automationKey);
+          }
           const response = await fetch(`/api/paper-activity?${params.toString()}`);
           const data = await readJsonResponse(response, "Failed to load automation activity.");
           renderPaperAutomationActivity(data?.activity || null, page);
@@ -4015,7 +4407,7 @@
       }
 
       async function loadPaperTraderStatus(mode = "paper") {
-        const page = traderPages[mode] || traderPages.paper;
+        const page = resolveTraderPage(mode);
         if (!page.traderArea) {
           return;
         }
@@ -4024,6 +4416,9 @@
 
         try {
           const params = new URLSearchParams({ mode: page.mode });
+          if (page.automationKey) {
+            params.set("automation", page.automationKey);
+          }
           const response = await fetch(`/api/paper-trader?${params.toString()}`, {
             headers: buildPaperTraderHeaders(page),
           });
@@ -4035,12 +4430,12 @@
       }
 
       async function runPaperTraderCycle(mode = "paper", dryRun) {
-        const page = traderPages[mode] || traderPages.paper;
+        const page = resolveTraderPage(mode);
         if (!page.traderArea) {
           return;
         }
 
-        page.traderArea.innerHTML = `<div class="muted">${escapeHtml(dryRun ? "Running dry cycle..." : `Running ${page.tradeLabel} order-enabled cycle...`)}</div>`;
+        page.traderArea.innerHTML = `<div class="muted">${escapeHtml(dryRun ? "Running dry cycle..." : page.virtual ? `Running ${page.tradeLabel} virtual cycle...` : `Running ${page.tradeLabel} order-enabled cycle...`)}</div>`;
 
         try {
           const prompt = page.promptInput?.value?.trim() || "";
@@ -4049,13 +4444,14 @@
             headers: buildPaperTraderHeaders(page, true),
             body: JSON.stringify({
               mode: page.mode,
+              ...(page.automationKey ? { automation: page.automationKey } : {}),
               dryRun,
               ...(prompt ? { prompt } : {}),
             }),
           });
           const data = await readJsonResponse(response, "Paper trader cycle failed.");
           renderPaperTraderRunResult(data, page);
-          await loadPaperAutomationActivity(page.mode);
+          await loadPaperAutomationActivity(page);
           await refreshJournalData();
         } catch (error) {
           page.traderArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Paper trader cycle failed."))}</div>`;
@@ -4063,12 +4459,12 @@
       }
 
       async function checkPaperTraderOrders(mode = "paper") {
-        const page = traderPages[mode] || traderPages.paper;
+        const page = resolveTraderPage(mode);
         if (!page.traderArea) {
           return;
         }
 
-        page.traderArea.innerHTML = '<div class="muted">Checking open automation orders...</div>';
+        page.traderArea.innerHTML = `<div class="muted">${escapeHtml(page.virtual ? "Running virtual monitor cycle..." : "Checking open automation orders...")}</div>`;
 
         try {
           const params = new URLSearchParams({
@@ -4077,13 +4473,16 @@
             reconcileOrders: "true",
             skipNewEntry: "true",
           });
+          if (page.automationKey) {
+            params.set("automation", page.automationKey);
+          }
           const response = await fetch(`/api/paper-trader-run?${params.toString()}`, {
             method: "GET",
             headers: buildPaperTraderHeaders(page, true),
           });
           const data = await readJsonResponse(response, "Paper trader order check failed.");
           renderPaperTraderRunResult(data, page);
-          await loadPaperAutomationActivity(page.mode);
+          await loadPaperAutomationActivity(page);
           await refreshJournalData();
         } catch (error) {
           page.traderArea.innerHTML = `<div class="empty-state">${escapeHtml(compactErrorMessage(error, "Paper trader order check failed."))}</div>`;
@@ -5573,19 +5972,21 @@
             // Ignore browsers where localStorage is unavailable.
           }
         });
-        page.loadStatusButton?.addEventListener("click", () => loadPaperTraderStatus(page.mode));
-        page.refreshDashboardButton?.addEventListener("click", () => loadPaperDashboard(page.mode));
-        page.refreshActivityButton?.addEventListener("click", () => loadPaperAutomationActivity(page.mode));
-        page.checkOrdersButton?.addEventListener("click", () => checkPaperTraderOrders(page.mode));
+        page.loadStatusButton?.addEventListener("click", () => loadPaperTraderStatus(page));
+        page.refreshDashboardButton?.addEventListener("click", () => loadPaperDashboard(page));
+        page.refreshActivityButton?.addEventListener("click", () => loadPaperAutomationActivity(page));
+        page.checkOrdersButton?.addEventListener("click", () => checkPaperTraderOrders(page));
         page.runDryButton?.addEventListener("click", () => {
-          runPaperTraderCycle(page.mode, true);
+          runPaperTraderCycle(page, true);
         });
         page.runOrderButton?.addEventListener("click", () => {
-          const shouldRun = window.confirm(`Run a ${page.tradeLabel} automation cycle? This can place or close trades if ${page.mode === "live" ? "LIVE" : "PAPER"} order placement is enabled.`);
+          const shouldRun = window.confirm(page.virtual
+            ? `Run a ${page.tradeLabel} virtual paper cycle? This writes journal-only virtual fills and does not place TradeStation orders.`
+            : `Run a ${page.tradeLabel} automation cycle? This can place or close trades if ${page.mode === "live" ? "LIVE" : "PAPER"} order placement is enabled.`);
           if (!shouldRun) {
             return;
           }
-          runPaperTraderCycle(page.mode, false);
+          runPaperTraderCycle(page, false);
         });
       });
       lateReviewButton?.addEventListener("click", runLateTradeReview);

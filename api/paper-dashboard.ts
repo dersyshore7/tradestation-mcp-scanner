@@ -1,6 +1,12 @@
 import { getPaperTraderSizingSnapshot } from "../src/automation/paperTrader.js";
 import { buildEmptyPaperDashboard, getPaperDashboard } from "../src/journal/paperDashboard.js";
 import { readAutomationLane, type AutomationLane } from "../src/automation/config.js";
+import {
+  LEGACY_PAPER_AUTOMATION_KEY,
+  readPaperAutomationKey,
+  isVirtualPaperAutomationKey,
+  type PaperAutomationKey,
+} from "../src/automation/paperAutomationBots.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 function firstQueryValue(value: string | string[] | undefined): string | undefined {
@@ -17,6 +23,10 @@ function parseLimit(value: string | string[] | undefined): number {
 
 function parseMode(value: string | string[] | undefined): AutomationLane {
   return readAutomationLane(firstQueryValue(value)) ?? "paper";
+}
+
+function parseAutomation(value: string | string[] | undefined): PaperAutomationKey {
+  return readPaperAutomationKey(firstQueryValue(value)) ?? LEGACY_PAPER_AUTOMATION_KEY;
 }
 
 function formatWarning(label: string, error: unknown): string {
@@ -42,14 +52,19 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
 
   const limit = parseLimit(req.query?.limit);
   const mode = parseMode(req.query?.mode);
+  const automation = parseAutomation(req.query?.automation);
+  if (mode === "live" && isVirtualPaperAutomationKey(automation)) {
+    sendError(res, 400, "Virtual paper automations are paper-only and cannot run on the live lane.");
+    return;
+  }
   const [dashboardResult, simAccountResult] = await Promise.allSettled([
-    getPaperDashboard(limit, mode),
+    getPaperDashboard(limit, mode, automation),
     getPaperTraderSizingSnapshot(mode),
   ]);
 
   const dashboard = dashboardResult.status === "fulfilled"
     ? dashboardResult.value
-    : buildEmptyPaperDashboard([formatWarning(`${mode === "live" ? "Live" : "Paper"} dashboard data unavailable`, dashboardResult.reason)], mode);
+    : buildEmptyPaperDashboard([formatWarning(`${mode === "live" ? "Live" : "Paper"} dashboard data unavailable`, dashboardResult.reason)], mode, automation);
   const accountLabel = mode === "live" ? "LIVE account" : "SIM account";
   const simAccount = simAccountResult.status === "fulfilled"
     ? simAccountResult.value
@@ -75,6 +90,7 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
       ...dashboard,
       account_snapshot: simAccount,
       sim_account: simAccount,
+      shared_account_snapshot: simAccount,
     },
   });
 }

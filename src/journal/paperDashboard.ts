@@ -1,5 +1,13 @@
 import { readPaperLearningWindow } from "../automation/paperLearningCutoff.js";
 import { buildLearningOutcomeAudit, type LearningOutcomeAudit } from "../automation/learningOutcomeAudit.js";
+import {
+  LEGACY_PAPER_AUTOMATION_KEY,
+  VIRTUAL_PAPER_AUTOMATION_STARTING_BALANCE_USD,
+  getPaperAutomationLabel,
+  isVirtualPaperAutomationKey,
+  paperAutomationColumnFilter,
+  type PaperAutomationKey,
+} from "../automation/paperAutomationBots.js";
 import { buildReasoningSnapshot } from "./insights.js";
 import { buildLossPostMortem, type LossTradePostMortem } from "./lossPostMortem.js";
 import { listJournalTradeDetails } from "./repository.js";
@@ -33,6 +41,7 @@ type PaperDashboardTradeRow = {
   id: string;
   created_at: string;
   account_mode: AccountMode;
+  paper_automation_key: PaperAutomationKey;
   entry_date: string;
   entry_time: string | null;
   symbol: string;
@@ -160,6 +169,21 @@ export type PaperDashboardOutcomeTrade = {
 export type PaperDashboard = {
   dataWarnings: string[];
   accountMode: AccountMode;
+  paperAutomationKey: PaperAutomationKey;
+  automation: {
+    key: PaperAutomationKey;
+    label: string;
+    virtual: boolean;
+  };
+  virtual_account: {
+    startingBalanceUsd: number;
+    realizedPlUsd: number;
+    unrealizedPlUsd: number;
+    currentBalanceUsd: number;
+    openPositionCostUsd: number;
+    buyingPowerUsd: number;
+    openTradeCount: number;
+  } | null;
   learningStartAt: string;
   includedTradeCount: number;
   excludedTradeCount: number;
@@ -600,10 +624,14 @@ function buildArchiveFilter(learningStartAt: string): string {
   return `created_at=lt.${learningStartAt}`;
 }
 
-async function countPaperDashboardRows(accountMode: AccountMode, filters: string[]): Promise<number> {
+async function countPaperDashboardRows(
+  accountMode: AccountMode,
+  paperAutomationKey: PaperAutomationKey,
+  filters: string[],
+): Promise<number> {
   return supabaseCount({
     table: "journal_trades",
-    filters: [`account_mode=eq.${accountMode}`, ...filters],
+    filters: [`account_mode=eq.${accountMode}`, paperAutomationColumnFilter(paperAutomationKey), ...filters],
   });
 }
 
@@ -635,13 +663,14 @@ async function loadPaperDashboardExitRows(tradeIds: string[]): Promise<PaperDash
 
 async function loadPaperDashboardRows(
   accountMode: AccountMode,
+  paperAutomationKey: PaperAutomationKey,
   limit: number,
   filters: string[] = [],
 ): Promise<PaperDashboardTrade[]> {
   const tradeRows = await supabaseSelect<PaperDashboardTradeRow>({
     table: "journal_trades",
-    select: "id,created_at,account_mode,entry_date,entry_time,symbol,direction,setup_type,status,contracts,position_cost_usd,underlying_entry_price,option_entry_price,planned_risk_usd,intended_stop_underlying,intended_target_underlying,entry_notes",
-    filters: [`account_mode=eq.${accountMode}`, ...filters],
+    select: "id,created_at,account_mode,paper_automation_key,entry_date,entry_time,symbol,direction,setup_type,status,contracts,position_cost_usd,underlying_entry_price,option_entry_price,planned_risk_usd,intended_stop_underlying,intended_target_underlying,entry_notes",
+    filters: [`account_mode=eq.${accountMode}`, paperAutomationColumnFilter(paperAutomationKey), ...filters],
     order: ["entry_date.desc", "created_at.desc"],
     limit,
   });
@@ -718,12 +747,14 @@ async function loadPaperDashboardOutcomeDetails(
 
 async function loadPaperDashboardLearningAudit(
   accountMode: AccountMode,
+  paperAutomationKey: PaperAutomationKey,
   limit: number,
 ): Promise<LearningOutcomeAudit> {
   try {
     const learningWindow = readPaperLearningWindow();
     const trades = await listJournalTradeDetails(limit, {
       accountMode,
+      paperAutomationKey,
       status: "closed",
       includeSignalSnapshot: true,
     });
@@ -750,11 +781,30 @@ async function loadPaperDashboardLearningAudit(
 export function buildEmptyPaperDashboard(
   dataWarnings: string[] = [],
   accountMode: AccountMode = "paper",
+  paperAutomationKey: PaperAutomationKey = LEGACY_PAPER_AUTOMATION_KEY,
 ): PaperDashboard {
   const learningWindow = readPaperLearningWindow();
+  const virtual = isVirtualPaperAutomationKey(paperAutomationKey);
   return {
     dataWarnings,
     accountMode,
+    paperAutomationKey,
+    automation: {
+      key: paperAutomationKey,
+      label: getPaperAutomationLabel(paperAutomationKey),
+      virtual,
+    },
+    virtual_account: virtual
+      ? {
+          startingBalanceUsd: VIRTUAL_PAPER_AUTOMATION_STARTING_BALANCE_USD,
+          realizedPlUsd: 0,
+          unrealizedPlUsd: 0,
+          currentBalanceUsd: VIRTUAL_PAPER_AUTOMATION_STARTING_BALANCE_USD,
+          openPositionCostUsd: 0,
+          buyingPowerUsd: VIRTUAL_PAPER_AUTOMATION_STARTING_BALANCE_USD,
+          openTradeCount: 0,
+        }
+      : null,
     learningStartAt: learningWindow.learningStartAt,
     includedTradeCount: 0,
     excludedTradeCount: 0,
@@ -794,16 +844,17 @@ export function buildEmptyPaperDashboard(
 export async function getPaperDashboard(
   limit = 300,
   accountMode: AccountMode = "paper",
+  paperAutomationKey: PaperAutomationKey = LEGACY_PAPER_AUTOMATION_KEY,
 ): Promise<PaperDashboard> {
   const learningWindow = readPaperLearningWindow();
   const epochFilter = buildEpochFilter(learningWindow.learningStartAt);
   const archiveFilter = buildArchiveFilter(learningWindow.learningStartAt);
   const metricLimit = Math.max(limit, PAPER_DASHBOARD_METRIC_LIMIT);
   const [trades, includedTradeCount, excludedTradeCount, learningAudit] = await Promise.all([
-    loadPaperDashboardRows(accountMode, metricLimit, [epochFilter]),
-    countPaperDashboardRows(accountMode, [epochFilter]),
-    countPaperDashboardRows(accountMode, [archiveFilter]),
-    loadPaperDashboardLearningAudit(accountMode, metricLimit),
+    loadPaperDashboardRows(accountMode, paperAutomationKey, metricLimit, [epochFilter]),
+    countPaperDashboardRows(accountMode, paperAutomationKey, [epochFilter]),
+    countPaperDashboardRows(accountMode, paperAutomationKey, [archiveFilter]),
+    loadPaperDashboardLearningAudit(accountMode, paperAutomationKey, metricLimit),
   ]);
   const closedTrades = toClosedTrades(trades);
   const openTrades = trades.filter((trade) => trade.status === "open");
@@ -852,12 +903,42 @@ export async function getPaperDashboard(
   const brokerAudit = buildPaperDashboardBrokerAuditForTest(
     closedTrades.flatMap((trade) => trade.latest_exit ?? []),
   );
+  const openPositionCostUsd = openTrades.reduce(
+    (sum, trade) => sum + (asNumber(trade.position_cost_usd) ?? 0),
+    0,
+  );
+  const totalRealizedPlUsd = closedTrades.reduce(
+    (sum, trade) => sum + (asNumber(trade.review?.realized_pl_usd) ?? 0),
+    0,
+  );
+  const isVirtualAutomation = isVirtualPaperAutomationKey(paperAutomationKey);
+  const virtualAccount = isVirtualAutomation
+    ? {
+        startingBalanceUsd: VIRTUAL_PAPER_AUTOMATION_STARTING_BALANCE_USD,
+        realizedPlUsd: totalRealizedPlUsd,
+        unrealizedPlUsd: 0,
+        currentBalanceUsd: VIRTUAL_PAPER_AUTOMATION_STARTING_BALANCE_USD + totalRealizedPlUsd,
+        openPositionCostUsd,
+        buyingPowerUsd: Math.max(
+          0,
+          VIRTUAL_PAPER_AUTOMATION_STARTING_BALANCE_USD + totalRealizedPlUsd - openPositionCostUsd,
+        ),
+        openTradeCount: openTrades.length,
+      }
+    : null;
 
   return {
     dataWarnings: includedTradeCount > trades.length
       ? [`Dashboard is showing the latest ${trades.length} current-epoch ${accountMode} trades out of ${includedTradeCount}.`]
       : [],
     accountMode,
+    paperAutomationKey,
+    automation: {
+      key: paperAutomationKey,
+      label: getPaperAutomationLabel(paperAutomationKey),
+      virtual: isVirtualAutomation,
+    },
+    virtual_account: virtualAccount,
     learningStartAt: learningWindow.learningStartAt,
     includedTradeCount,
     excludedTradeCount,
@@ -866,17 +947,11 @@ export async function getPaperDashboard(
       total_trades: trades.length,
       open_trades: openTrades.length,
       closed_trades: closedTrades.length,
-      open_position_cost_usd: openTrades.reduce(
-        (sum, trade) => sum + (asNumber(trade.position_cost_usd) ?? 0),
-        0,
-      ),
+      open_position_cost_usd: openPositionCostUsd,
       winners: winners.length,
       losers: losers.length,
       win_rate: closedTrades.length > 0 ? winners.length / closedTrades.length : null,
-      total_realized_pl_usd: closedTrades.reduce(
-        (sum, trade) => sum + (asNumber(trade.review?.realized_pl_usd) ?? 0),
-        0,
-      ),
+      total_realized_pl_usd: totalRealizedPlUsd,
       average_r_multiple: average(rValues),
       average_return_pct: average(returnPcts),
       best_day_of_week: bestBucketLabel(byDay),

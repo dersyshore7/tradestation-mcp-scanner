@@ -1,9 +1,18 @@
 import { getPaperTraderStatus, runPaperTraderCycle } from "../src/automation/paperTrader.js";
 import { readAutomationLane, readPaperTraderApiSecrets, type AutomationLane } from "../src/automation/config.js";
+import {
+  readVirtualPaperAutomationKey,
+  type VirtualPaperAutomationKey,
+} from "../src/automation/paperAutomationBots.js";
+import {
+  getVirtualPaperAutomationStatus,
+  runVirtualPaperAutomationCycle,
+} from "../src/automation/virtualPaperTrader.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 type PaperTraderRequestBody = {
   mode?: string;
+  automation?: string;
   prompt?: string;
   dryRun?: boolean;
 };
@@ -31,6 +40,11 @@ function parseMode(req: VercelRequestLike, body?: PaperTraderRequestBody): Autom
     ?? "paper";
 }
 
+function parseVirtualAutomation(req: VercelRequestLike, body?: PaperTraderRequestBody): VirtualPaperAutomationKey | null {
+  return readVirtualPaperAutomationKey(firstQueryValue(req.query?.automation))
+    ?? readVirtualPaperAutomationKey(body?.automation);
+}
+
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
   if (!isAuthorized(req as RequestWithHeaders)) {
     sendError(res, 401, "Unauthorized.");
@@ -39,7 +53,15 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
 
   if (req.method === "GET") {
     try {
-      const status = await getPaperTraderStatus(parseMode(req));
+      const mode = parseMode(req);
+      const automation = parseVirtualAutomation(req);
+      if (mode === "live" && automation) {
+        sendError(res, 400, "Virtual paper automations are paper-only and cannot run on the live lane.");
+        return;
+      }
+      const status = automation
+        ? await getVirtualPaperAutomationStatus(automation)
+        : await getPaperTraderStatus(mode);
       sendJson(res, 200, { status });
       return;
     } catch (error) {
@@ -53,16 +75,26 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
     try {
       const body = (req.body ?? {}) as PaperTraderRequestBody;
       const mode = parseMode(req, body);
-      const result = await runPaperTraderCycle({
-        mode,
-        ...(
-          typeof body.prompt === "string" && body.prompt.trim().length > 0
-            ? { prompt: body.prompt.trim() }
-            : {}
-        ),
-        dryRun: body.dryRun === true,
-        source: "api",
-      });
+      const automation = parseVirtualAutomation(req, body);
+      if (mode === "live" && automation) {
+        sendError(res, 400, "Virtual paper automations are paper-only and cannot run on the live lane.");
+        return;
+      }
+      const result = automation
+        ? await runVirtualPaperAutomationCycle({
+            automationKey: automation,
+            dryRun: body.dryRun === true,
+          })
+        : await runPaperTraderCycle({
+            mode,
+            ...(
+              typeof body.prompt === "string" && body.prompt.trim().length > 0
+                ? { prompt: body.prompt.trim() }
+                : {}
+            ),
+            dryRun: body.dryRun === true,
+            source: "api",
+          });
       sendJson(res, 200, result);
       return;
     } catch (error) {

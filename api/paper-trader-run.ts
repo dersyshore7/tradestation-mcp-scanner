@@ -1,5 +1,10 @@
 import { runPaperTraderCycle } from "../src/automation/paperTrader.js";
 import { readAutomationLane, readPaperTraderApiSecrets, type AutomationLane } from "../src/automation/config.js";
+import {
+  readVirtualPaperAutomationKey,
+  type VirtualPaperAutomationKey,
+} from "../src/automation/paperAutomationBots.js";
+import { runVirtualPaperAutomationCycle } from "../src/automation/virtualPaperTrader.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 type RequestWithHeaders = VercelRequestLike & {
@@ -30,6 +35,10 @@ function parseMode(req: RequestWithHeaders): AutomationLane {
   return readAutomationLane(firstQueryValue(req.query?.mode)) ?? "paper";
 }
 
+function parseVirtualAutomation(req: RequestWithHeaders): VirtualPaperAutomationKey | null {
+  return readVirtualPaperAutomationKey(firstQueryValue(req.query?.automation));
+}
+
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
   const request = req as RequestWithHeaders;
   if (!isAuthorized(request)) {
@@ -49,6 +58,11 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
   try {
     const startedAt = Date.now();
     const mode = parseMode(request);
+    const automation = parseVirtualAutomation(request);
+    if (mode === "live" && automation) {
+      sendError(res, 400, "Virtual paper automations are paper-only and cannot run on the live lane.");
+      return;
+    }
     const options = {
       mode,
       dryRun: readBooleanQuery(request, "dryRun"),
@@ -63,17 +77,26 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
     console.info("paper-trader-run started", {
       method: req.method,
       mode,
+      automation: automation ?? "legacy_paper_trader",
       dryRun: options.dryRun,
       reconcileOnly: options.reconcileOnly,
       reconcileOrders: options.reconcileOrders,
       skipNewEntry: options.skipNewEntry,
     });
-    const result = await runPaperTraderCycle({
-      ...options,
-    });
+    const result = automation
+      ? await runVirtualPaperAutomationCycle({
+          automationKey: automation,
+          dryRun: options.dryRun,
+          skipNewEntry: options.skipNewEntry || options.reconcileOnly,
+          includeHistory: false,
+        })
+      : await runPaperTraderCycle({
+          ...options,
+        });
     console.info("paper-trader-run completed", {
       durationMs: Date.now() - startedAt,
       mode: result.mode,
+      automation: automation ?? "legacy_paper_trader",
       dryRun: result.dryRun,
       openPaperTrades: result.guards.openPaperTrades,
       managementInspected: result.management.inspected,
