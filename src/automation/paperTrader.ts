@@ -55,6 +55,7 @@ import {
   type EntryRewardFeatureInput,
 } from "./entryRewardModel.js";
 import { buildLearningOutcomeAudit } from "./learningOutcomeAudit.js";
+import { evaluateLiveContinuationEntryGate } from "./liveContinuationEntryGate.js";
 import type { BidSideEntryPricingSnapshot } from "./entryPricing.js";
 import { buildPaperLearningPreferences } from "./paperLearningPreferences.js";
 import {
@@ -6048,6 +6049,39 @@ async function maybeEnterNewPaperTrade(params: {
 
       if (entryPolicy.decision === "block") {
         const decisionReason = entryPolicy.summary;
+        const symbol = scan.ticker ?? "unknown";
+        policySkippedSymbols.push(symbol);
+        policySkipReasons.push(`${symbol}: ${decisionReason}`);
+        evaluatedCandidates.push({
+          symbol: scan.ticker,
+          decision: "policy_blocked",
+          reason: decisionReason,
+          entryPolicy,
+          features: entryFeatures,
+        });
+        await recordEntryCandidateAudit({
+          scanRunId,
+          dryRun,
+          symbol: scan.ticker,
+          decision: "policy_blocked",
+          decisionReason,
+          features: entryFeatures,
+          entryPolicy,
+          scan,
+          tradeCard,
+        });
+        continue;
+      }
+
+      const liveContinuationGate = evaluateLiveContinuationEntryGate({
+        accountMode: config.accountMode,
+        symbol: scan.ticker,
+        entryPolicy,
+        entryFeatures,
+        scanReason: scan.reason,
+      });
+      if (!liveContinuationGate.allowed) {
+        const decisionReason = liveContinuationGate.reason ?? "Live continuation gate blocked this candidate.";
         const symbol = scan.ticker ?? "unknown";
         policySkippedSymbols.push(symbol);
         policySkipReasons.push(`${symbol}: ${decisionReason}`);

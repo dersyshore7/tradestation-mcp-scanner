@@ -21,8 +21,12 @@ import {
   buildEntryRewardFeatureSnapshot,
   recommendEntryPolicy,
   trainEntryRewardModel,
+  type EntryChartLearningContext,
+  type EntryPolicyRecommendation,
+  type EntryRewardFeatureInput,
 } from "./entryRewardModel.js";
 import { buildLearningOutcomeAudit } from "./learningOutcomeAudit.js";
+import { evaluateLiveContinuationEntryGate } from "./liveContinuationEntryGate.js";
 import { buildLearningReviewRepairPlan } from "./learningRepair.js";
 import {
   buildAiManagementPromptForTest,
@@ -118,6 +122,70 @@ function buildScan(): ScanResult {
     conclusion: "confirmed",
     reason: "test scan",
     telemetry,
+  };
+}
+
+function buildLiveGatePolicy(
+  decision: EntryPolicyRecommendation["decision"] = "allow",
+): EntryPolicyRecommendation {
+  return {
+    decision,
+    matchedKey: "test-key",
+    sampleSize: 20,
+    averageRewardR: decision === "caution" ? -0.1 : 0.5,
+    winRate: decision === "caution" ? 0.45 : 0.7,
+    summary: `Test policy ${decision}.`,
+  };
+}
+
+function buildLiveGateChartContext(
+  overrides: Partial<EntryChartLearningContext> = {},
+): EntryChartLearningContext {
+  return {
+    alignment: "pass",
+    expansion: "pass",
+    bodyWick: "pass",
+    chop: "pass",
+    continuation: "pass",
+    pullbackBody: "pass",
+    pullbackVolume: "pass",
+    triggerZone: "pass",
+    higherTimeframeRoom: "pass",
+    higherTimeframe2R: "pass",
+    asymmetryTier: "preferred_2r_or_better",
+    failedChecks: [],
+    movePct: 8,
+    roomPct: 20,
+    preReviewRewardRisk: 2.1,
+    postConfirmationRewardRisk: 2.1,
+    ...overrides,
+  };
+}
+
+type LiveGateFeatureOverrides = Omit<Partial<EntryRewardFeatureInput>, "chartContext"> & {
+  chartContext?: Partial<EntryChartLearningContext> | null;
+};
+
+function buildLiveGateFeatures(
+  overrides: LiveGateFeatureOverrides = {},
+): EntryRewardFeatureInput {
+  return {
+    direction: "CALL",
+    setupType: "bullish_continuation",
+    confidenceBucket: "75-84",
+    dteAtEntry: 15,
+    plannedRewardRisk: 1.7,
+    chartReviewScore: 9,
+    volumeRatio: 1,
+    optionSpread: 0.1,
+    marketRegime: "scanner_risk_on",
+    scanTier: "tier3",
+    entryDay: "Thu",
+    entryTime: "10:00:00",
+    ...overrides,
+    chartContext: overrides.chartContext === null
+      ? null
+      : buildLiveGateChartContext(overrides.chartContext ?? {}),
   };
 }
 
@@ -1503,6 +1571,221 @@ function buildAiManagementDecision(
     ...overrides,
   };
 }
+
+test("live continuation gate blocks weak loser patterns without blocking clean HIMS-style setup", () => {
+  const cases = [
+    {
+      symbol: "HOOD",
+      features: buildLiveGateFeatures({
+        volumeRatio: 0.59,
+        chartContext: {
+          expansion: "fail_downgrader",
+          failedChecks: ["impulse_consolidation", "expansion"],
+          movePct: 17.31,
+          postConfirmationRewardRisk: 2.39,
+        },
+      }),
+      policy: buildLiveGatePolicy("allow"),
+      allowed: false,
+      reason: /score 1\/4.*weak impulse\/hold.*light volume.*weak expansion/,
+    },
+    {
+      symbol: "U",
+      features: buildLiveGateFeatures({
+        volumeRatio: 0.81,
+        chartContext: {
+          failedChecks: ["impulse_consolidation"],
+          movePct: 13.15,
+          postConfirmationRewardRisk: 3.18,
+        },
+      }),
+      policy: buildLiveGatePolicy("allow"),
+      allowed: false,
+      reason: /score 2\/4.*weak impulse\/hold.*light volume/,
+    },
+    {
+      symbol: "RBLX",
+      features: buildLiveGateFeatures({
+        volumeRatio: 0.6,
+        chartContext: {
+          expansion: "fail_downgrader",
+          failedChecks: ["expansion", "fake_hold_distribution"],
+          movePct: 18.85,
+          postConfirmationRewardRisk: 1.55,
+        },
+      }),
+      policy: buildLiveGatePolicy("caution"),
+      allowed: false,
+      reason: /policy caution/,
+    },
+    {
+      symbol: "TFC",
+      features: buildLiveGateFeatures({
+        volumeRatio: 0.65,
+        chartContext: {
+          expansion: "fail_downgrader",
+          failedChecks: ["impulse_consolidation", "expansion"],
+          movePct: 9.61,
+          postConfirmationRewardRisk: 1.6,
+        },
+      }),
+      policy: buildLiveGatePolicy("allow"),
+      allowed: false,
+      reason: /score 1\/4/,
+    },
+    {
+      symbol: "HIMS",
+      features: buildLiveGateFeatures({
+        volumeRatio: 0.9,
+        chartContext: {
+          expansion: "fail_downgrader",
+          failedChecks: ["expansion"],
+          movePct: 16.56,
+          postConfirmationRewardRisk: 1.62,
+        },
+      }),
+      policy: buildLiveGatePolicy("favor"),
+      allowed: true,
+      reason: null,
+    },
+  ];
+
+  for (const item of cases) {
+    const result = evaluateLiveContinuationEntryGate({
+      accountMode: "live",
+      symbol: item.symbol,
+      entryPolicy: item.policy,
+      entryFeatures: item.features,
+      scanReason: null,
+    });
+
+    assert.equal(result.allowed, item.allowed, item.symbol);
+    if (item.reason) {
+      assert.match(result.reason ?? "", item.reason, item.symbol);
+    } else {
+      assert.equal(result.reason, null, item.symbol);
+    }
+  }
+});
+
+test("live continuation gate blocks extended sub-2R moves only when impulse hold is weak", () => {
+  const kmx = evaluateLiveContinuationEntryGate({
+    accountMode: "live",
+    symbol: "KMX",
+    entryPolicy: buildLiveGatePolicy("allow"),
+    entryFeatures: buildLiveGateFeatures({
+      volumeRatio: 1.29,
+      chartContext: {
+        failedChecks: ["impulse_consolidation"],
+        movePct: 24.27,
+        postConfirmationRewardRisk: 1.6,
+      },
+    }),
+  });
+  const pins = evaluateLiveContinuationEntryGate({
+    accountMode: "live",
+    symbol: "PINS",
+    entryPolicy: buildLiveGatePolicy("allow"),
+    entryFeatures: buildLiveGateFeatures({
+      volumeRatio: 0.93,
+      chartContext: {
+        failedChecks: ["impulse_consolidation"],
+        movePct: 16.31,
+        postConfirmationRewardRisk: 1.89,
+      },
+    }),
+  });
+  const cleanWinner = evaluateLiveContinuationEntryGate({
+    accountMode: "live",
+    symbol: "PYPL",
+    entryPolicy: buildLiveGatePolicy("allow"),
+    entryFeatures: buildLiveGateFeatures({
+      volumeRatio: 1.24,
+      chartContext: {
+        failedChecks: [],
+        movePct: 17,
+        postConfirmationRewardRisk: 1.55,
+      },
+    }),
+  });
+
+  assert.equal(kmx.allowed, false);
+  assert.match(kmx.reason ?? "", /extended move/);
+  assert.equal(pins.allowed, false);
+  assert.match(pins.reason ?? "", /extended move/);
+  assert.equal(cleanWinner.allowed, true);
+});
+
+test("live continuation gate allows clean winners with one imperfect confirmation", () => {
+  const result = evaluateLiveContinuationEntryGate({
+    accountMode: "live",
+    symbol: "ZS",
+    entryPolicy: buildLiveGatePolicy("allow"),
+    entryFeatures: buildLiveGateFeatures({
+      volumeRatio: 0.8,
+      chartContext: {
+        failedChecks: [],
+        movePct: 5.05,
+        postConfirmationRewardRisk: 1.5,
+      },
+    }),
+  });
+
+  assert.equal(result.allowed, true);
+  assert.equal(result.score, 3);
+});
+
+test("live continuation gate falls back to scan reason when structured checks are missing", () => {
+  const result = evaluateLiveContinuationEntryGate({
+    accountMode: "live",
+    symbol: "HOOD",
+    entryPolicy: buildLiveGatePolicy("allow"),
+    entryFeatures: buildLiveGateFeatures({
+      volumeRatio: null,
+      chartContext: null,
+    }),
+    scanReason:
+      "Problematic: caution: range expansion is weaker than ideal; " +
+      "caution: volume confirmation is limited; " +
+      "caution: impulse plus consolidation structure is not clean enough.",
+  });
+
+  assert.equal(result.allowed, false);
+  assert.match(result.reason ?? "", /score 1\/4.*weak impulse\/hold.*light volume.*weak expansion/);
+});
+
+test("live continuation gate does not apply to paper mode or non-continuation setups", () => {
+  const weakFeatures = buildLiveGateFeatures({
+    volumeRatio: 0.5,
+    chartContext: {
+      expansion: "fail_downgrader",
+      failedChecks: ["impulse_consolidation", "expansion", "fake_hold_distribution"],
+      movePct: 24,
+      postConfirmationRewardRisk: 1.4,
+    },
+  });
+
+  const paperResult = evaluateLiveContinuationEntryGate({
+    accountMode: "paper",
+    symbol: "HOOD",
+    entryPolicy: buildLiveGatePolicy("caution"),
+    entryFeatures: weakFeatures,
+  });
+  const nonContinuationResult = evaluateLiveContinuationEntryGate({
+    accountMode: "live",
+    symbol: "HOOD",
+    entryPolicy: buildLiveGatePolicy("caution"),
+    entryFeatures: {
+      ...weakFeatures,
+      setupType: "bullish_reversal",
+    },
+  });
+
+  assert.equal(paperResult.allowed, true);
+  assert.equal(paperResult.applied, false);
+  assert.equal(nonContinuationResult.allowed, true);
+  assert.equal(nonContinuationResult.applied, false);
+});
 
 test("paper learning cutoff excludes the first 14 days from entry and management training", () => {
   const beforeCutoff = buildLearningTrade({
