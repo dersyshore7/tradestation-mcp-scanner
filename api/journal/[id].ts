@@ -1,6 +1,5 @@
 import { closeJournalTrade, deleteJournalTrade, getJournalTradeById, updateJournalTrade } from "../../src/journal/repository.js";
 import { validateJournalTradeClosePayload, validateJournalTradeUpdatePayload } from "../../src/journal/validation.js";
-import { requireApiBearerAuth } from "../auth.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "../journal/shared.js";
 
 function readId(req: VercelRequestLike): string | null {
@@ -37,10 +36,6 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
   }
 
   if (req.method === "PATCH") {
-    if (!requireApiBearerAuth(req, res)) {
-      return;
-    }
-
     try {
       const payload = validateJournalTradeClosePayload(req.body);
       const trade = await closeJournalTrade(id, payload);
@@ -55,10 +50,6 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
   }
 
   if (req.method === "PUT") {
-    if (!requireApiBearerAuth(req, res)) {
-      return;
-    }
-
     try {
       const payload = validateJournalTradeUpdatePayload(req.body);
       const trade = await updateJournalTrade(id, payload);
@@ -85,10 +76,6 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
   }
 
   if (req.method === "DELETE") {
-    if (!requireApiBearerAuth(req, res)) {
-      return;
-    }
-
     try {
       await deleteJournalTrade(id);
       sendJson(res, 200, { deleted: true, id });

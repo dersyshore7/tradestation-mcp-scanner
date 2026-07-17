@@ -9,7 +9,7 @@ import {
 import { createOpenAiClient } from "../openai/client.js";
 import { closeJournalTrade, createJournalTrade, listJournalTradeDetails } from "../journal/repository.js";
 import type { JournalTradeDetail, JournalExitReason } from "../journal/types.js";
-import { readPaperTraderApiSecrets, readPaperTraderConfig } from "./config.js";
+import { readPaperTraderConfig } from "./config.js";
 import {
   getVirtualPaperAutomationBot,
   type VirtualPaperAutomationKey,
@@ -934,7 +934,6 @@ export async function getVirtualPaperAutomationStatus(automationKey: VirtualPape
     maxDailyLossUsd: null,
     maxPositionPct: VIRTUAL_POSITION_PCT,
     entryOrderManagementEnabled: false,
-    requiresSecret: readPaperTraderApiSecrets().length > 0,
     openPaperTrades: openTrades.length,
     liveSimPositions: null,
     staleOpenJournalTrades: null,

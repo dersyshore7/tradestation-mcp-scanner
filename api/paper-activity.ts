@@ -10,7 +10,6 @@ import {
   isVirtualPaperAutomationKey,
   type PaperAutomationKey,
 } from "../src/automation/paperAutomationBots.js";
-import { requireApiBearerAuth } from "./auth.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 type CandidateActivity = Pick<
@@ -102,10 +101,6 @@ async function loadCandidateActivity(scanRunIds: Set<string>, paperAutomationKey
 }
 
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
-  if (!requireApiBearerAuth(req, res)) {
-    return;
-  }
-
   if (req.method !== "GET") {
     sendError(res, 404, "Use GET /api/paper-activity");
     return;

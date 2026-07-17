@@ -1,7 +1,6 @@
 import { getJournalInsights } from "../../src/journal/repository.js";
 import { getPaperTraderSizingSnapshot } from "../../src/automation/paperTrader.js";
 import { ACCOUNT_MODES, type AccountMode } from "../../src/journal/types.js";
-import { isApiBearerAuthorized } from "../auth.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./shared.js";
 
 function firstQueryValue(value: string | string[] | undefined): string | undefined {
@@ -42,18 +41,22 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
       ...(accountMode ? { accountMode } : {}),
     });
     const simAccount = includeSimAccount
-      ? isApiBearerAuthorized(req)
-        ? await getPaperTraderSizingSnapshot(accountMode ?? "paper")
-        : {
-            accountValueUsd: null,
-            cashBalanceUsd: null,
-            unrealizedPlUsd: null,
-            equitiesBuyingPowerUsd: null,
-            optionsBuyingPowerUsd: null,
-            dayTradeExcessUsd: null,
-            maxPositionCostUsd: null,
-            error: "Unauthorized to load TradeStation SIM account snapshot.",
-          }
+      ? await getPaperTraderSizingSnapshot(accountMode ?? "paper").catch((error) => ({
+          accountValueUsd: null,
+          beginningOfDayAccountValueUsd: null,
+          cashBalanceUsd: null,
+          unrealizedPlUsd: null,
+          equitiesBuyingPowerUsd: null,
+          optionsBuyingPowerUsd: null,
+          dayTradeExcessUsd: null,
+          maxPositionCostUsd: null,
+          openPositionCount: null,
+          openContractCount: null,
+          openPositionCostUsd: null,
+          openPositionMarketValueUsd: null,
+          positions: [],
+          error: error instanceof Error ? error.message : "TradeStation account snapshot unavailable.",
+        }))
       : null;
     sendJson(res, 200, { insights: { ...insights, sim_account: simAccount } });
   } catch (error) {

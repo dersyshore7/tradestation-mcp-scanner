@@ -2,7 +2,6 @@ import {
   isTradeRecommendationsTableMissing,
   markTradeRecommendationJournaled,
 } from "../../src/recommendations/repository.js";
-import { requireApiBearerAuth } from "../auth.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "../journal/shared.js";
 
 function readId(req: VercelRequestLike): string | null {
@@ -38,10 +37,6 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
 
   if (req.method !== "PATCH") {
     sendError(res, 404, "Use PATCH /api/recommendations/:id");
-    return;
-  }
-
-  if (!requireApiBearerAuth(req, res)) {
     return;
   }
 

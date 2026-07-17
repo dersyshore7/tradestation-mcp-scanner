@@ -1322,15 +1322,6 @@
           </div>
         </div>
 
-        <label for="paperTraderSecret">Paper trader secret</label>
-        <input
-          id="paperTraderSecret"
-          type="password"
-          placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET"
-          autocomplete="off"
-        />
-        <div class="field-note">Required for dashboard/activity reads, status checks, and manual automation cycles.</div>
-
         <details>
           <summary>Optional prompt override</summary>
           <div id="paperTraderPromptFields">
@@ -1389,9 +1380,6 @@
             <button id="runPoliticianTraderLiveButton">Run Virtual Cycle</button>
           </div>
         </div>
-        <label for="politicianTraderSecret">Automation secret</label>
-        <input id="politicianTraderSecret" type="password" placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET" autocomplete="off" />
-        <div class="field-note">Required for dashboard/activity reads and virtual controls. Virtual cycles use read-only market data and journal-only fills.</div>
         <div id="politicianTraderArea" class="muted">Load status to confirm the virtual paper automation.</div>
       </div>
       </section>
@@ -1442,9 +1430,6 @@
             <button id="runNewsTraderLiveButton">Run Virtual Cycle</button>
           </div>
         </div>
-        <label for="newsTraderSecret">Automation secret</label>
-        <input id="newsTraderSecret" type="password" placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET" autocomplete="off" />
-        <div class="field-note">Required for dashboard/activity reads and virtual controls. Virtual cycles use read-only market data and journal-only fills.</div>
         <div id="newsTraderArea" class="muted">Load status to confirm the virtual paper automation.</div>
       </div>
       </section>
@@ -1495,9 +1480,6 @@
             <button id="runLeapsTraderLiveButton">Run Virtual Cycle</button>
           </div>
         </div>
-        <label for="leapsTraderSecret">Automation secret</label>
-        <input id="leapsTraderSecret" type="password" placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET" autocomplete="off" />
-        <div class="field-note">Required for dashboard/activity reads and virtual controls. Virtual cycles use read-only market data and journal-only fills.</div>
         <div id="leapsTraderArea" class="muted">Load status to confirm the virtual paper automation.</div>
       </div>
       </section>
@@ -1548,9 +1530,6 @@
             <button id="runSupportTraderLiveButton">Run Virtual Cycle</button>
           </div>
         </div>
-        <label for="supportTraderSecret">Automation secret</label>
-        <input id="supportTraderSecret" type="password" placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET" autocomplete="off" />
-        <div class="field-note">Required for dashboard/activity reads and virtual controls. Virtual cycles use read-only market data and journal-only fills.</div>
         <div id="supportTraderArea" class="muted">Load status to confirm the virtual paper automation.</div>
       </div>
       </section>
@@ -1603,15 +1582,6 @@
             <button id="runLiveTraderLiveButton">Run Order Cycle</button>
           </div>
         </div>
-
-        <label for="liveTraderSecret">Live trader secret</label>
-        <input
-          id="liveTraderSecret"
-          type="password"
-          placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET"
-          autocomplete="off"
-        />
-        <div class="field-note">Required for dashboard/activity reads, status checks, and manual automation cycles.</div>
 
         <details>
           <summary>Optional prompt override</summary>
@@ -1960,7 +1930,6 @@
       const editCloseReviewNotesInput = document.getElementById("editCloseReviewNotes");
       const saveEditTradeButton = document.getElementById("saveEditTrade");
       const closeEditTradeModalButton = document.getElementById("closeEditTradeModal");
-      const paperTraderSecretInput = document.getElementById("paperTraderSecret");
       const paperTraderPromptInput = document.getElementById("paperTraderPrompt");
       const paperDashboardArea = document.getElementById("paperDashboardArea");
       const refreshPaperDashboardButton = document.getElementById("refreshPaperDashboardButton");
@@ -1971,7 +1940,6 @@
       const checkPaperTraderOrdersButton = document.getElementById("checkPaperTraderOrdersButton");
       const runPaperTraderDryButton = document.getElementById("runPaperTraderDryButton");
       const runPaperTraderLiveButton = document.getElementById("runPaperTraderLiveButton");
-      const politicianTraderSecretInput = document.getElementById("politicianTraderSecret");
       const politicianDashboardArea = document.getElementById("politicianDashboardArea");
       const refreshPoliticianDashboardButton = document.getElementById("refreshPoliticianDashboardButton");
       const politicianAutomationActivityArea = document.getElementById("politicianAutomationActivityArea");
@@ -1981,7 +1949,6 @@
       const checkPoliticianTraderOrdersButton = document.getElementById("checkPoliticianTraderOrdersButton");
       const runPoliticianTraderDryButton = document.getElementById("runPoliticianTraderDryButton");
       const runPoliticianTraderLiveButton = document.getElementById("runPoliticianTraderLiveButton");
-      const newsTraderSecretInput = document.getElementById("newsTraderSecret");
       const newsDashboardArea = document.getElementById("newsDashboardArea");
       const refreshNewsDashboardButton = document.getElementById("refreshNewsDashboardButton");
       const newsAutomationActivityArea = document.getElementById("newsAutomationActivityArea");
@@ -1991,7 +1958,6 @@
       const checkNewsTraderOrdersButton = document.getElementById("checkNewsTraderOrdersButton");
       const runNewsTraderDryButton = document.getElementById("runNewsTraderDryButton");
       const runNewsTraderLiveButton = document.getElementById("runNewsTraderLiveButton");
-      const leapsTraderSecretInput = document.getElementById("leapsTraderSecret");
       const leapsDashboardArea = document.getElementById("leapsDashboardArea");
       const refreshLeapsDashboardButton = document.getElementById("refreshLeapsDashboardButton");
       const leapsAutomationActivityArea = document.getElementById("leapsAutomationActivityArea");
@@ -2001,7 +1967,6 @@
       const checkLeapsTraderOrdersButton = document.getElementById("checkLeapsTraderOrdersButton");
       const runLeapsTraderDryButton = document.getElementById("runLeapsTraderDryButton");
       const runLeapsTraderLiveButton = document.getElementById("runLeapsTraderLiveButton");
-      const supportTraderSecretInput = document.getElementById("supportTraderSecret");
       const supportDashboardArea = document.getElementById("supportDashboardArea");
       const refreshSupportDashboardButton = document.getElementById("refreshSupportDashboardButton");
       const supportAutomationActivityArea = document.getElementById("supportAutomationActivityArea");
@@ -2011,7 +1976,6 @@
       const checkSupportTraderOrdersButton = document.getElementById("checkSupportTraderOrdersButton");
       const runSupportTraderDryButton = document.getElementById("runSupportTraderDryButton");
       const runSupportTraderLiveButton = document.getElementById("runSupportTraderLiveButton");
-      const liveTraderSecretInput = document.getElementById("liveTraderSecret");
       const liveTraderPromptInput = document.getElementById("liveTraderPrompt");
       const liveDashboardArea = document.getElementById("liveDashboardArea");
       const refreshLiveDashboardButton = document.getElementById("refreshLiveDashboardButton");
@@ -2058,7 +2022,6 @@
           checkOrdersButton: checkPaperTraderOrdersButton,
           runDryButton: runPaperTraderDryButton,
           runOrderButton: runPaperTraderLiveButton,
-          secretInput: paperTraderSecretInput,
           promptInput: paperTraderPromptInput,
           dashboardHasLoaded: false,
           activityHasLoaded: false,
@@ -2082,7 +2045,6 @@
           checkOrdersButton: checkPoliticianTraderOrdersButton,
           runDryButton: runPoliticianTraderDryButton,
           runOrderButton: runPoliticianTraderLiveButton,
-          secretInput: politicianTraderSecretInput,
           promptInput: null,
           dashboardHasLoaded: false,
           activityHasLoaded: false,
@@ -2106,7 +2068,6 @@
           checkOrdersButton: checkNewsTraderOrdersButton,
           runDryButton: runNewsTraderDryButton,
           runOrderButton: runNewsTraderLiveButton,
-          secretInput: newsTraderSecretInput,
           promptInput: null,
           dashboardHasLoaded: false,
           activityHasLoaded: false,
@@ -2130,7 +2091,6 @@
           checkOrdersButton: checkLeapsTraderOrdersButton,
           runDryButton: runLeapsTraderDryButton,
           runOrderButton: runLeapsTraderLiveButton,
-          secretInput: leapsTraderSecretInput,
           promptInput: null,
           dashboardHasLoaded: false,
           activityHasLoaded: false,
@@ -2154,7 +2114,6 @@
           checkOrdersButton: checkSupportTraderOrdersButton,
           runDryButton: runSupportTraderDryButton,
           runOrderButton: runSupportTraderLiveButton,
-          secretInput: supportTraderSecretInput,
           promptInput: null,
           dashboardHasLoaded: false,
           activityHasLoaded: false,
@@ -2178,7 +2137,6 @@
           checkOrdersButton: checkLiveTraderOrdersButton,
           runDryButton: runLiveTraderDryButton,
           runOrderButton: runLiveTraderLiveButton,
-          secretInput: liveTraderSecretInput,
           promptInput: liveTraderPromptInput,
           dashboardHasLoaded: false,
           activityHasLoaded: false,
@@ -3066,14 +3024,6 @@
 
       function buildPaperTraderHeaders(page = traderPages.paper, includeJson = false) {
         const headers = {};
-        const secret = page.secretInput?.value?.trim()
-          || Object.values(traderPages)
-            .map((candidate) => candidate.secretInput?.value?.trim() || "")
-            .find((candidate) => candidate.length > 0)
-          || "";
-        if (secret) {
-          headers.authorization = `Bearer ${secret}`;
-        }
         if (includeJson) {
           headers["content-type"] = "application/json";
         }
@@ -3946,7 +3896,7 @@
         if (!contentType.toLowerCase().includes("application/json")) {
           const text = await response.text();
           if (text.includes("Authentication Required") || text.includes("Vercel Authentication")) {
-            throw new Error("This preview is behind Vercel Authentication. Open the preview in Vercel first or disable deployment protection before testing the paper trader here.");
+            throw new Error("This preview is behind Vercel Authentication. Open the preview in Vercel first or disable deployment protection before testing this page.");
           }
           throw new Error(`${fallbackMessage} ${text.slice(0, 200) || "Empty response."}`);
         }
@@ -3954,7 +3904,7 @@
         const data = await response.json();
         if (!response.ok) {
           if (response.status === 401) {
-            throw new Error("Unauthorized. Re-enter the current Paper Trader secret from Vercel, then try again.");
+            throw new Error(data?.message || "Unauthorized.");
           }
           throw new Error(data?.message || fallbackMessage);
         }
@@ -4134,7 +4084,6 @@
           <div class="journal-trade">
             <div class="row"><strong>Automation base URL:</strong> ${escapeHtml(renderMaybe(status?.automationBaseUrl))}</div>
             <div class="row"><strong>Account mode:</strong> ${escapeHtml(accountModeLabel)} | <strong>TradeStation environment:</strong> ${escapeHtml(environmentLabel)}</div>
-            <div class="row"><strong>Route secret required:</strong> ${escapeHtml(formatBoolean(status?.requiresSecret))}</div>
             <div class="row"><strong>Configuration checks:</strong> ${configurationIssues.length > 0 ? renderList(configurationIssues) : `<span class="muted">${escapeHtml(environmentLabel)} configuration is ready.</span>`}</div>
             ${dataWarnings.length > 0 ? `<div class="row"><strong>Data warnings:</strong> ${renderList(dataWarnings)}</div>` : ""}
             <div class="row"><strong>Autonomous cron:</strong> ${page.virtual ? `Staggered weekdays via <code>/api/paper-trader-run?mode=paper&amp;automation=${escapeHtml(page.automationKey)}</code>; uses read-only quotes and journal-only virtual fills.` : `Every 5 minutes on weekdays via <code>/api/paper-trader-run?mode=${escapeHtml(page.mode)}&amp;reconcileOrders=true</code>; can reconcile fills, manage exits, and enter new ${escapeHtml(accountModeLabel.toLowerCase())} trades when guards allow.`}</div>
@@ -4914,19 +4863,14 @@
         }
 
         try {
-          const secret = paperTraderSecretInput?.value?.trim() || "";
           const params = new URLSearchParams();
+          params.set("includeSimAccount", "true");
           if (includeReasoning) {
             params.set("includeReasoning", "true");
             params.set("limit", "75");
           }
-          if (secret) {
-            params.set("includeSimAccount", "true");
-          }
           const query = params.toString();
-          const response = await fetch(`/api/journal/insights${query ? `?${query}` : ""}`, {
-            headers: secret ? { authorization: `Bearer ${secret}` } : {},
-          });
+          const response = await fetch(`/api/journal/insights${query ? `?${query}` : ""}`);
           const data = await response.json();
           if (!response.ok) {
             throw new Error(data?.message || "Failed to load journal insights.");
@@ -5423,7 +5367,7 @@
               ${simAccount.error
                 ? `<div class="empty-state" style="margin-top: 12px;">${escapeHtml(simAccount.error)}</div>`
                 : `<div class="empty-state" style="margin-top: 12px;">TradeStation account cards come directly from broker balances. Journal cards below come from local saved trade rows and can be out of sync until reconciliation/backfill fixes the journal data.</div>`}`
-            : `<div class="empty-state">Enter the paper-trader secret above and refresh insights to include the configured TradeStation account snapshot.</div>`}
+            : `<div class="empty-state">TradeStation account snapshot is unavailable for this view.</div>`}
 
           <div class="stats-grid">
             <div class="stat-card">

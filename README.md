@@ -224,8 +224,6 @@ A separate automation module supports explicit TradeStation SIM paper trading an
 - Read-only monitor mode: `GET /api/paper-trader-run?mode=paper|live&reconcileOnly=true&reconcileOrders=true&skipNewEntry=true` is still available for manual order checks
 - CLI: `npm run paper-trader:run -- --mode=paper|live`
 
-The automation status/run, dashboard, activity, journal mutation, recommendation mutation, late-trade review, and loss post-mortem routes require `Authorization: Bearer <AUTO_TRADER_API_SECRET or CRON_SECRET>`.
-
 What one automation cycle does:
 
 1. Load open trades for the configured account mode from the journal
@@ -253,15 +251,12 @@ Safety defaults:
 - New entries are capped by the lane-specific max-position setting, defaulting to 10% of the configured TradeStation account value
 - There is no open-trade-count cap; each full 5-minute cron cycle can add one new non-duplicate setup if the scan and trade card both pass
 - Daily losses are not capped; the automation keeps collecting trade outcomes so the policy memory can learn from both winners and losers
-- Sensitive API routes require bearer auth from `AUTO_TRADER_API_SECRET` or `CRON_SECRET`
 - Live runs skip themselves outside regular US equity market hours; dry runs still work anytime
 - Vercel Pro cron runs the full paper-trader cycle every 5 minutes on weekdays during the configured UTC window
 
 Recommended env vars for the separate automation module:
 
 ```bash
-AUTO_TRADER_API_SECRET=your_long_random_secret
-
 PAPER_TRADESTATION_AUTOMATION_BASE_URL=https://sim-api.tradestation.com/v3
 PAPER_TRADESTATION_AUTOMATION_ACCOUNT_ID=your_sim_account_id
 PAPER_AUTO_TRADER_ALLOW_ORDER_PLACEMENT=0
@@ -292,8 +287,7 @@ Use `automation=<key>` with the existing paper endpoints, for example:
 
 ```bash
 curl "https://your-deployment.vercel.app/api/paper-dashboard?mode=paper&automation=politician_replica"
-curl "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&automation=news_reasoning_ai" \
-  -H "Authorization: Bearer your_long_random_secret"
+curl "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&automation=news_reasoning_ai"
 ```
 
 These virtual bots never place TradeStation orders. They write journal-only entries and exits scoped by `paper_automation_key`, while the live lane remains unchanged. Congressional-disclosure and news-backed bots use Financial Modeling Prep when `FMP_API_KEY` is configured; without it they record a no-trade/source-warning cycle.
@@ -308,7 +302,6 @@ API trigger example:
 
 ```bash
 curl -X POST https://your-deployment.vercel.app/api/paper-trader \
-  -H "Authorization: Bearer your_long_random_secret" \
   -H "Content-Type: application/json" \
   -d '{"mode":"paper","dryRun":true}'
 ```
@@ -316,22 +309,19 @@ curl -X POST https://your-deployment.vercel.app/api/paper-trader \
 Cron/manual GET example:
 
 ```bash
-curl "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&dryRun=true" \
-  -H "Authorization: Bearer your_long_random_secret"
+curl "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&dryRun=true"
 ```
 
 Read-only order monitor example:
 
 ```bash
-curl "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&reconcileOnly=true&reconcileOrders=true&skipNewEntry=true" \
-  -H "Authorization: Bearer your_long_random_secret"
+curl "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&reconcileOnly=true&reconcileOrders=true&skipNewEntry=true"
 ```
 
 Full automation run example:
 
 ```bash
-curl "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&reconcileOrders=true" \
-  -H "Authorization: Bearer your_long_random_secret"
+curl "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&reconcileOrders=true"
 ```
 
 Notes:

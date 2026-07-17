@@ -382,7 +382,6 @@ export type PaperTraderStatus = {
   maxDailyLossUsd: number | null;
   maxPositionPct: number;
   entryOrderManagementEnabled: boolean;
-  requiresSecret: boolean;
   openPaperTrades: number;
   liveSimPositions: number | null;
   staleOpenJournalTrades: number | null;
@@ -946,10 +945,6 @@ function buildPaperTraderConfigurationIssues(config: PaperTraderConfig): string[
     issues.push(
       `Set ${baseUrlEnv}=${config.lane === "live" ? TRADESTATION_LIVE_AUTOMATION_BASE_URL : TRADESTATION_SIM_AUTOMATION_BASE_URL}.`,
     );
-  }
-
-  if (config.allowOrderPlacement && !config.apiSecret) {
-    issues.push(`Set AUTO_TRADER_API_SECRET or CRON_SECRET before enabling ${environmentLabel} order placement.`);
   }
 
   return issues;
@@ -3769,7 +3764,6 @@ export async function getPaperTraderStatus(mode: AutomationLane = "paper"): Prom
     maxDailyLossUsd: config.maxDailyLossUsd,
     maxPositionPct: config.maxPositionPct,
     entryOrderManagementEnabled: config.manageEntryOrders,
-    requiresSecret: config.apiSecret !== null,
     openPaperTrades: openJournalTrades.length,
     liveSimPositions,
     staleOpenJournalTrades,

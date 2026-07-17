@@ -1,7 +1,6 @@
 import { DEFAULT_SCAN_PROMPT } from "../config/defaultScanPrompt.js";
 import type { AccountMode } from "../journal/types.js";
 
-const AUTO_TRADER_API_SECRET_ENV = "AUTO_TRADER_API_SECRET";
 const TRADESTATION_AUTOMATION_BASE_URL_ENV = "TRADESTATION_AUTOMATION_BASE_URL";
 const TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV = "TRADESTATION_AUTOMATION_ACCOUNT_ID";
 const PAPER_TRADESTATION_AUTOMATION_BASE_URL_ENV = "PAPER_TRADESTATION_AUTOMATION_BASE_URL";
@@ -36,7 +35,6 @@ export type PaperTraderConfig = {
   maxDailyLossUsd: number | null;
   maxPositionPct: number;
   scanPrompt: string;
-  apiSecret: string | null;
   automationBaseUrl: string;
   tradeStationEnvironment: TradeStationEnvironment;
   accountMode: AccountMode;
@@ -205,15 +203,6 @@ function configLabelForLane(lane: AutomationLane): string {
   return lane === "live" ? "LIVE" : "PAPER";
 }
 
-export function readPaperTraderApiSecrets(): string[] {
-  return [
-    readStringEnv(AUTO_TRADER_API_SECRET_ENV),
-    readStringEnv("CRON_SECRET"),
-  ].filter((value, index, values): value is string =>
-    value !== null && values.indexOf(value) === index
-  );
-}
-
 export function readPaperTraderConfig(lane: AutomationLane = "paper"): PaperTraderConfig {
   const automationBaseUrl = (
     readStringEnvFrom(baseUrlEnvNamesForLane(lane))
@@ -241,7 +230,6 @@ export function readPaperTraderConfig(lane: AutomationLane = "paper"): PaperTrad
     maxDailyLossUsd: null,
     maxPositionPct: readPositiveRatioEnvFrom(maxPositionPctEnvNamesForLane(lane), 0.1),
     scanPrompt: readStringEnvFrom(scanPromptEnvNamesForLane(lane)) ?? DEFAULT_SCAN_PROMPT,
-    apiSecret: readPaperTraderApiSecrets()[0] ?? null,
     automationBaseUrl,
     tradeStationEnvironment,
     accountMode: lane,
@@ -285,12 +273,6 @@ export function assertPaperTraderConfig(config: PaperTraderConfig): void {
   if (config.tradeStationEnvironment !== expectedEnvironment) {
     throw new Error(
       `${configLabelForLane(config.lane)} automation must use the ${expectedEnvironment === "live" ? "LIVE" : "SIM"} TradeStation URL.`,
-    );
-  }
-
-  if (config.allowOrderPlacement && !config.apiSecret) {
-    throw new Error(
-      `Set ${AUTO_TRADER_API_SECRET_ENV} or CRON_SECRET before enabling order placement.`,
     );
   }
 }
