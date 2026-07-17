@@ -1329,7 +1329,7 @@
           placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET"
           autocomplete="off"
         />
-        <div class="field-note">Required only for protected controls such as status checks and manual automation cycles. The dashboard above loads automatically without this password.</div>
+        <div class="field-note">Required for dashboard/activity reads, status checks, and manual automation cycles.</div>
 
         <details>
           <summary>Optional prompt override</summary>
@@ -1391,7 +1391,7 @@
         </div>
         <label for="politicianTraderSecret">Automation secret</label>
         <input id="politicianTraderSecret" type="password" placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET" autocomplete="off" />
-        <div class="field-note">Required only when protected controls are enabled. Virtual cycles use read-only market data and journal-only fills.</div>
+        <div class="field-note">Required for dashboard/activity reads and virtual controls. Virtual cycles use read-only market data and journal-only fills.</div>
         <div id="politicianTraderArea" class="muted">Load status to confirm the virtual paper automation.</div>
       </div>
       </section>
@@ -1444,7 +1444,7 @@
         </div>
         <label for="newsTraderSecret">Automation secret</label>
         <input id="newsTraderSecret" type="password" placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET" autocomplete="off" />
-        <div class="field-note">Required only when protected controls are enabled. Virtual cycles use read-only market data and journal-only fills.</div>
+        <div class="field-note">Required for dashboard/activity reads and virtual controls. Virtual cycles use read-only market data and journal-only fills.</div>
         <div id="newsTraderArea" class="muted">Load status to confirm the virtual paper automation.</div>
       </div>
       </section>
@@ -1497,7 +1497,7 @@
         </div>
         <label for="leapsTraderSecret">Automation secret</label>
         <input id="leapsTraderSecret" type="password" placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET" autocomplete="off" />
-        <div class="field-note">Required only when protected controls are enabled. Virtual cycles use read-only market data and journal-only fills.</div>
+        <div class="field-note">Required for dashboard/activity reads and virtual controls. Virtual cycles use read-only market data and journal-only fills.</div>
         <div id="leapsTraderArea" class="muted">Load status to confirm the virtual paper automation.</div>
       </div>
       </section>
@@ -1550,7 +1550,7 @@
         </div>
         <label for="supportTraderSecret">Automation secret</label>
         <input id="supportTraderSecret" type="password" placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET" autocomplete="off" />
-        <div class="field-note">Required only when protected controls are enabled. Virtual cycles use read-only market data and journal-only fills.</div>
+        <div class="field-note">Required for dashboard/activity reads and virtual controls. Virtual cycles use read-only market data and journal-only fills.</div>
         <div id="supportTraderArea" class="muted">Load status to confirm the virtual paper automation.</div>
       </div>
       </section>
@@ -1611,7 +1611,7 @@
           placeholder="CRON_SECRET or AUTO_TRADER_API_SECRET"
           autocomplete="off"
         />
-        <div class="field-note">Required only for protected controls such as status checks and manual automation cycles. The dashboard above loads automatically without this password.</div>
+        <div class="field-note">Required for dashboard/activity reads, status checks, and manual automation cycles.</div>
 
         <details>
           <summary>Optional prompt override</summary>
@@ -2060,7 +2060,6 @@
           runOrderButton: runPaperTraderLiveButton,
           secretInput: paperTraderSecretInput,
           promptInput: paperTraderPromptInput,
-          secretStorageKey: "paperTraderApiSecret",
           dashboardHasLoaded: false,
           activityHasLoaded: false,
           outcomeDetailsExpanded: false,
@@ -2085,7 +2084,6 @@
           runOrderButton: runPoliticianTraderLiveButton,
           secretInput: politicianTraderSecretInput,
           promptInput: null,
-          secretStorageKey: "politicianTraderApiSecret",
           dashboardHasLoaded: false,
           activityHasLoaded: false,
           outcomeDetailsExpanded: false,
@@ -2110,7 +2108,6 @@
           runOrderButton: runNewsTraderLiveButton,
           secretInput: newsTraderSecretInput,
           promptInput: null,
-          secretStorageKey: "newsTraderApiSecret",
           dashboardHasLoaded: false,
           activityHasLoaded: false,
           outcomeDetailsExpanded: false,
@@ -2135,7 +2132,6 @@
           runOrderButton: runLeapsTraderLiveButton,
           secretInput: leapsTraderSecretInput,
           promptInput: null,
-          secretStorageKey: "leapsTraderApiSecret",
           dashboardHasLoaded: false,
           activityHasLoaded: false,
           outcomeDetailsExpanded: false,
@@ -2160,7 +2156,6 @@
           runOrderButton: runSupportTraderLiveButton,
           secretInput: supportTraderSecretInput,
           promptInput: null,
-          secretStorageKey: "supportTraderApiSecret",
           dashboardHasLoaded: false,
           activityHasLoaded: false,
           outcomeDetailsExpanded: false,
@@ -2185,7 +2180,6 @@
           runOrderButton: runLiveTraderLiveButton,
           secretInput: liveTraderSecretInput,
           promptInput: liveTraderPromptInput,
-          secretStorageKey: "liveTraderApiSecret",
           dashboardHasLoaded: false,
           activityHasLoaded: false,
           outcomeDetailsExpanded: false,
@@ -2260,16 +2254,6 @@
       if (defaultPromptText) {
         defaultPromptText.textContent = "Loading...";
       }
-
-      Object.values(traderPages).forEach((page) => {
-        if (page.secretInput) {
-          try {
-            page.secretInput.value = window.localStorage.getItem(page.secretStorageKey) || "";
-          } catch {
-            page.secretInput.value = "";
-          }
-        }
-      });
 
       if (lateEntryDateInput && !lateEntryDateInput.value) {
         lateEntryDateInput.value = formatDateInputValue(new Date());
@@ -3082,7 +3066,11 @@
 
       function buildPaperTraderHeaders(page = traderPages.paper, includeJson = false) {
         const headers = {};
-        const secret = page.secretInput?.value?.trim() || "";
+        const secret = page.secretInput?.value?.trim()
+          || Object.values(traderPages)
+            .map((candidate) => candidate.secretInput?.value?.trim() || "")
+            .find((candidate) => candidate.length > 0)
+          || "";
         if (secret) {
           headers.authorization = `Bearer ${secret}`;
         }
@@ -4363,7 +4351,9 @@
           if (page.automationKey) {
             params.set("automation", page.automationKey);
           }
-          const response = await fetch(`/api/paper-dashboard?${params.toString()}`);
+          const response = await fetch(`/api/paper-dashboard?${params.toString()}`, {
+            headers: buildPaperTraderHeaders(page),
+          });
           const data = await readJsonResponse(response, `Failed to load ${page.tradeLabel} dashboard.`);
           renderPaperDashboard(data?.dashboard || null, page);
         } catch (error) {
@@ -4394,7 +4384,9 @@
           if (page.automationKey) {
             params.set("automation", page.automationKey);
           }
-          const response = await fetch(`/api/paper-activity?${params.toString()}`);
+          const response = await fetch(`/api/paper-activity?${params.toString()}`, {
+            headers: buildPaperTraderHeaders(page),
+          });
           const data = await readJsonResponse(response, "Failed to load automation activity.");
           renderPaperAutomationActivity(data?.activity || null, page);
         } catch (error) {
@@ -4618,7 +4610,7 @@
         try {
           const response = await fetch("/api/late-trade-review", {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: buildPaperTraderHeaders(traderPages.paper, true),
             body: JSON.stringify(buildLateTradeReviewPayload()),
           });
           const data = await readJsonResponse(response, "Late trade review failed.");
@@ -4983,7 +4975,7 @@
 
         const response = await fetch(`/api/recommendations/${encodeURIComponent(recommendationId)}`, {
           method: "PATCH",
-          headers: { "content-type": "application/json" },
+          headers: buildPaperTraderHeaders(traderPages.paper, true),
           body: JSON.stringify({ journal_trade_id: journalTradeId }),
         });
         const data = await response.json();
@@ -5965,13 +5957,6 @@
       refreshJournalButton?.addEventListener("click", loadJournalTrades);
       refreshRecommendationsButton?.addEventListener("click", loadTradeRecommendations);
       Object.values(traderPages).forEach((page) => {
-        page.secretInput?.addEventListener("input", () => {
-          try {
-            window.localStorage.setItem(page.secretStorageKey, page.secretInput.value);
-          } catch {
-            // Ignore browsers where localStorage is unavailable.
-          }
-        });
         page.loadStatusButton?.addEventListener("click", () => loadPaperTraderStatus(page));
         page.refreshDashboardButton?.addEventListener("click", () => loadPaperDashboard(page));
         page.refreshActivityButton?.addEventListener("click", () => loadPaperAutomationActivity(page));
@@ -6047,6 +6032,7 @@
           try {
             const response = await fetch(`/api/journal/${encodeURIComponent(tradeId)}`, {
               method: "DELETE",
+              headers: buildPaperTraderHeaders(traderPages.paper),
             });
             const data = await response.json();
             if (!response.ok) {
@@ -6107,7 +6093,7 @@
 
           const response = await fetch("/api/journal", {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: buildPaperTraderHeaders(traderPages.paper, true),
             body: JSON.stringify(payload),
           });
           const data = await response.json();
@@ -6200,7 +6186,7 @@
 
           const response = await fetch(`/api/journal/${encodeURIComponent(selectedTradeToEdit.id)}`, {
             method: "PUT",
-            headers: { "content-type": "application/json" },
+            headers: buildPaperTraderHeaders(traderPages.paper, true),
             body: JSON.stringify(payload),
           });
           const data = await response.json();
@@ -6251,7 +6237,7 @@
 
           const response = await fetch(`/api/journal/${encodeURIComponent(selectedTradeToClose.id)}`, {
             method: "PATCH",
-            headers: { "content-type": "application/json" },
+            headers: buildPaperTraderHeaders(traderPages.paper, true),
             body: JSON.stringify(payload),
           });
           const data = await response.json();

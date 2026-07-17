@@ -18,7 +18,7 @@ That tool checks for a single symbol prompt first. If present, it runs the same 
 
 If no single symbol is detected, it runs a real-data scan-and-review pipeline on a maintained static universe of roughly 500 liquid, options-heavy U.S. names and ETFs defined in `src/config/scanUniverseTiers.ts`.
 
-The fake scanner fallback is still present only as a safety fallback if real-data requests fail.
+If the real-data universe scan fails, the scanner fails closed with `no_trade_today`; it does not synthesize a mock candidate.
 
 
 
@@ -224,6 +224,8 @@ A separate automation module supports explicit TradeStation SIM paper trading an
 - Read-only monitor mode: `GET /api/paper-trader-run?mode=paper|live&reconcileOnly=true&reconcileOrders=true&skipNewEntry=true` is still available for manual order checks
 - CLI: `npm run paper-trader:run -- --mode=paper|live`
 
+The automation status/run, dashboard, activity, journal mutation, recommendation mutation, late-trade review, and loss post-mortem routes require `Authorization: Bearer <AUTO_TRADER_API_SECRET or CRON_SECRET>`.
+
 What one automation cycle does:
 
 1. Load open trades for the configured account mode from the journal
@@ -251,7 +253,7 @@ Safety defaults:
 - New entries are capped by the lane-specific max-position setting, defaulting to 10% of the configured TradeStation account value
 - There is no open-trade-count cap; each full 5-minute cron cycle can add one new non-duplicate setup if the scan and trade card both pass
 - Daily losses are not capped; the automation keeps collecting trade outcomes so the policy memory can learn from both winners and losers
-- The API route can be protected with `AUTO_TRADER_API_SECRET` or `CRON_SECRET`
+- Sensitive API routes require bearer auth from `AUTO_TRADER_API_SECRET` or `CRON_SECRET`
 - Live runs skip themselves outside regular US equity market hours; dry runs still work anytime
 - Vercel Pro cron runs the full paper-trader cycle every 5 minutes on weekdays during the configured UTC window
 
@@ -355,7 +357,7 @@ npm run policy:train
 
 The journal uses durable server-side persistence in Supabase Postgres.
 
-- `POST /api/journal` validates and stores an initial journal trade entry.
+- `POST /api/journal` validates and stores an initial journal trade entry. Mutating journal routes require bearer auth.
 - `GET /api/journal` returns recent entries.
 - `GET /api/journal/:id` returns one entry.
 - `PUT /api/journal/:id` edits saved journal fills, timestamps, and review notes while recalculating derived P/L.

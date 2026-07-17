@@ -1,12 +1,8 @@
 import { getJournalInsights } from "../../src/journal/repository.js";
-import { readPaperTraderApiSecrets } from "../../src/automation/config.js";
 import { getPaperTraderSizingSnapshot } from "../../src/automation/paperTrader.js";
 import { ACCOUNT_MODES, type AccountMode } from "../../src/journal/types.js";
+import { isApiBearerAuthorized } from "../auth.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./shared.js";
-
-type RequestWithHeaders = VercelRequestLike & {
-  headers?: Record<string, string | undefined>;
-};
 
 function firstQueryValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
@@ -30,15 +26,6 @@ function parseAccountModeQuery(value: string | string[] | undefined): AccountMod
   return ACCOUNT_MODES.includes(normalized as AccountMode) ? normalized as AccountMode : undefined;
 }
 
-function isPaperTraderAuthorized(req: RequestWithHeaders): boolean {
-  const secrets = readPaperTraderApiSecrets();
-  if (secrets.length === 0) {
-    return true;
-  }
-
-  return secrets.some((secret) => req.headers?.authorization === `Bearer ${secret}`);
-}
-
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
   if (req.method !== "GET") {
     sendError(res, 404, "Use GET /api/journal/insights");
@@ -55,7 +42,7 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
       ...(accountMode ? { accountMode } : {}),
     });
     const simAccount = includeSimAccount
-      ? isPaperTraderAuthorized(req as RequestWithHeaders)
+      ? isApiBearerAuthorized(req)
         ? await getPaperTraderSizingSnapshot(accountMode ?? "paper")
         : {
             accountValueUsd: null,

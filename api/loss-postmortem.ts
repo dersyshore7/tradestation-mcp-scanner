@@ -3,26 +3,13 @@ import {
   runLossPostMortemAiReview,
 } from "../src/journal/lossPostMortem.js";
 import { getJournalTradeById } from "../src/journal/repository.js";
-import { readPaperTraderApiSecrets } from "../src/automation/config.js";
+import { requireApiBearerAuth } from "./auth.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
-
-type RequestWithHeaders = VercelRequestLike & {
-  headers?: Record<string, string | undefined>;
-};
 
 type LossPostMortemRequestBody = {
   tradeId?: unknown;
   id?: unknown;
 };
-
-function isAuthorized(req: RequestWithHeaders): boolean {
-  const secrets = readPaperTraderApiSecrets();
-  if (secrets.length === 0) {
-    return true;
-  }
-
-  return secrets.some((secret) => req.headers?.authorization === `Bearer ${secret}`);
-}
 
 function readBody(body: unknown): LossPostMortemRequestBody {
   if (typeof body === "string" && body.trim().length > 0) {
@@ -50,9 +37,7 @@ function asNumber(value: string | number | null | undefined): number | null {
 }
 
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
-  const request = req as RequestWithHeaders;
-  if (!isAuthorized(request)) {
-    sendError(res, 401, "Unauthorized.");
+  if (!requireApiBearerAuth(req, res)) {
     return;
   }
 

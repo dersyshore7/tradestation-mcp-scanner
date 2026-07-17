@@ -5,11 +5,7 @@ import {
   type ScanUniverseTier,
   type ScanUniverseTierKey,
 } from "../config/scanUniverseTiers.js";
-import {
-  getFakeConfidence,
-  type ScanConfidence,
-  type ScanDirection,
-} from "../scanner/scoring.js";
+import type { ScanConfidence, ScanDirection } from "../scanner/scoring.js";
 import {
   createTradeStationGetFetcher,
   readTradeStationResponseFailureDetails,
@@ -2663,19 +2659,6 @@ const DAILY_MULTI_TIMEFRAME_VIEW_BARS_BACK: Record<
   "3M": DAILY_MULTI_TIMEFRAME_BARS_BACK,
 };
 
-function pickTicker(
-  candidates: string[],
-  excludedTickers: string[],
-): string | null {
-  const excludedSet = new Set(
-    excludedTickers.map((item) => item.toUpperCase()),
-  );
-  const picked = candidates.find(
-    (ticker) => !excludedSet.has(ticker.toUpperCase()),
-  );
-  return picked ?? null;
-}
-
 function isStarterUniverseTicker(symbol: string): boolean {
   return ALL_SCAN_UNIVERSE_SET.has(symbol.toUpperCase());
 }
@@ -4591,65 +4574,6 @@ function runStage3ChartReview(
       },
       checks: checkDiagnostics,
     },
-  };
-}
-
-export function runFakeScan(input: ScanInput): ScanResult {
-  const promptLower = input.prompt.toLowerCase();
-  const excluded = input.excludedTickers ?? [];
-
-  if (promptLower.includes("bullish")) {
-    const ticker = pickTicker(["AAPL", "MSFT"], excluded);
-
-    if (!ticker) {
-      return {
-        ticker: null,
-        direction: null,
-        confidence: null,
-        conclusion: "no_trade_today",
-        reason:
-          "Bullish prompt detected, but all mock bullish tickers are excluded.",
-      };
-    }
-
-    return {
-      ticker,
-      direction: "bullish",
-      confidence: getFakeConfidence("bullish"),
-      conclusion: "confirmed",
-      reason: "Mock bullish signal matched your prompt.",
-    };
-  }
-
-  if (promptLower.includes("bearish")) {
-    const ticker = pickTicker(["NVDA", "META"], excluded);
-
-    if (!ticker) {
-      return {
-        ticker: null,
-        direction: null,
-        confidence: null,
-        conclusion: "no_trade_today",
-        reason:
-          "Bearish prompt detected, but all mock bearish tickers are excluded.",
-      };
-    }
-
-    return {
-      ticker,
-      direction: "bearish",
-      confidence: getFakeConfidence("bearish"),
-      conclusion: "confirmed",
-      reason: "Mock bearish signal matched your prompt.",
-    };
-  }
-
-  return {
-    ticker: null,
-    direction: null,
-    confidence: null,
-    conclusion: "no_trade_today",
-    reason: "No bullish or bearish keyword found in prompt.",
   };
 }
 
@@ -7216,8 +7140,16 @@ export async function runScan(input: ScanInput): Promise<ScanResult> {
       return enforceStarterUniverse(
         await runStarterUniverseTradeStationScan(normalizedInput),
       );
-    } catch {
-      return enforceStarterUniverse(runFakeScan(normalizedInput));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        ticker: null,
+        direction: null,
+        confidence: null,
+        conclusion: "no_trade_today",
+        reason: `TradeStation universe scan failed closed without a fallback candidate: ${message}`,
+        telemetry: null,
+      };
     }
   }
 

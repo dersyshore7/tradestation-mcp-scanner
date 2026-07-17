@@ -1,5 +1,5 @@
 import { getPaperTraderStatus, runPaperTraderCycle } from "../src/automation/paperTrader.js";
-import { readAutomationLane, readPaperTraderApiSecrets, type AutomationLane } from "../src/automation/config.js";
+import { readAutomationLane, type AutomationLane } from "../src/automation/config.js";
 import {
   readVirtualPaperAutomationKey,
   type VirtualPaperAutomationKey,
@@ -8,6 +8,7 @@ import {
   getVirtualPaperAutomationStatus,
   runVirtualPaperAutomationCycle,
 } from "../src/automation/virtualPaperTrader.js";
+import { requireApiBearerAuth } from "./auth.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 type PaperTraderRequestBody = {
@@ -16,19 +17,6 @@ type PaperTraderRequestBody = {
   prompt?: string;
   dryRun?: boolean;
 };
-
-type RequestWithHeaders = VercelRequestLike & {
-  headers?: Record<string, string | undefined>;
-};
-
-function isAuthorized(req: RequestWithHeaders): boolean {
-  const secrets = readPaperTraderApiSecrets();
-  if (secrets.length === 0) {
-    return true;
-  }
-
-  return secrets.some((secret) => req.headers?.authorization === `Bearer ${secret}`);
-}
 
 function firstQueryValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
@@ -46,8 +34,7 @@ function parseVirtualAutomation(req: VercelRequestLike, body?: PaperTraderReques
 }
 
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
-  if (!isAuthorized(req as RequestWithHeaders)) {
-    sendError(res, 401, "Unauthorized.");
+  if (!requireApiBearerAuth(req, res)) {
     return;
   }
 
