@@ -61,16 +61,24 @@ export function evaluateLiveContinuationEntryGate(params: {
     isExtendedMove(chartContext?.movePct) &&
     isSubTwoChartRewardRisk(chartContext, params.entryFeatures.plannedRewardRisk);
 
-  const shouldBlock =
-    params.entryPolicy.decision === "caution" ||
-    score < LIVE_CONTINUATION_MIN_SCORE ||
-    extendedWithoutCleanHold;
+  const shouldBlock = extendedWithoutCleanHold;
 
   if (!shouldBlock) {
     return {
       allowed: true,
       applied: true,
-      reason: null,
+      reason: buildPassReason({
+        symbol: params.symbol,
+        score,
+        checks,
+        policyDecision: params.entryPolicy.decision,
+        movePct: chartContext?.movePct ?? null,
+        chartRewardRisk:
+          chartContext?.postConfirmationRewardRisk ??
+          chartContext?.preReviewRewardRisk ??
+          params.entryFeatures.plannedRewardRisk ??
+          null,
+      }),
       score,
       checks,
     };
@@ -83,7 +91,6 @@ export function evaluateLiveContinuationEntryGate(params: {
       symbol: params.symbol,
       score,
       checks,
-      policyDecision: params.entryPolicy.decision,
       extendedWithoutCleanHold,
       movePct: chartContext?.movePct ?? null,
       chartRewardRisk:
@@ -191,28 +198,13 @@ function buildBlockReason(params: {
   symbol: string | null | undefined;
   score: number;
   checks: NonNullable<LiveContinuationEntryGateResult["checks"]>;
-  policyDecision: EntryPolicyRecommendation["decision"];
   extendedWithoutCleanHold: boolean;
   movePct: number | null;
   chartRewardRisk: number | null;
 }): string {
-  const weaknessLabels = [
-    params.checks.cleanImpulseHold ? null : "weak impulse/hold",
-    params.checks.volumeConfirmed ? null : "light volume",
-    params.checks.rangeExpansionOk ? null : "weak expansion",
-    params.checks.trapClean ? null : "trap/distribution risk",
-  ].filter((item): item is string => item !== null);
   const symbol = params.symbol ?? "candidate";
-  const weaknessText = weaknessLabels.length > 0
-    ? `; ${weaknessLabels.join(", ")}`
-    : "";
+  const weaknessText = buildWeaknessText(params.checks);
   const reasonParts: string[] = [];
-  if (params.policyDecision === "caution") {
-    reasonParts.push("policy caution");
-  }
-  if (params.score < LIVE_CONTINUATION_MIN_SCORE) {
-    reasonParts.push(`continuation score below ${LIVE_CONTINUATION_MIN_SCORE}`);
-  }
   if (params.extendedWithoutCleanHold) {
     reasonParts.push(
       `extended move ${formatNumber(params.movePct)}% with chart R/R ${formatNumber(params.chartRewardRisk)} and weak impulse/hold`,
@@ -220,6 +212,44 @@ function buildBlockReason(params: {
   }
 
   return `Live continuation gate blocked ${symbol}: score ${params.score}/4${weaknessText}; ${reasonParts.join("; ")}.`;
+}
+
+function buildPassReason(params: {
+  symbol: string | null | undefined;
+  score: number;
+  checks: NonNullable<LiveContinuationEntryGateResult["checks"]>;
+  policyDecision: EntryPolicyRecommendation["decision"];
+  movePct: number | null;
+  chartRewardRisk: number | null;
+}): string {
+  const symbol = params.symbol ?? "candidate";
+  const weaknessText = buildWeaknessText(params.checks);
+  const noteParts = [
+    params.policyDecision === "caution" ? "policy caution noted" : null,
+    params.score < LIVE_CONTINUATION_MIN_SCORE
+      ? `score below ${LIVE_CONTINUATION_MIN_SCORE} noted`
+      : null,
+    `move ${formatNumber(params.movePct)}%`,
+    `chart R/R ${formatNumber(params.chartRewardRisk)}`,
+    "no extended sub-2R weak-hold block",
+  ].filter((item): item is string => item !== null);
+
+  return `Live continuation gate passed ${symbol}: score ${params.score}/4${weaknessText}; ${noteParts.join("; ")}.`;
+}
+
+function buildWeaknessText(
+  checks: NonNullable<LiveContinuationEntryGateResult["checks"]>,
+): string {
+  const weaknessLabels = [
+    checks.cleanImpulseHold ? null : "weak impulse/hold",
+    checks.volumeConfirmed ? null : "light volume",
+    checks.rangeExpansionOk ? null : "weak expansion",
+    checks.trapClean ? null : "trap/distribution risk",
+  ].filter((item): item is string => item !== null);
+
+  return weaknessLabels.length > 0
+    ? `; ${weaknessLabels.join(", ")}`
+    : "";
 }
 
 function hasFailedCheck(

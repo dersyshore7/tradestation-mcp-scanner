@@ -1572,7 +1572,7 @@ function buildAiManagementDecision(
   };
 }
 
-test("live continuation gate blocks weak loser patterns without blocking clean HIMS-style setup", () => {
+test("live continuation gate blocks overextended weak loser patterns without blocking clean HIMS-style setup", () => {
   const cases = [
     {
       symbol: "HOOD",
@@ -1582,12 +1582,12 @@ test("live continuation gate blocks weak loser patterns without blocking clean H
           expansion: "fail_downgrader",
           failedChecks: ["impulse_consolidation", "expansion"],
           movePct: 17.31,
-          postConfirmationRewardRisk: 2.39,
+          postConfirmationRewardRisk: 1.89,
         },
       }),
       policy: buildLiveGatePolicy("allow"),
       allowed: false,
-      reason: /score 1\/4.*weak impulse\/hold.*light volume.*weak expansion/,
+      reason: /score 1\/4.*weak impulse\/hold.*light volume.*weak expansion.*extended move/,
     },
     {
       symbol: "U",
@@ -1595,13 +1595,13 @@ test("live continuation gate blocks weak loser patterns without blocking clean H
         volumeRatio: 0.81,
         chartContext: {
           failedChecks: ["impulse_consolidation"],
-          movePct: 13.15,
-          postConfirmationRewardRisk: 3.18,
+          movePct: 16.15,
+          postConfirmationRewardRisk: 1.83,
         },
       }),
       policy: buildLiveGatePolicy("allow"),
       allowed: false,
-      reason: /score 2\/4.*weak impulse\/hold.*light volume/,
+      reason: /score 2\/4.*weak impulse\/hold.*light volume.*extended move/,
     },
     {
       symbol: "RBLX",
@@ -1609,14 +1609,14 @@ test("live continuation gate blocks weak loser patterns without blocking clean H
         volumeRatio: 0.6,
         chartContext: {
           expansion: "fail_downgrader",
-          failedChecks: ["expansion", "fake_hold_distribution"],
+          failedChecks: ["impulse_consolidation", "expansion", "fake_hold_distribution"],
           movePct: 18.85,
           postConfirmationRewardRisk: 1.55,
         },
       }),
       policy: buildLiveGatePolicy("caution"),
       allowed: false,
-      reason: /policy caution/,
+      reason: /score 0\/4.*weak impulse\/hold.*light volume.*weak expansion.*trap\/distribution risk.*extended move/,
     },
     {
       symbol: "TFC",
@@ -1625,13 +1625,13 @@ test("live continuation gate blocks weak loser patterns without blocking clean H
         chartContext: {
           expansion: "fail_downgrader",
           failedChecks: ["impulse_consolidation", "expansion"],
-          movePct: 9.61,
+          movePct: 16.61,
           postConfirmationRewardRisk: 1.6,
         },
       }),
       policy: buildLiveGatePolicy("allow"),
       allowed: false,
-      reason: /score 1\/4/,
+      reason: /score 1\/4.*weak impulse\/hold.*light volume.*weak expansion.*extended move/,
     },
     {
       symbol: "HIMS",
@@ -1646,7 +1646,7 @@ test("live continuation gate blocks weak loser patterns without blocking clean H
       }),
       policy: buildLiveGatePolicy("favor"),
       allowed: true,
-      reason: null,
+      reason: /passed HIMS: score 3\/4.*weak expansion.*no extended sub-2R weak-hold block/,
     },
   ];
 
@@ -1665,6 +1665,51 @@ test("live continuation gate blocks weak loser patterns without blocking clean H
     } else {
       assert.equal(result.reason, null, item.symbol);
     }
+  }
+});
+
+test("live continuation gate allows CB/FANG-style score 2 continuations when they are not extended", () => {
+  const cases = [
+    {
+      symbol: "CB",
+      policy: buildLiveGatePolicy("caution"),
+      features: buildLiveGateFeatures({
+        volumeRatio: 1.67,
+        chartContext: {
+          failedChecks: ["impulse_consolidation", "expansion"],
+          movePct: 8.29,
+          postConfirmationRewardRisk: 3.58,
+        },
+      }),
+      reason: /passed CB: score 2\/4.*weak impulse\/hold.*weak expansion.*policy caution noted.*score below 3 noted/,
+    },
+    {
+      symbol: "FANG",
+      policy: buildLiveGatePolicy("allow"),
+      features: buildLiveGateFeatures({
+        volumeRatio: 0.9,
+        chartContext: {
+          failedChecks: ["impulse_consolidation", "expansion"],
+          movePct: 4.12,
+          postConfirmationRewardRisk: 1.73,
+        },
+      }),
+      reason: /passed FANG: score 2\/4.*weak impulse\/hold.*weak expansion.*score below 3 noted/,
+    },
+  ];
+
+  for (const item of cases) {
+    const result = evaluateLiveContinuationEntryGate({
+      accountMode: "live",
+      symbol: item.symbol,
+      entryPolicy: item.policy,
+      entryFeatures: item.features,
+      scanReason: null,
+    });
+
+    assert.equal(result.allowed, true, item.symbol);
+    assert.equal(result.score, 2, item.symbol);
+    assert.match(result.reason ?? "", item.reason, item.symbol);
   }
 });
 
@@ -1714,6 +1759,7 @@ test("live continuation gate blocks extended sub-2R moves only when impulse hold
   assert.equal(pins.allowed, false);
   assert.match(pins.reason ?? "", /extended move/);
   assert.equal(cleanWinner.allowed, true);
+  assert.match(cleanWinner.reason ?? "", /passed PYPL/);
 });
 
 test("live continuation gate allows clean winners with one imperfect confirmation", () => {
@@ -1735,7 +1781,7 @@ test("live continuation gate allows clean winners with one imperfect confirmatio
   assert.equal(result.score, 3);
 });
 
-test("live continuation gate falls back to scan reason when structured checks are missing", () => {
+test("live continuation gate treats scan-reason cautions as soft when structured checks are missing", () => {
   const result = evaluateLiveContinuationEntryGate({
     accountMode: "live",
     symbol: "HOOD",
@@ -1750,8 +1796,11 @@ test("live continuation gate falls back to scan reason when structured checks ar
       "caution: impulse plus consolidation structure is not clean enough.",
   });
 
-  assert.equal(result.allowed, false);
-  assert.match(result.reason ?? "", /score 1\/4.*weak impulse\/hold.*light volume.*weak expansion/);
+  assert.equal(result.allowed, true);
+  assert.match(
+    result.reason ?? "",
+    /passed HOOD: score 1\/4.*weak impulse\/hold.*light volume.*weak expansion.*score below 3 noted/,
+  );
 });
 
 test("live continuation gate does not apply to paper mode or non-continuation setups", () => {

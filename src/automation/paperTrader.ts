@@ -6100,6 +6100,20 @@ async function maybeEnterNewPaperTrade(params: {
         continue;
       }
 
+      if (liveContinuationGate.applied && liveContinuationGate.reason) {
+        await recordEntryCandidateAudit({
+          scanRunId,
+          dryRun,
+          symbol: scan.ticker,
+          decision: "live_continuation_gate_passed",
+          decisionReason: liveContinuationGate.reason,
+          features: entryFeatures,
+          entryPolicy,
+          scan,
+          tradeCard,
+        });
+      }
+
       selectedScan = scan;
       selectedTradeCard = tradeCard;
       selectedEntryReasoning = buildEntryReasoning(scan, tradeCard);
@@ -6108,7 +6122,9 @@ async function maybeEnterNewPaperTrade(params: {
       evaluatedCandidates.push({
         symbol: scan.ticker,
         decision: entryPolicy.decision,
-        reason: entryPolicy.summary,
+        reason: [entryPolicy.summary, liveContinuationGate.reason]
+          .filter((item): item is string => typeof item === "string" && item.length > 0)
+          .join(" "),
         entryPolicy,
         features: entryFeatures,
       });
