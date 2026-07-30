@@ -10,6 +10,7 @@ import { constructTradeCard } from "../src/app/runTradeConstruction.js";
 import { CHART_ANCHORED_TWO_TO_ONE_FAILURE } from "../src/app/chartAnchoredTradability.js";
 import { DEFAULT_SCAN_PROMPT } from "../src/config/defaultScanPrompt.js";
 import { createTradeRecommendation } from "../src/recommendations/repository.js";
+import { requireApiBearerAuth } from "./auth.js";
 
 type VercelRequestLike = {
   method?: string;
@@ -83,6 +84,9 @@ function normalizeInput(body: unknown): ScanInput {
 }
 
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
+  if (!requireApiBearerAuth(req, res)) {
+    return;
+  }
   if (req.method !== "POST") {
     sendWorkflowError(res, 404, "Use POST /api/workflow");
     return;

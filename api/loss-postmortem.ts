@@ -3,6 +3,7 @@ import {
   runLossPostMortemAiReview,
 } from "../src/journal/lossPostMortem.js";
 import { getJournalTradeById } from "../src/journal/repository.js";
+import { requireApiBearerAuth } from "./auth.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 type LossPostMortemRequestBody = {
@@ -36,6 +37,9 @@ function asNumber(value: string | number | null | undefined): number | null {
 }
 
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
+  if (!requireApiBearerAuth(req, res)) {
+    return;
+  }
   if (req.method !== "POST") {
     sendError(res, 404, "Use POST /api/loss-postmortem");
     return;

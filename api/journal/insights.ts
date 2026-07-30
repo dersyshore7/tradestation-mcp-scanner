@@ -1,6 +1,7 @@
 import { getJournalInsights } from "../../src/journal/repository.js";
 import { getPaperTraderSizingSnapshot } from "../../src/automation/paperTrader.js";
 import { ACCOUNT_MODES, type AccountMode } from "../../src/journal/types.js";
+import { requireApiBearerAuth } from "../auth.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./shared.js";
 
 function firstQueryValue(value: string | string[] | undefined): string | undefined {
@@ -26,6 +27,9 @@ function parseAccountModeQuery(value: string | string[] | undefined): AccountMod
 }
 
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
+  if (!requireApiBearerAuth(req, res)) {
+    return;
+  }
   if (req.method !== "GET") {
     sendError(res, 404, "Use GET /api/journal/insights");
     return;

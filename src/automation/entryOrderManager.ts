@@ -1,5 +1,4 @@
 import type { TradeDirection } from "../journal/types.js";
-import { createOpenAiClient } from "../openai/client.js";
 import { buildMidpointLimitCap } from "./entryPricing.js";
 
 export type EntryOrderManagementAction = "wait" | "replace_limit" | "cancel_remaining";
@@ -51,90 +50,12 @@ export type EntryOrderPolicyResult = {
 
 const MIN_REPRICE_ORDER_AGE_SECONDS = 90;
 const MIN_REPRICE_COOLDOWN_MS = 2 * 60 * 1000;
-const MAX_REPRICE_ATTEMPTS = 3;
+const MAX_REPRICE_ATTEMPTS = 1;
 const MAX_ORIGINAL_LIMIT_WORSENING = 1.25;
 const MAX_WORKING_LIMIT_WORSENING = 1.35;
 const MAX_SPREAD_TO_MID_RATIO = 0.2;
 const MIN_REPRICED_REWARD_RISK_R = 1.5;
-const STALE_ENTRY_CANCEL_MIN_AGE_SECONDS = 30 * 60;
-const STALE_ENTRY_CANCEL_MIN_MID_WORSENING = 1.1;
-
-function extractJsonObject(text: string): string {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) {
-    throw new Error("Entry order manager did not return a JSON object.");
-  }
-
-  return text.slice(start, end + 1);
-}
-
-function asFiniteNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === "string" && value.trim().length > 0) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function normalizeDecision(payload: unknown): AiEntryOrderDecision {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    throw new Error("Entry order manager returned a non-object decision.");
-  }
-
-  const objectPayload = payload as Record<string, unknown>;
-  const action = objectPayload.action;
-  const confidence = objectPayload.confidence;
-  const thesis = typeof objectPayload.thesis === "string" ? objectPayload.thesis.trim() : "";
-  const note = typeof objectPayload.note === "string" ? objectPayload.note.trim() : "";
-  const plainEnglishExplanation = typeof objectPayload.plainEnglishExplanation === "string"
-    ? objectPayload.plainEnglishExplanation.trim()
-    : "";
-
-  if (action !== "wait" && action !== "replace_limit" && action !== "cancel_remaining") {
-    throw new Error("Entry order manager returned an invalid action.");
-  }
-  if (confidence !== "low" && confidence !== "medium" && confidence !== "high") {
-    throw new Error("Entry order manager returned an invalid confidence.");
-  }
-  if (!thesis || !note) {
-    throw new Error("Entry order manager returned an incomplete explanation.");
-  }
-
-  return {
-    action,
-    newLimitPrice: asFiniteNumber(objectPayload.newLimitPrice),
-    confidence,
-    thesis,
-    note,
-    plainEnglishExplanation: plainEnglishExplanation || thesis,
-  };
-}
-
-function buildPrompt(input: EntryOrderManagementContext): string {
-  return [
-    "You are managing a working buy-to-open options limit order for a paper-trading automation.",
-    "Decide whether to wait, replace the remaining limit order, or cancel the unfilled remainder.",
-    "The response must be JSON only.",
-    "Allowed actions:",
-    '- "wait": keep the current working limit order unchanged.',
-    '- "replace_limit": cancel/replace the unfilled remainder with a new buy-to-open limit.',
-    '- "cancel_remaining": cancel the unfilled remainder and manage only the filled position.',
-    "Important constraints:",
-    "- Do not chase just because price moved. Replace only when the updated option price is still worth the plan.",
-    "- For buy-to-open replacements, improve only toward the option midpoint; do not intentionally pay above midpoint or at the ask when the ask is above midpoint.",
-    "- Prefer wait when the thesis is intact and the desired entry may reasonably come back.",
-    "- Prefer cancel_remaining when the partial fill is enough exposure or the remaining order no longer has acceptable reward/risk.",
-    "- If choosing replace_limit, provide newLimitPrice.",
-    "Return JSON with exactly these keys:",
-    '{ "action": "wait|replace_limit|cancel_remaining", "newLimitPrice": number|null, "confidence": "low|medium|high", "thesis": "short thesis", "note": "one concise execution note", "plainEnglishExplanation": "plain-English explanation" }',
-    "",
-    `Working entry context: ${JSON.stringify(input)}`,
-  ].join("\n");
-}
+const STALE_ENTRY_CANCEL_MIN_AGE_SECONDS = 5 * 60;
 
 export function buildEntryOrderWaitDecision(reason: string): AiEntryOrderDecision {
   return {
@@ -145,24 +66,6 @@ export function buildEntryOrderWaitDecision(reason: string): AiEntryOrderDecisio
     note: reason,
     plainEnglishExplanation: reason,
   };
-}
-
-export async function decideAiEntryOrderAction(
-  input: EntryOrderManagementContext,
-): Promise<AiEntryOrderDecision> {
-  const client = await createOpenAiClient();
-  const response = await (client as any).responses.create({
-    model: "gpt-4.1-mini",
-    input: buildPrompt(input),
-  });
-  const outputText = typeof response?.output_text === "string"
-    ? response.output_text.trim()
-    : "";
-  if (!outputText) {
-    throw new Error("Entry order manager returned no text.");
-  }
-
-  return normalizeDecision(JSON.parse(extractJsonObject(outputText)));
 }
 
 function estimateRepricedRewardRiskR(
@@ -186,24 +89,11 @@ function buildStaleEntryCancelReason(context: EntryOrderManagementContext): stri
   if (context.orderAgeSeconds === null || context.orderAgeSeconds < STALE_ENTRY_CANCEL_MIN_AGE_SECONDS) {
     return null;
   }
-  if (context.optionBid === null || context.optionBid <= context.workingLimitPrice) {
-    return null;
-  }
-
-  const referencePrice = context.optionMid ?? context.optionBid;
-  if (referencePrice < context.workingLimitPrice * STALE_ENTRY_CANCEL_MIN_MID_WORSENING) {
-    return null;
-  }
-
   const ageMinutes = Math.floor(context.orderAgeSeconds / 60);
   const fillText = context.filledQuantity > 0
     ? `${context.filledQuantity} filled and ${context.remainingQuantity} still working`
     : `${context.remainingQuantity} still unfilled`;
-  const midpointText = context.optionMid !== null
-    ? ` and midpoint ${context.optionMid.toFixed(2)}`
-    : "";
-
-  return `Opening order is stale after ${ageMinutes} minutes with ${fillText}; current bid ${context.optionBid.toFixed(2)}${midpointText} has moved beyond working limit ${context.workingLimitPrice.toFixed(2)}, so cancel the unfilled remainder instead of waiting indefinitely or chasing the ask.`;
+  return `Opening order reached the deterministic ${ageMinutes}-minute deadline with ${fillText}; cancel the unfilled remainder instead of waiting or chasing.`;
 }
 
 export function evaluateEntryOrderManagementDecision(

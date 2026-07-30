@@ -12,12 +12,19 @@ import {
   paperAutomationColumnFilter,
   type PaperAutomationKey,
 } from "./paperAutomationBots.js";
+import {
+  LEGACY_STRATEGY_VERSION,
+  type StrategyVersionId,
+} from "./strategyVersion.js";
+import type { AccountMode, TradeDirection } from "../journal/types.js";
 
 export type PaperEntryCandidateRecord = {
   id: string;
   created_at: string;
   scan_run_id: string | null;
   paper_automation_key?: PaperAutomationKey;
+  strategy_version?: StrategyVersionId;
+  account_mode?: AccountMode;
   source: "paper_trader";
   dry_run: boolean;
   symbol: string | null;
@@ -54,7 +61,9 @@ export type PaperEntryCandidateRecord = {
 
 export type PaperEntryCandidateCreateInput = {
   scanRunId: string;
+  accountMode?: AccountMode;
   paperAutomationKey?: PaperAutomationKey;
+  strategyVersion?: StrategyVersionId;
   dryRun: boolean;
   symbol: string | null;
   decision: string;
@@ -199,7 +208,9 @@ export async function recordPaperEntryCandidate(
   const buckets = featureSnapshot?.buckets ?? null;
   const baseValues = {
     scan_run_id: input.scanRunId,
+    account_mode: input.accountMode ?? "paper",
     paper_automation_key: input.paperAutomationKey ?? LEGACY_PAPER_AUTOMATION_KEY,
+    strategy_version: input.strategyVersion ?? LEGACY_STRATEGY_VERSION,
     source: "paper_trader",
     dry_run: input.dryRun,
     symbol: input.symbol,
@@ -260,7 +271,12 @@ export async function recordPaperEntryCandidate(
 
 export async function listRecentPaperEntryCandidates(
   limit = 50,
-  options: { paperAutomationKey?: PaperAutomationKey } = {},
+  options: {
+    accountMode?: AccountMode;
+    paperAutomationKey?: PaperAutomationKey;
+    strategyVersion?: StrategyVersionId;
+    direction?: TradeDirection;
+  } = {},
 ): Promise<PaperEntryCandidateHistoryResult> {
   try {
     const candidates = await supabaseSelect<PaperEntryCandidateRecord>({
@@ -269,7 +285,9 @@ export async function listRecentPaperEntryCandidates(
         "id",
         "created_at",
         "scan_run_id",
+        "account_mode",
         "paper_automation_key",
+        "strategy_version",
         "source",
         "dry_run",
         "symbol",
@@ -296,7 +314,14 @@ export async function listRecentPaperEntryCandidates(
         "entry_policy_matched_key",
         "entry_policy_summary",
       ].join(","),
-      filters: [paperAutomationColumnFilter(options.paperAutomationKey ?? LEGACY_PAPER_AUTOMATION_KEY)],
+      filters: [
+        ...(options.accountMode ? [`account_mode=eq.${options.accountMode}`] : []),
+        paperAutomationColumnFilter(options.paperAutomationKey ?? LEGACY_PAPER_AUTOMATION_KEY),
+        ...(options.strategyVersion
+          ? [`strategy_version=eq.${encodeURIComponent(options.strategyVersion)}`]
+          : []),
+        ...(options.direction ? [`direction=eq.${options.direction}`] : []),
+      ],
       order: ["created_at.desc"],
       limit,
     });

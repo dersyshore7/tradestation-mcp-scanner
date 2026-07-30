@@ -1,5 +1,9 @@
 import { DEFAULT_SCAN_PROMPT } from "../config/defaultScanPrompt.js";
 import type { AccountMode } from "../journal/types.js";
+import {
+  SUPPORT_RESISTANCE_PROFILE,
+  type SupportResistanceProfile,
+} from "./supportResistanceStrategy.js";
 
 const TRADESTATION_AUTOMATION_BASE_URL_ENV = "TRADESTATION_AUTOMATION_BASE_URL";
 const TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV = "TRADESTATION_AUTOMATION_ACCOUNT_ID";
@@ -11,14 +15,6 @@ const PAPER_AUTO_TRADER_MAX_POSITION_PCT_ENV = "PAPER_AUTO_TRADER_MAX_POSITION_P
 const PAPER_AUTO_TRADER_SCAN_PROMPT_ENV = "PAPER_AUTO_TRADER_SCAN_PROMPT";
 const LIVE_TRADESTATION_AUTOMATION_BASE_URL_ENV = "LIVE_TRADESTATION_AUTOMATION_BASE_URL";
 const LIVE_TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV = "LIVE_TRADESTATION_AUTOMATION_ACCOUNT_ID";
-const LIVE_AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV = "LIVE_AUTO_TRADER_ALLOW_ORDER_PLACEMENT";
-const LIVE_AUTO_TRADER_MANAGE_ENTRY_ORDERS_ENV = "LIVE_AUTO_TRADER_MANAGE_ENTRY_ORDERS";
-const LIVE_AUTO_TRADER_MAX_POSITION_PCT_ENV = "LIVE_AUTO_TRADER_MAX_POSITION_PCT";
-const LIVE_AUTO_TRADER_SCAN_PROMPT_ENV = "LIVE_AUTO_TRADER_SCAN_PROMPT";
-const LIVE_AUTO_TRADER_WEEKEND_GUARD_ENABLED_ENV = "LIVE_AUTO_TRADER_WEEKEND_GUARD_ENABLED";
-const LIVE_AUTO_TRADER_WEEKEND_ENTRY_CUTOFF_CT_ENV = "LIVE_AUTO_TRADER_WEEKEND_ENTRY_CUTOFF_CT";
-const LIVE_AUTO_TRADER_WEEKEND_EXIT_CUTOFF_CT_ENV = "LIVE_AUTO_TRADER_WEEKEND_EXIT_CUTOFF_CT";
-const LIVE_AUTO_TRADER_OPENING_STOP_BYPASS_ENABLED_ENV = "LIVE_AUTO_TRADER_OPENING_STOP_BYPASS_ENABLED";
 const DEFAULT_LIVE_WEEKEND_ENTRY_CUTOFF_CT = "14:30";
 const DEFAULT_LIVE_WEEKEND_EXIT_CUTOFF_CT = "14:45";
 export const TRADESTATION_SIM_AUTOMATION_BASE_URL = "https://sim-api.tradestation.com/v3";
@@ -26,9 +22,42 @@ export const TRADESTATION_LIVE_AUTOMATION_BASE_URL = "https://api.tradestation.c
 
 export type TradeStationEnvironment = "sim" | "live";
 export type AutomationLane = AccountMode;
+export type LiveEntryMode = "disabled" | "shadow" | "live";
+
+export type PaperTraderRiskLimits = {
+  maxPositionPremiumPct: number;
+  maxPositionPlannedRiskPct: number;
+  maxAggregatePremiumPct: number;
+  maxAggregatePlannedRiskPct: number;
+  maxOpenPositions: number;
+  maxOpenPositionsPerDirection: number;
+  maxEntriesPerDay: number;
+  maxDailyLossPct: number;
+  maxLiveDrawdownPct: number;
+  rollingHealthTradeCount: number;
+  minRollingProfitFactor: number;
+};
+
+export const DEFAULT_LIVE_RISK_LIMITS: PaperTraderRiskLimits = {
+  maxPositionPremiumPct: 0.05,
+  maxPositionPlannedRiskPct: 0.01,
+  maxAggregatePremiumPct: 0.10,
+  maxAggregatePlannedRiskPct: 0.02,
+  maxOpenPositions: 2,
+  maxOpenPositionsPerDirection: 1,
+  maxEntriesPerDay: 2,
+  maxDailyLossPct: 0.01,
+  maxLiveDrawdownPct: 0.05,
+  rollingHealthTradeCount: 20,
+  minRollingProfitFactor: 1,
+};
 
 export type PaperTraderConfig = {
   enabled: boolean;
+  entryMode: LiveEntryMode;
+  allowEntryOrders: boolean;
+  allowExitOrders: boolean;
+  /** @deprecated Use allowEntryOrders. Retained while callers migrate. */
   allowOrderPlacement: boolean;
   manageEntryOrders: boolean;
   maxOpenTrades: number | null;
@@ -44,6 +73,8 @@ export type PaperTraderConfig = {
   weekendEntryCutoffMinutesCt: number;
   weekendExitCutoffMinutesCt: number;
   openingStopBypassEnabled: boolean;
+  riskLimits: PaperTraderRiskLimits;
+  strategyProfile: SupportResistanceProfile | null;
 };
 
 function readStringEnv(name: string): string | null {
@@ -95,10 +126,6 @@ function parseTimeOfDayMinutes(value: string, name: string): number {
   }
 
   return (Number(match[1]) * 60) + Number(match[2]);
-}
-
-function readTimeOfDayMinutesEnv(name: string, fallback: string): number {
-  return parseTimeOfDayMinutes(readStringEnv(name) ?? fallback, name);
 }
 
 function readBooleanEnvFrom(names: string[], defaultValue: boolean): boolean {
@@ -175,30 +202,6 @@ function accountIdEnvNamesForLane(lane: AutomationLane): string[] {
     : [PAPER_TRADESTATION_AUTOMATION_ACCOUNT_ID_ENV];
 }
 
-function allowOrderPlacementEnvNamesForLane(lane: AutomationLane): string[] {
-  return lane === "live"
-    ? [LIVE_AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV]
-    : [PAPER_AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV];
-}
-
-function manageEntryOrdersEnvNamesForLane(lane: AutomationLane): string[] {
-  return lane === "live"
-    ? [LIVE_AUTO_TRADER_MANAGE_ENTRY_ORDERS_ENV]
-    : [PAPER_AUTO_TRADER_MANAGE_ENTRY_ORDERS_ENV];
-}
-
-function maxPositionPctEnvNamesForLane(lane: AutomationLane): string[] {
-  return lane === "live"
-    ? [LIVE_AUTO_TRADER_MAX_POSITION_PCT_ENV]
-    : [PAPER_AUTO_TRADER_MAX_POSITION_PCT_ENV];
-}
-
-function scanPromptEnvNamesForLane(lane: AutomationLane): string[] {
-  return lane === "live"
-    ? [LIVE_AUTO_TRADER_SCAN_PROMPT_ENV]
-    : [PAPER_AUTO_TRADER_SCAN_PROMPT_ENV];
-}
-
 function configLabelForLane(lane: AutomationLane): string {
   return lane === "live" ? "LIVE" : "PAPER";
 }
@@ -222,37 +225,51 @@ export function readPaperTraderConfig(lane: AutomationLane = "paper"): PaperTrad
     );
   }
 
+  const paperAllowOrderPlacement = lane === "paper"
+    ? readBooleanEnvFrom([PAPER_AUTO_TRADER_ALLOW_ORDER_PLACEMENT_ENV], false)
+    : false;
+  const entryMode: LiveEntryMode = lane === "live"
+    ? "live"
+    : paperAllowOrderPlacement
+      ? "live"
+      : "disabled";
+  const allowEntryOrders = lane === "live" || paperAllowOrderPlacement;
+  const allowExitOrders = lane === "live" || paperAllowOrderPlacement;
+
   return {
     enabled: true,
-    allowOrderPlacement: readBooleanEnvFrom(allowOrderPlacementEnvNamesForLane(lane), false),
-    manageEntryOrders: readBooleanEnvFrom(manageEntryOrdersEnvNamesForLane(lane), false),
-    maxOpenTrades: null,
+    entryMode,
+    allowEntryOrders,
+    allowExitOrders,
+    allowOrderPlacement: allowEntryOrders,
+    manageEntryOrders: lane === "live"
+      ? true
+      : readBooleanEnvFrom([PAPER_AUTO_TRADER_MANAGE_ENTRY_ORDERS_ENV], false),
+    maxOpenTrades: DEFAULT_LIVE_RISK_LIMITS.maxOpenPositions,
     maxDailyLossUsd: null,
-    maxPositionPct: readPositiveRatioEnvFrom(maxPositionPctEnvNamesForLane(lane), 0.1),
-    scanPrompt: readStringEnvFrom(scanPromptEnvNamesForLane(lane)) ?? DEFAULT_SCAN_PROMPT,
+    maxPositionPct: lane === "live"
+      ? DEFAULT_LIVE_RISK_LIMITS.maxPositionPremiumPct
+      : readPositiveRatioEnvFrom([PAPER_AUTO_TRADER_MAX_POSITION_PCT_ENV], 0.1),
+    scanPrompt: lane === "live"
+      ? SUPPORT_RESISTANCE_PROFILE.scanPrompt
+      : readStringEnvFrom([PAPER_AUTO_TRADER_SCAN_PROMPT_ENV]) ?? DEFAULT_SCAN_PROMPT,
     automationBaseUrl,
     tradeStationEnvironment,
     accountMode: lane,
     lane,
     accountId: readStringEnvFrom(accountIdEnvNamesForLane(lane)),
-    weekendGuardEnabled: lane === "live"
-      ? readBooleanEnv(LIVE_AUTO_TRADER_WEEKEND_GUARD_ENABLED_ENV, true)
-      : false,
-    weekendEntryCutoffMinutesCt: lane === "live"
-      ? readTimeOfDayMinutesEnv(
-          LIVE_AUTO_TRADER_WEEKEND_ENTRY_CUTOFF_CT_ENV,
-          DEFAULT_LIVE_WEEKEND_ENTRY_CUTOFF_CT,
-        )
-      : parseTimeOfDayMinutes(DEFAULT_LIVE_WEEKEND_ENTRY_CUTOFF_CT, "DEFAULT_LIVE_WEEKEND_ENTRY_CUTOFF_CT"),
-    weekendExitCutoffMinutesCt: lane === "live"
-      ? readTimeOfDayMinutesEnv(
-          LIVE_AUTO_TRADER_WEEKEND_EXIT_CUTOFF_CT_ENV,
-          DEFAULT_LIVE_WEEKEND_EXIT_CUTOFF_CT,
-        )
-      : parseTimeOfDayMinutes(DEFAULT_LIVE_WEEKEND_EXIT_CUTOFF_CT, "DEFAULT_LIVE_WEEKEND_EXIT_CUTOFF_CT"),
-    openingStopBypassEnabled: lane === "live"
-      ? readBooleanEnv(LIVE_AUTO_TRADER_OPENING_STOP_BYPASS_ENABLED_ENV, true)
-      : false,
+    weekendGuardEnabled: false,
+    weekendEntryCutoffMinutesCt: parseTimeOfDayMinutes(
+      DEFAULT_LIVE_WEEKEND_ENTRY_CUTOFF_CT,
+      "DEFAULT_LIVE_WEEKEND_ENTRY_CUTOFF_CT",
+    ),
+    weekendExitCutoffMinutesCt: parseTimeOfDayMinutes(
+      DEFAULT_LIVE_WEEKEND_EXIT_CUTOFF_CT,
+      "DEFAULT_LIVE_WEEKEND_EXIT_CUTOFF_CT",
+    ),
+    openingStopBypassEnabled: false,
+    riskLimits: DEFAULT_LIVE_RISK_LIMITS,
+    strategyProfile: lane === "live" ? SUPPORT_RESISTANCE_PROFILE : null,
   };
 }
 

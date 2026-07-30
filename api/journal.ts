@@ -1,8 +1,12 @@
 import { createJournalTrade, getJournalTradeById, listRecentJournalTrades } from "../src/journal/repository.js";
 import { validateJournalTradeCreatePayload } from "../src/journal/validation.js";
+import { requireApiBearerAuth } from "./auth.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
+  if (!requireApiBearerAuth(req, res)) {
+    return;
+  }
   if (req.method === "GET") {
     try {
       const trades = await listRecentJournalTrades();

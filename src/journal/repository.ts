@@ -5,6 +5,10 @@ import {
   paperAutomationColumnFilter,
 } from "../automation/paperAutomationBots.js";
 import {
+  LEGACY_STRATEGY_VERSION,
+  type StrategyVersionId,
+} from "../automation/strategyVersion.js";
+import {
   supabaseDelete,
   supabaseInsertAndSelectOne,
   supabaseSelect,
@@ -34,6 +38,8 @@ const JOURNAL_TRADE_RECORD_SELECT_WITHOUT_SIGNAL = [
   "scan_run_id",
   "account_mode",
   "paper_automation_key",
+  "strategy_version",
+  "data_quality",
   "entry_date",
   "entry_time",
   "symbol",
@@ -61,6 +67,7 @@ type JournalTradeListOptions = {
   accountMode?: AccountMode;
   paperAutomationKey?: PaperAutomationKey;
   status?: TradeStatus;
+  strategyVersion?: StrategyVersionId;
 };
 
 type JournalInsightsOptions = {
@@ -268,6 +275,8 @@ function toListItem(detail: JournalTradeDetail): JournalTradeListItem {
     status: detail.status,
     account_mode: detail.account_mode,
     paper_automation_key: detail.paper_automation_key,
+    strategy_version: detail.strategy_version,
+    data_quality: detail.data_quality,
     position_cost_usd: detail.position_cost_usd,
     underlying_entry_price: detail.underlying_entry_price,
     option_entry_price: detail.option_entry_price,
@@ -292,6 +301,8 @@ function normalizeJournalTradeRecord(record: JournalTradeRecord): JournalTradeRe
   return {
     ...record,
     paper_automation_key: record.paper_automation_key ?? LEGACY_PAPER_AUTOMATION_KEY,
+    strategy_version: record.strategy_version ?? LEGACY_STRATEGY_VERSION,
+    data_quality: record.data_quality ?? "usable",
     signal_snapshot_json: record.signal_snapshot_json ?? null,
   };
 }
@@ -308,6 +319,9 @@ async function listJournalTradeRecords(
       ...(options.accountMode ? [`account_mode=eq.${options.accountMode}`] : []),
       ...(options.paperAutomationKey ? [paperAutomationColumnFilter(options.paperAutomationKey)] : []),
       ...(options.status ? [`status=eq.${options.status}`] : []),
+      ...(options.strategyVersion
+        ? [`strategy_version=eq.${encodeURIComponent(options.strategyVersion)}`]
+        : []),
     ],
     order: ["entry_date.desc", "created_at.desc"],
     limit,
@@ -510,6 +524,7 @@ export async function createJournalTrade(input: JournalTradeCreateInput): Promis
     scan_run_id: planned.scan_run_id ?? null,
     account_mode: entry.account_mode,
     paper_automation_key: entry.paper_automation_key ?? LEGACY_PAPER_AUTOMATION_KEY,
+    strategy_version: entry.strategy_version ?? LEGACY_STRATEGY_VERSION,
     entry_date: entry.entry_date,
     entry_time: entry.entry_time ?? null,
     symbol: planned.symbol,
@@ -587,6 +602,21 @@ export async function updateJournalTradeSignalSnapshot(
   }
 
   return refreshedTrade;
+}
+
+export async function updateJournalTradeDataQuality(
+  id: string,
+  dataQuality: JournalTradeRecord["data_quality"],
+  entryNote?: string | null,
+): Promise<void> {
+  await supabaseUpdateAndSelectOne<JournalTradeRecord>({
+    table: "journal_trades",
+    filters: [`id=eq.${id}`],
+    values: {
+      data_quality: dataQuality,
+      ...(entryNote !== undefined ? { entry_notes: entryNote } : {}),
+    },
+  });
 }
 
 export async function archiveJournalTradeWithoutReview(

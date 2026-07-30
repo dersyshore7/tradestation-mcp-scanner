@@ -10,11 +10,17 @@ import {
   isVirtualPaperAutomationKey,
   type PaperAutomationKey,
 } from "../src/automation/paperAutomationBots.js";
+import { requireApiBearerAuth } from "./auth.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 type CandidateActivity = Pick<
   PaperEntryCandidateRecord,
-  "created_at" | "scan_run_id" | "symbol" | "decision" | "decision_reason"
+  | "created_at"
+  | "scan_run_id"
+  | "strategy_version"
+  | "symbol"
+  | "decision"
+  | "decision_reason"
 >;
 
 function firstQueryValue(value: string | string[] | undefined): string | undefined {
@@ -83,6 +89,9 @@ async function loadCandidateActivity(scanRunIds: Set<string>, paperAutomationKey
       .map((candidate) => ({
         created_at: candidate.created_at,
         scan_run_id: candidate.scan_run_id,
+        ...(candidate.strategy_version
+          ? { strategy_version: candidate.strategy_version }
+          : {}),
         symbol: candidate.symbol,
         decision: candidate.decision,
         decision_reason: candidate.decision_reason,
@@ -103,6 +112,9 @@ async function loadCandidateActivity(scanRunIds: Set<string>, paperAutomationKey
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
   if (req.method !== "GET") {
     sendError(res, 404, "Use GET /api/paper-activity");
+    return;
+  }
+  if (!requireApiBearerAuth(req, res)) {
     return;
   }
 

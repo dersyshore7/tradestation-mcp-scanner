@@ -8,6 +8,7 @@ import {
   getVirtualPaperAutomationStatus,
   runVirtualPaperAutomationCycle,
 } from "../src/automation/virtualPaperTrader.js";
+import { requireApiBearerAuth } from "./auth.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 type PaperTraderRequestBody = {
@@ -15,6 +16,9 @@ type PaperTraderRequestBody = {
   automation?: string;
   prompt?: string;
   dryRun?: boolean;
+  reconcileOnly?: boolean;
+  reconcileOrders?: boolean;
+  skipNewEntry?: boolean;
 };
 
 function firstQueryValue(value: string | string[] | undefined): string | undefined {
@@ -33,6 +37,9 @@ function parseVirtualAutomation(req: VercelRequestLike, body?: PaperTraderReques
 }
 
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
+  if (!requireApiBearerAuth(req, res)) {
+    return;
+  }
   if (req.method === "GET") {
     try {
       const mode = parseMode(req);
@@ -62,6 +69,18 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
         sendError(res, 400, "Virtual paper automations are paper-only and cannot run on the live lane.");
         return;
       }
+      if (
+        mode === "live"
+        && typeof body.prompt === "string"
+        && body.prompt.trim().length > 0
+      ) {
+        sendError(
+          res,
+          400,
+          "LIVE prompt overrides are disabled; LIVE always uses support_resistance_v1.",
+        );
+        return;
+      }
       const result = automation
         ? await runVirtualPaperAutomationCycle({
             automationKey: automation,
@@ -75,6 +94,9 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
                 : {}
             ),
             dryRun: body.dryRun === true,
+            reconcileOnly: body.reconcileOnly === true,
+            reconcileOrders: body.reconcileOrders === true,
+            skipNewEntry: body.skipNewEntry === true,
             source: "api",
           });
       sendJson(res, 200, result);

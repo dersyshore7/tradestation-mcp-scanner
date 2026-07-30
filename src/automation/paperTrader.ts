@@ -9,10 +9,15 @@ import {
   listJournalTradeDetails,
   recordPartialJournalExit,
   updateJournalTrade,
+  updateJournalTradeDataQuality,
   updateJournalExitWithBrokerFill,
   updateJournalTradeSignalSnapshot,
 } from "../journal/repository.js";
-import type { AccountMode, JournalTradeDetail } from "../journal/types.js";
+import type {
+  AccountMode,
+  JournalTradeDetail,
+  TradeDirection,
+} from "../journal/types.js";
 import {
   assertPaperTraderConfig,
   isRecognizedTradeStationAutomationBaseUrl,
@@ -24,7 +29,6 @@ import {
 } from "./config.js";
 import {
   decideAiManagementAction,
-  enforceAiManagementGuardrails,
   type AiManagementDecision,
   type AiManagementThesisChecklist,
   type ThesisStatus,
@@ -34,10 +38,7 @@ import {
   runAutomatedEntryScan,
   type AutomatedEntryScanState,
 } from "./automatedEntryScan.js";
-import {
-  recommendPolicyAction,
-  trainPolicyModel,
-} from "./policyModel.js";
+import { trainPolicyModel } from "./policyModel.js";
 import {
   calculateScaleOutQuantity,
   decideProfitProtection,
@@ -46,18 +47,13 @@ import {
 } from "./profitProtection.js";
 import {
   buildEntryRewardFeatureInput,
-  buildEntryRewardFeatureInputFromScan,
   buildEntryRewardFeatureSnapshot,
-  recommendEntryPolicy,
   summarizeEntryRewardModel,
   trainEntryRewardModel,
   type EntryPolicyRecommendation,
   type EntryRewardFeatureInput,
 } from "./entryRewardModel.js";
-import { buildLearningOutcomeAudit } from "./learningOutcomeAudit.js";
-import { evaluateLiveContinuationEntryGate } from "./liveContinuationEntryGate.js";
 import type { BidSideEntryPricingSnapshot } from "./entryPricing.js";
-import { buildPaperLearningPreferences } from "./paperLearningPreferences.js";
 import {
   listRecentPaperEntryCandidates,
   recordPaperEntryCandidate,
@@ -94,11 +90,43 @@ import {
 } from "./paperLearningCutoff.js";
 import {
   buildEntryOrderWaitDecision,
-  decideAiEntryOrderAction,
   evaluateEntryOrderManagementDecision,
   type AiEntryOrderDecision,
   type EntryOrderManagementContext,
 } from "./entryOrderManager.js";
+import { LEGACY_PAPER_AUTOMATION_KEY } from "./paperAutomationBots.js";
+import {
+  LEGACY_STRATEGY_VERSION,
+  SUPPORT_RESISTANCE_V1,
+  strategyVersionForDirection,
+  type StrategyVersionId,
+} from "./strategyVersion.js";
+import {
+  isSupportResistanceScanEligible,
+  SUPPORT_RESISTANCE_ENTRY_CANCEL_AFTER_SECONDS,
+  SUPPORT_RESISTANCE_ENTRY_REPRICE_AFTER_SECONDS,
+  SUPPORT_RESISTANCE_MANAGEMENT_STYLE,
+  SUPPORT_RESISTANCE_MAX_REPRICES,
+  SUPPORT_RESISTANCE_OPTION_LOSS_EXIT_PCT,
+} from "./supportResistanceStrategy.js";
+import {
+  evaluateLiveHealth,
+  evaluatePortfolioEntryGuard,
+  type LiveHealthResult,
+  type PortfolioRiskPosition,
+  type PortfolioRiskSnapshot,
+} from "./riskEngine.js";
+import {
+  readAccountEquityPeakUsd,
+  recordStrategyOrderAudit,
+  upsertDailyRiskSnapshot,
+} from "./riskRepository.js";
+import {
+  getStrategyValidation,
+  type StrategyValidationSummary,
+  type StrategyVersionRecord,
+} from "./strategyValidation.js";
+import type { ShadowValidationCycleResult } from "./shadowValidation.js";
 
 const MAX_TRADESTATION_CONTRACTS_PER_ORDER = 2000;
 // Paper entries are daily/weekly continuation trades, not penny-distance scalps.
@@ -160,7 +188,11 @@ type AutomationSnapshot = {
       lastOrderCheckAt?: string;
       lastOrderCheckError?: string | null;
       lastPositionQuantity?: number | null;
-      managementStyle?: "ai";
+      strategyVersion?: StrategyVersionId;
+      managementStyle?:
+        | "ai"
+        | "deterministic_v1"
+        | typeof SUPPORT_RESISTANCE_MANAGEMENT_STYLE;
       lastManagementAction?: "hold" | "update_levels" | "exit_now" | "scale_out" | "fallback";
       lastManagementConfidence?: "low" | "medium" | "high";
       lastManagementNote?: string;
@@ -370,8 +402,30 @@ export type EntryPolicyEffectivenessSummary = {
   summary: string;
 };
 
+type DirectionalStrategyState = {
+  version: StrategyVersionId;
+  status: StrategyVersionRecord["status"] | "unavailable";
+  validation: StrategyValidationSummary | null;
+  error: string | null;
+};
+
+type DirectionalStrategyStates = Record<TradeDirection, DirectionalStrategyState>;
+
+function emptyShadowValidationResult(): ShadowValidationCycleResult {
+  return {
+    inspected: 0,
+    opened: 0,
+    updated: 0,
+    closed: 0,
+    skipped: [],
+  };
+}
+
 export type PaperTraderStatus = {
   enabled: boolean;
+  entryMode: PaperTraderConfig["entryMode"];
+  allowEntryOrders: boolean;
+  allowExitOrders: boolean;
   allowOrderPlacement: boolean;
   liveRunReady: boolean;
   automationBaseUrl: string;
@@ -381,6 +435,10 @@ export type PaperTraderStatus = {
   maxOpenTrades: number | null;
   maxDailyLossUsd: number | null;
   maxPositionPct: number;
+  riskLimits: PaperTraderConfig["riskLimits"];
+  strategyVersion: StrategyVersionId;
+  strategies: DirectionalStrategyStates;
+  managementStyle: "ai" | typeof SUPPORT_RESISTANCE_MANAGEMENT_STYLE;
   entryOrderManagementEnabled: boolean;
   openPaperTrades: number;
   liveSimPositions: number | null;
@@ -464,6 +522,9 @@ type PaperTraderRunResult = {
     automationBaseUrl: string;
     tradeStationEnvironment: "sim" | "live";
     accountMode: AccountMode;
+    entryMode: PaperTraderConfig["entryMode"];
+    allowEntryOrders: boolean;
+    allowExitOrders: boolean;
     allowOrderPlacement: boolean;
     accountId: string;
     maxOpenTrades: number | null;
@@ -474,13 +535,21 @@ type PaperTraderRunResult = {
     weekendEntryCutoffMinutesCt: number;
     weekendExitCutoffMinutesCt: number;
     openingStopBypassEnabled: boolean;
+    riskLimits: PaperTraderConfig["riskLimits"];
+    strategyVersion: StrategyVersionId;
+    strategies: DirectionalStrategyStates;
+    managementStyle: "ai" | typeof SUPPORT_RESISTANCE_MANAGEMENT_STYLE;
   };
+  shadowValidation: ShadowValidationCycleResult;
   guards: {
     openPaperTrades: number;
     liveSimPositions: number | null;
     staleOpenJournalTrades: number | null;
     todayRealizedPlUsd: number;
     newEntriesAllowed: boolean;
+    blockReasons: string[];
+    riskSnapshot: PortfolioRiskSnapshot | null;
+    liveHealth: LiveHealthResult | null;
   };
   reconciliation: {
     inspected: number;
@@ -591,6 +660,7 @@ type PaperTraderRunResult = {
       tradeId: string;
       symbol: string;
       action:
+        | "fixed_hold"
         | "ai_hold"
         | "ai_update_levels"
         | "ai_exit_now"
@@ -651,6 +721,11 @@ type PaperTraderRunResult = {
       mlAdjustmentSummary: string[];
     };
     automatedScanState?: AutomatedEntryScanState | null;
+    strategyVersion?: StrategyVersionId | null;
+    strategyStatus?: StrategyVersionRecord["status"] | "unavailable" | null;
+    blockReasons?: string[];
+    riskSnapshot?: PortfolioRiskSnapshot | null;
+    liveHealth?: LiveHealthResult | null;
   };
   decisionLog: PaperTraderDecisionLogEntry[];
   paperTradeHistory: PaperTraderTradeHistoryItem[];
@@ -905,11 +980,67 @@ function isConfiguredAccountModeTrade(
   return trade.account_mode === config.accountMode;
 }
 
-function buildRunResultConfig(config: PaperTraderConfig): PaperTraderRunResult["config"] {
+export function usesFixedSupportResistanceManagement(
+  strategyVersion: StrategyVersionId,
+): boolean {
+  return strategyVersion === SUPPORT_RESISTANCE_V1;
+}
+
+function strategyVersionForConfig(config: PaperTraderConfig): StrategyVersionId {
+  return config.strategyProfile?.strategyVersion ?? LEGACY_STRATEGY_VERSION;
+}
+
+function unavailableStrategyState(
+  direction: TradeDirection,
+  error: string,
+): DirectionalStrategyState {
+  return {
+    version: strategyVersionForDirection(direction),
+    status: "unavailable",
+    validation: null,
+    error,
+  };
+}
+
+async function loadDirectionalStrategyStates(): Promise<DirectionalStrategyStates> {
+  const load = async (direction: TradeDirection): Promise<DirectionalStrategyState> => {
+    const version = strategyVersionForDirection(direction);
+    try {
+      const result = await getStrategyValidation(version);
+      return {
+        version,
+        status: result.strategy.status,
+        validation: result.validation,
+        error: null,
+      };
+    } catch (error) {
+      return unavailableStrategyState(
+        direction,
+        error instanceof Error ? error.message : "Strategy validation is unavailable.",
+      );
+    }
+  };
+  const [call, put] = await Promise.all([load("CALL"), load("PUT")]);
+  return { CALL: call, PUT: put };
+}
+
+function managementStyleForConfig(
+  config: PaperTraderConfig,
+): PaperTraderRunResult["config"]["managementStyle"] {
+  return config.strategyProfile?.managementStyle ?? "ai";
+}
+
+function buildRunResultConfig(
+  config: PaperTraderConfig,
+  strategies: DirectionalStrategyStates,
+): PaperTraderRunResult["config"] {
   return {
     automationBaseUrl: config.automationBaseUrl,
     tradeStationEnvironment: config.tradeStationEnvironment,
     accountMode: config.accountMode,
+    entryMode: config.entryMode,
+    allowEntryOrders: config.allowEntryOrders,
+    allowExitOrders: config.allowExitOrders,
     allowOrderPlacement: config.allowOrderPlacement,
     accountId: config.accountId as string,
     maxOpenTrades: config.maxOpenTrades,
@@ -920,6 +1051,10 @@ function buildRunResultConfig(config: PaperTraderConfig): PaperTraderRunResult["
     weekendEntryCutoffMinutesCt: config.weekendEntryCutoffMinutesCt,
     weekendExitCutoffMinutesCt: config.weekendExitCutoffMinutesCt,
     openingStopBypassEnabled: config.openingStopBypassEnabled,
+    riskLimits: config.riskLimits,
+    strategyVersion: strategyVersionForConfig(config),
+    strategies,
+    managementStyle: managementStyleForConfig(config),
   };
 }
 
@@ -927,13 +1062,17 @@ function buildPaperTraderConfigurationIssues(config: PaperTraderConfig): string[
   const issues: string[] = [];
   const environmentLabel = formatTradeStationEnvironmentLabel(config);
   const lanePrefix = config.lane === "live" ? "LIVE" : "PAPER";
-  const allowOrderPlacementEnv = `${lanePrefix}_AUTO_TRADER_ALLOW_ORDER_PLACEMENT`;
   const accountIdEnv = `${lanePrefix}_TRADESTATION_AUTOMATION_ACCOUNT_ID`;
   const baseUrlEnv = `${lanePrefix}_TRADESTATION_AUTOMATION_BASE_URL`;
 
-  if (!config.allowOrderPlacement) {
+  if (!config.allowEntryOrders) {
     issues.push(
-      `Set ${allowOrderPlacementEnv}=1 to allow ${environmentLabel} order placement; requests stay preview-only until then.`,
+      `${config.accountMode === "live" ? "Live" : "Paper"} entry mode is ${config.entryMode}; new entry orders are disabled.`,
+    );
+  }
+  if (!config.allowExitOrders) {
+    issues.push(
+      `Protective ${environmentLabel} exit orders are disabled by the lane exit-order setting.`,
     );
   }
 
@@ -1072,7 +1211,7 @@ function mlScoreAdjustmentFromEntryPolicy(
   return 0;
 }
 
-async function recordEntryCandidateAudit(input: {
+async function writeEntryCandidateAudit(accountMode: AccountMode, input: {
   scanRunId: string;
   dryRun: boolean;
   symbol: string | null;
@@ -1085,10 +1224,13 @@ async function recordEntryCandidateAudit(input: {
   selected?: boolean;
   scan?: unknown;
   tradeCard?: unknown;
-}): Promise<void> {
+  strategyVersion?: StrategyVersionId;
+}): Promise<PaperEntryCandidateRecord | null> {
   try {
-    await recordPaperEntryCandidate({
+    return await recordPaperEntryCandidate({
       scanRunId: input.scanRunId,
+      accountMode,
+      ...(input.strategyVersion ? { strategyVersion: input.strategyVersion } : {}),
       dryRun: input.dryRun,
       symbol: input.symbol,
       decision: input.decision,
@@ -1108,6 +1250,7 @@ async function recordEntryCandidateAudit(input: {
       "paper entry candidate audit write failed",
       error instanceof Error ? error.message : String(error),
     );
+    return null;
   }
 }
 
@@ -1370,10 +1513,13 @@ async function loadJournalTradesForPaperTraderStatus(
     const [openTrades, closedTrades] = await Promise.all([
       listJournalTradeDetails(50, {
         accountMode: config.accountMode,
+        paperAutomationKey: LEGACY_PAPER_AUTOMATION_KEY,
         status: "open",
         includeSignalSnapshot: true,
       }),
       listJournalTradeDetails(300, {
+        accountMode: config.accountMode,
+        paperAutomationKey: LEGACY_PAPER_AUTOMATION_KEY,
         status: "closed",
         includeSignalSnapshot: true,
       }),
@@ -1394,15 +1540,56 @@ async function loadPaperTraderCycleTrades(config: PaperTraderConfig): Promise<Jo
   const [openTrades, closedTrades] = await Promise.all([
     listJournalTradeDetails(50, {
       accountMode: config.accountMode,
+      paperAutomationKey: LEGACY_PAPER_AUTOMATION_KEY,
       status: "open",
       includeSignalSnapshot: true,
     }),
     listJournalTradeDetails(300, {
+      accountMode: config.accountMode,
+      paperAutomationKey: LEGACY_PAPER_AUTOMATION_KEY,
       status: "closed",
       includeSignalSnapshot: true,
     }),
   ]);
   return [...openTrades, ...closedTrades];
+}
+
+async function markFilledClosedTradesWithoutExitUnresolved(
+  config: PaperTraderConfig,
+  trades: JournalTradeDetail[],
+): Promise<number> {
+  if (config.accountMode !== "live") {
+    return 0;
+  }
+  let updated = 0;
+  for (const trade of trades) {
+    const automation = readAutomationSnapshot(trade);
+    const brokerEntryFilled =
+      automation?.entryFillStatus === "filled"
+      || (
+        typeof automation?.filledQuantity === "number"
+        && automation.filledQuantity > 0
+      );
+    if (
+      trade.account_mode !== "live"
+      || trade.status !== "closed"
+      || trade.exits.length > 0
+      || !brokerEntryFilled
+      || trade.data_quality === "unresolved"
+    ) {
+      continue;
+    }
+    await updateJournalTradeDataQuality(
+      trade.id,
+      "unresolved",
+      appendEntryNote(
+        trade.entry_notes,
+        "Marked unresolved: broker-confirmed entry fill exists but no authoritative closing fill is recorded. Excluded from validation.",
+      ),
+    );
+    updated += 1;
+  }
+  return updated;
 }
 
 async function loadPaperTraderRunHistory(mode: AutomationLane): Promise<{
@@ -1429,13 +1616,19 @@ async function loadPaperTraderRunHistory(mode: AutomationLane): Promise<{
   }
 }
 
-async function loadPaperEntryCandidateHistory(limit = 50): Promise<{
+async function loadPaperEntryCandidateHistory(
+  accountMode: AccountMode,
+  limit = 50,
+): Promise<{
   entryCandidateHistory: PaperEntryCandidateRecord[];
   entryCandidateHistoryMigrationRequired: boolean;
   entryCandidateHistoryMigrationMessage: string | null;
 }> {
   try {
-    const result = await listRecentPaperEntryCandidates(limit);
+    const result = await listRecentPaperEntryCandidates(limit, {
+      accountMode,
+      paperAutomationKey: LEGACY_PAPER_AUTOMATION_KEY,
+    });
     return {
       entryCandidateHistory: result.candidates,
       entryCandidateHistoryMigrationRequired: result.migrationRequired,
@@ -2324,9 +2517,11 @@ async function buildDuplicateLiveOpeningOrderBlockReason(params: {
 function computePositionCap(params: {
   requestedContracts: number;
   limitPrice: number;
+  requestedPlannedRiskUsd: number;
   accountValueUsd: number;
   entryBuyingPowerUsd: number | null;
   maxPositionPct: number;
+  maxPlannedRiskPct: number;
 }): {
   cappedContracts: number;
   cappedPositionCostUsd: number;
@@ -2334,6 +2529,8 @@ function computePositionCap(params: {
   effectiveMaxPositionCostUsd: number;
   entryBuyingPowerUsd: number | null;
   positionPct: number | null;
+  cappedPlannedRiskUsd: number;
+  maxPlannedRiskUsd: number;
 } {
   const maxPositionCostUsd = params.accountValueUsd * params.maxPositionPct;
   const effectiveMaxPositionCostUsd =
@@ -2341,11 +2538,26 @@ function computePositionCap(params: {
       ? Math.min(maxPositionCostUsd, params.entryBuyingPowerUsd)
       : maxPositionCostUsd;
   const maxContractsByCap = Math.floor(effectiveMaxPositionCostUsd / (params.limitPrice * 100));
+  const plannedRiskPerContract =
+    params.requestedContracts > 0
+      ? params.requestedPlannedRiskUsd / params.requestedContracts
+      : Number.POSITIVE_INFINITY;
+  const maxPlannedRiskUsd = params.accountValueUsd * params.maxPlannedRiskPct;
+  const maxContractsByPlannedRisk =
+    plannedRiskPerContract > 0 && Number.isFinite(plannedRiskPerContract)
+      ? Math.floor(maxPlannedRiskUsd / plannedRiskPerContract)
+      : 0;
   const cappedContracts = Math.max(
     0,
-    Math.min(params.requestedContracts, maxContractsByCap, MAX_TRADESTATION_CONTRACTS_PER_ORDER),
+    Math.min(
+      params.requestedContracts,
+      maxContractsByCap,
+      maxContractsByPlannedRisk,
+      MAX_TRADESTATION_CONTRACTS_PER_ORDER,
+    ),
   );
   const cappedPositionCostUsd = Number((cappedContracts * params.limitPrice * 100).toFixed(2));
+  const cappedPlannedRiskUsd = Number((cappedContracts * plannedRiskPerContract).toFixed(2));
 
   return {
     cappedContracts,
@@ -2360,6 +2572,8 @@ function computePositionCap(params: {
       params.accountValueUsd > 0
         ? Number((cappedPositionCostUsd / params.accountValueUsd).toFixed(4))
         : null,
+    cappedPlannedRiskUsd,
+    maxPlannedRiskUsd: Number(maxPlannedRiskUsd.toFixed(2)),
   };
 }
 
@@ -2730,26 +2944,6 @@ function buildPolicyFeedbackSummary(
     .join("\n");
 }
 
-function summarizeTrainedPolicyRecommendation(
-  recommendation: ReturnType<typeof recommendPolicyAction>,
-): string | null {
-  if (!recommendation.summary) {
-    return null;
-  }
-
-  const actionLines = (["hold", "update_levels", "exit_now", "scale_out"] as const)
-    .map((action) => {
-      const summary = recommendation.actionSummaries[action];
-      if (!summary) {
-        return null;
-      }
-      return `${action}: count=${summary.count}, avg=${summary.averageRewardR.toFixed(2)}R, win_rate=${(summary.winRate * 100).toFixed(0)}%`;
-    })
-    .filter((value): value is string => value !== null);
-
-  return [recommendation.summary, ...actionLines].join("\n");
-}
-
 function computeTodayRealizedPlUsd(
   trades: JournalTradeDetail[],
   todayChicago: string,
@@ -2886,7 +3080,8 @@ function inferExitDecision(params: {
   automation: NonNullable<ReturnType<typeof readAutomationSnapshot>>;
   todayChicago: string;
   underlyingLast: number | null;
-  optionMid: number | null;
+  optionBid: number | null;
+  optionLossExitEnabled: boolean;
 }): ExitDecision | null {
   const stop =
     params.automation.activeStopUnderlying
@@ -2937,14 +3132,15 @@ function inferExitDecision(params: {
   }
 
   if (
-    params.optionMid !== null
+    params.optionLossExitEnabled
+    && params.optionBid !== null
     && entryOptionPrice !== null
     && entryOptionPrice > 0
-    && params.optionMid <= entryOptionPrice * 0.75
+    && params.optionBid <= entryOptionPrice * (1 - SUPPORT_RESISTANCE_OPTION_LOSS_EXIT_PCT)
   ) {
     return {
       reason: "manual_early_exit",
-      note: `Option premium decayed to ${params.optionMid.toFixed(2)}, beyond the 25% decay rule from ${entryOptionPrice.toFixed(2)}.`,
+      note: `Executable option bid decayed to ${params.optionBid.toFixed(2)}, beyond the 25% decay rule from ${entryOptionPrice.toFixed(2)}.`,
     };
   }
 
@@ -3683,6 +3879,7 @@ async function finalizePaperTraderRunResult(
   try {
     await recordPaperTraderRun({
       mode: result.mode,
+      strategyVersion: result.config.strategyVersion,
       dryRun: result.dryRun,
       outcome: result.entry.outcome,
       symbol: result.entry.symbol,
@@ -3701,7 +3898,7 @@ async function finalizePaperTraderRunResult(
         runHistoryMigrationMessage: null,
       };
   const entryCandidateHistory = includeHistory
-    ? await loadPaperEntryCandidateHistory()
+    ? await loadPaperEntryCandidateHistory(result.mode)
     : {
         entryCandidateHistory: [],
         entryCandidateHistoryMigrationRequired: false,
@@ -3719,6 +3916,7 @@ async function finalizePaperTraderRunResult(
 
 export async function getPaperTraderStatus(mode: AutomationLane = "paper"): Promise<PaperTraderStatus> {
   const config = readPaperTraderConfig(mode);
+  const strategies = await loadDirectionalStrategyStates();
   const loadedTrades = await loadJournalTradesForPaperTraderStatus(config);
   const trades = loadedTrades.trades;
   const paperLearning = buildPaperLearningTradeSet(trades);
@@ -3727,7 +3925,7 @@ export async function getPaperTraderStatus(mode: AutomationLane = "paper"): Prom
   const policyModel = trainPolicyModel(learningTrades);
   const entryRewardModel = trainEntryRewardModel(learningTrades);
   const runHistory = await loadPaperTraderRunHistory(config.accountMode);
-  const entryCandidateHistory = await loadPaperEntryCandidateHistory(200);
+  const entryCandidateHistory = await loadPaperEntryCandidateHistory(config.accountMode, 200);
   const sizing = await loadPaperTraderSizingSnapshot(config);
   const liveDailyAudit = await buildLiveDailyAudit(
     config,
@@ -3754,6 +3952,9 @@ export async function getPaperTraderStatus(mode: AutomationLane = "paper"): Prom
 
   return {
     enabled: config.enabled,
+    entryMode: config.entryMode,
+    allowEntryOrders: config.allowEntryOrders,
+    allowExitOrders: config.allowExitOrders,
     allowOrderPlacement: config.allowOrderPlacement,
     liveRunReady: configurationIssues.length === 0,
     automationBaseUrl: config.automationBaseUrl,
@@ -3763,6 +3964,10 @@ export async function getPaperTraderStatus(mode: AutomationLane = "paper"): Prom
     maxOpenTrades: config.maxOpenTrades,
     maxDailyLossUsd: config.maxDailyLossUsd,
     maxPositionPct: config.maxPositionPct,
+    riskLimits: config.riskLimits,
+    strategyVersion: strategyVersionForConfig(config),
+    strategies,
+    managementStyle: managementStyleForConfig(config),
     entryOrderManagementEnabled: config.manageEntryOrders,
     openPaperTrades: openJournalTrades.length,
     liveSimPositions,
@@ -3999,7 +4204,7 @@ async function adoptUnlinkedLiveSimPositions(params: {
             lastOrderStatus: "filled",
             lastOrderCheckAt: now.toISOString(),
             lastPositionQuantity: quantity,
-            managementStyle: "ai",
+            managementStyle: "deterministic_v1",
             lastManagementAction: "hold",
             lastManagementConfidence: "medium",
             lastManagementNote: `TradeStation ${environmentLabel} position adopted. AI management can review it on the next cycle.`,
@@ -4305,7 +4510,8 @@ async function manageWorkingEntryOrders(
 
   const client = await createAutomationTradeStationClient(config.automationBaseUrl);
   const nowIso = new Date().toISOString();
-  const shouldMutateOrders = config.manageEntryOrders && updateOrders && !dryRun;
+  const shouldMutateEntryOrders =
+    config.manageEntryOrders && updateOrders && !dryRun && config.allowEntryOrders;
 
   for (const trade of openPaperTrades) {
     const automation = readAutomationSnapshot(trade);
@@ -4428,18 +4634,38 @@ async function manageWorkingEntryOrders(
     };
 
     let aiDecision: AiEntryOrderDecision;
-    if (context.orderAgeSeconds !== null && context.orderAgeSeconds < 90) {
-      aiDecision = buildEntryOrderWaitDecision(
-        `Opening order ${automation.orderId} is only ${context.orderAgeSeconds}s old, so the bot is waiting before asking AI to reprice it.`,
-      );
+    const orderAgeSeconds = context.orderAgeSeconds ?? 0;
+    if (orderAgeSeconds >= SUPPORT_RESISTANCE_ENTRY_CANCEL_AFTER_SECONDS) {
+      aiDecision = {
+        action: "cancel_remaining",
+        newLimitPrice: null,
+        confidence: "high",
+        thesis: "The frozen entry-order window has expired.",
+        note: `Canceling the unfilled remainder after ${orderAgeSeconds}s; deterministic v1 never leaves an entry working beyond five minutes.`,
+        plainEnglishExplanation: "The entry did not fill within five minutes.",
+      };
+    } else if (
+      config.allowEntryOrders
+      && orderAgeSeconds >= SUPPORT_RESISTANCE_ENTRY_REPRICE_AFTER_SECONDS
+      && context.repriceAttempts < SUPPORT_RESISTANCE_MAX_REPRICES
+      && context.optionMid !== null
+      && context.optionMid > context.workingLimitPrice
+    ) {
+      const originalMidpointCap =
+        automation.entryPricing?.mid
+        ?? context.originalLimitPrice;
+      aiDecision = {
+        action: "replace_limit",
+        newLimitPrice: Math.min(context.optionMid, originalMidpointCap),
+        confidence: "high",
+        thesis: "One bounded deterministic midpoint improvement is allowed.",
+        note: "Reprice once after 90 seconds without exceeding the decision-time midpoint.",
+        plainEnglishExplanation: "The order receives one bounded price improvement.",
+      };
     } else {
-      try {
-        aiDecision = await decideAiEntryOrderAction(context);
-      } catch (error) {
-        aiDecision = buildEntryOrderWaitDecision(
-          `Entry-order AI was unavailable; leaving ${automation.optionSymbol} unchanged. ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
+      aiDecision = buildEntryOrderWaitDecision(
+        `Waiting on deterministic entry order ${automation.orderId}; no AI repricing is permitted.`,
+      );
     }
 
     const normalizedNewLimitPrice =
@@ -4479,7 +4705,7 @@ async function manageWorkingEntryOrders(
     };
 
     if (policy.allowed && policy.action === "replace_limit" && policy.limitPrice !== null) {
-      if (!shouldMutateOrders) {
+      if (!shouldMutateEntryOrders) {
         action = "would_replace_limit";
         note = `Would replace remaining ${remainingQuantity}x ${automation.optionSymbol} from ${workingLimitPrice.toFixed(2)} to ${policy.limitPrice.toFixed(2)}. ${policy.reason}`;
         historyEntry = { ...historyEntry, action: "would_replace_limit", note };
@@ -4518,7 +4744,7 @@ async function manageWorkingEntryOrders(
         }
       }
     } else if (policy.allowed && policy.action === "cancel_remaining") {
-      if (!shouldMutateOrders) {
+      if (!shouldMutateEntryOrders) {
         action = "would_cancel_remaining";
         note = `Would cancel remaining ${remainingQuantity}x ${automation.optionSymbol}. ${policy.reason}`;
         historyEntry = { ...historyEntry, action: "would_cancel_remaining", note };
@@ -4574,7 +4800,10 @@ async function manageWorkingEntryOrders(
       decisionLog,
     };
 
-    if (shouldMutateOrders || (!dryRun && action === "wait")) {
+    if (
+      shouldMutateEntryOrders
+      || (!dryRun && action === "wait")
+    ) {
       await updateJournalTradeSignalSnapshot(
         trade.id,
         buildUpdatedSignalSnapshot(trade, snapshotUpdates),
@@ -4823,8 +5052,6 @@ async function manageOpenPaperTrades(
   const openPaperTrades = allTrades.filter(
     (trade) => isConfiguredAccountModeTrade(config, trade) && trade.status === "open",
   );
-  const learningTrades = filterRecordsForPaperLearning(allTrades);
-  const trainedPolicyModel = trainPolicyModel(learningTrades);
   const client = await createAutomationTradeStationClient(config.automationBaseUrl);
   const environmentLabel = formatTradeStationEnvironmentLabel(config);
   const nowIso = new Date().toISOString();
@@ -4836,6 +5063,9 @@ async function manageOpenPaperTrades(
   let inspected = 0;
 
   for (const trade of openPaperTrades) {
+    const fixedSupportResistance = usesFixedSupportResistanceManagement(
+      trade.strategy_version,
+    );
     const automation = readAutomationSnapshot(trade);
     if (!automation?.optionSymbol || !automation.accountId || !automation.quantity) {
       skipped.push({
@@ -4904,7 +5134,16 @@ async function manageOpenPaperTrades(
       client.fetchQuote(trade.symbol),
       client.fetchQuote(automation.optionSymbol),
     ]);
-    const activeLevels = readActiveManagementLevels(trade, automation);
+    const activeLevels = fixedSupportResistance
+      ? {
+          stopUnderlying:
+            automation.intendedStopUnderlying
+            ?? readNumber(trade.intended_stop_underlying),
+          targetUnderlying:
+            automation.intendedTargetUnderlying
+            ?? readNumber(trade.intended_target_underlying),
+        }
+      : readActiveManagementLevels(trade, automation);
     const progressToTargetPct = computeProgressToTargetPct({
       direction: trade.direction,
       entryUnderlyingPrice: readNumber(trade.underlying_entry_price),
@@ -4936,25 +5175,39 @@ async function manageOpenPaperTrades(
         thesisChecklist,
       };
     }
-    const chartReview = await readCurrentChartReview({
-      symbol: trade.symbol,
-      direction: trade.direction,
-      currentUnderlyingPrice: underlyingQuote.last,
-      optionReturnPct,
-      baseUrl: config.automationBaseUrl,
-    });
+    const chartReview: CurrentChartReviewResult = fixedSupportResistance
+      ? {
+          conclusion: "unavailable",
+          direction: null,
+          confidence: null,
+          confidencePercent: null,
+          estimatedProfitChancePercent: null,
+          reason: "Dynamic chart review is disabled for Support/Resistance v1 management.",
+          plainEnglishSummary: "Recorded chart levels control this position.",
+          alignsWithTradeDirection: null,
+          referencePrice: underlyingQuote.last,
+          invalidationLevel: activeLevels.stopUnderlying,
+          targetLevel: activeLevels.targetUnderlying,
+          invalidationReason: null,
+          targetReason: null,
+          actualRewardRiskRatio: null,
+          nearestSupportBelow: null,
+          nearestResistanceAbove: null,
+          levelSource: "unavailable",
+          timeframes: [],
+          topBlockingReasons: [],
+        }
+      : await readCurrentChartReview({
+          symbol: trade.symbol,
+          direction: trade.direction,
+          currentUnderlyingPrice: underlyingQuote.last,
+          optionReturnPct,
+          baseUrl: config.automationBaseUrl,
+        });
     const currentChartReviewSummary = buildChartReviewSummary(chartReview);
-    const trainedPolicyRecommendation = recommendPolicyAction(trainedPolicyModel, {
-      direction: trade.direction,
-      setupType: trade.setup_type,
-      confidenceBucket: trade.confidence_bucket,
-      progressToTargetPct,
-      optionReturnPct,
-      dteAtEntry: trade.dte_at_entry,
-    });
     const liveQuantity = Math.abs(livePosition.quantity ?? automation.quantity ?? 0);
     const entryOptionPrice = readNumber(trade.option_entry_price);
-    const profitProtectionDecision = decideProfitProtection({
+    const observedProfitProtection = decideProfitProtection({
       direction: trade.direction,
       quantity: liveQuantity,
       entryOptionPrice,
@@ -4967,6 +5220,24 @@ async function manageOpenPaperTrades(
       currentOptionMid: optionQuote.mid,
       nowIso,
     });
+    const profitProtectionDecision: ProfitProtectionDecision = fixedSupportResistance
+      ? {
+          ...observedProfitProtection,
+          action: "none",
+          reason: null,
+          scaleQuantity: 0,
+          remainingQuantity: liveQuantity,
+          updatedStopUnderlying: null,
+          state: automation.profitProtectionState ?? {},
+          diagnostics: {
+            ...observedProfitProtection.diagnostics,
+            triggered: false,
+            protectionEligible: false,
+            premiumTrailActive: false,
+            premiumTrailBreached: false,
+          },
+        }
+      : observedProfitProtection;
     let effectiveAutomation: PaperTraderAutomationSnapshot = {
       ...automation,
       ...(activeLevels.stopUnderlying !== null
@@ -4982,45 +5253,53 @@ async function manageOpenPaperTrades(
 
     try {
       const managementHistory = readManagementHistory(automation);
-      const aiDecision = enforceAiManagementGuardrails(
-        trade.direction,
-        activeLevels.stopUnderlying,
-        activeLevels.targetUnderlying,
-        underlyingQuote.last,
-        await decideAiManagementAction({
-          symbol: trade.symbol,
-          direction: trade.direction,
-          setupType: trade.setup_type,
-          confidenceBucket: trade.confidence_bucket,
-          entryDate: trade.entry_date,
-          expirationDate: trade.expiration_date,
-          dteAtEntry: trade.dte_at_entry,
-          underlyingEntryPrice: readNumber(trade.underlying_entry_price),
-          optionEntryPrice: readNumber(trade.option_entry_price),
-          currentUnderlyingPrice: underlyingQuote.last,
-          currentOptionMid: optionQuote.mid,
-          currentStopUnderlying: activeLevels.stopUnderlying,
-          currentTargetUnderlying: activeLevels.targetUnderlying,
-          originalStopUnderlying:
-            automation.intendedStopUnderlying
-            ?? readNumber(trade.intended_stop_underlying),
-          originalTargetUnderlying:
-            automation.intendedTargetUnderlying
-            ?? readNumber(trade.intended_target_underlying),
-          timeExitDate: automation.timeExitDate ?? null,
-          progressToTargetPct,
-          optionReturnPct,
-          rationale: originalTradeRationale,
-          thesisChecklist,
-          currentChartReviewSummary,
-          lastManagementNote: automation.lastManagementNote ?? null,
-          lastManagementThesis: automation.lastManagementThesis ?? null,
-          managementHistorySummary: summarizeCurrentManagementHistory(managementHistory),
-          policyFeedbackSummary: buildPolicyFeedbackSummary(learningTrades, trade),
-          trainedPolicySummary: summarizeTrainedPolicyRecommendation(trainedPolicyRecommendation),
-          trainedPolicyRecommendedAction: trainedPolicyRecommendation.recommendedAction,
-        }),
-      );
+      const aiDecision: AiManagementDecision = fixedSupportResistance
+        ? {
+            action: "hold",
+            updatedStopUnderlying: null,
+            updatedTargetUnderlying: null,
+            confidence: "high",
+            confidencePercent: 100,
+            profitChancePercent: null,
+            thesisStatus: "intact",
+            thesisInvalidationReasons: [],
+            thesis: "Support/Resistance v1 preserves the original recorded levels.",
+            note: "Only the original stop, target, time exit, and 25% option-loss rule may exit.",
+            plainEnglishExplanation: "This position is governed by deterministic rules.",
+          }
+        : await decideAiManagementAction({
+            symbol: trade.symbol,
+            direction: trade.direction,
+            setupType: trade.setup_type,
+            confidenceBucket: trade.confidence_bucket,
+            entryDate: trade.entry_date,
+            expirationDate: trade.expiration_date,
+            dteAtEntry: trade.dte_at_entry,
+            underlyingEntryPrice: readNumber(trade.underlying_entry_price),
+            optionEntryPrice: readNumber(trade.option_entry_price),
+            currentUnderlyingPrice: underlyingQuote.last,
+            currentOptionMid: optionQuote.mid,
+            currentStopUnderlying: activeLevels.stopUnderlying,
+            currentTargetUnderlying: activeLevels.targetUnderlying,
+            originalStopUnderlying:
+              automation.intendedStopUnderlying
+              ?? readNumber(trade.intended_stop_underlying),
+            originalTargetUnderlying:
+              automation.intendedTargetUnderlying
+              ?? readNumber(trade.intended_target_underlying),
+            timeExitDate: automation.timeExitDate ?? null,
+            progressToTargetPct,
+            optionReturnPct,
+            rationale: originalTradeRationale,
+            thesisChecklist,
+            currentChartReviewSummary,
+            lastManagementNote: automation.lastManagementNote ?? null,
+            lastManagementThesis: automation.lastManagementThesis ?? null,
+            managementHistorySummary: summarizeCurrentManagementHistory(managementHistory),
+            policyFeedbackSummary: buildPolicyFeedbackSummary(allTrades, trade),
+            trainedPolicySummary: null,
+            trainedPolicyRecommendedAction: null,
+          });
 
       const thesisInvalidationEvidence = formatThesisInvalidationEvidence(aiDecision);
       const stopProtectionEligible = profitProtectionDecision.diagnostics.protectionEligible;
@@ -5163,7 +5442,9 @@ async function manageOpenPaperTrades(
         activeStopUnderlying: nextStopUnderlying,
         activeTargetUnderlying: nextTargetUnderlying,
         profitProtectionState: profitProtectionDecision.state,
-        managementStyle: "ai",
+        managementStyle: fixedSupportResistance
+          ? SUPPORT_RESISTANCE_MANAGEMENT_STYLE
+          : "ai",
         lastManagementAction: historyEntry.action,
         lastManagementConfidence: aiDecision.confidence,
         lastManagementNote: historyEntry.note,
@@ -5191,7 +5472,9 @@ async function manageOpenPaperTrades(
         ...(nextTargetUnderlying !== null
           ? { activeTargetUnderlying: nextTargetUnderlying }
           : {}),
-        managementStyle: "ai",
+        managementStyle: fixedSupportResistance
+          ? SUPPORT_RESISTANCE_MANAGEMENT_STYLE
+          : "ai",
         lastManagementAction: historyEntry.action,
         lastManagementConfidence: aiDecision.confidence,
         lastManagementNote: historyEntry.note,
@@ -5207,7 +5490,9 @@ async function manageOpenPaperTrades(
         tradeId: trade.id,
         symbol: trade.symbol,
         action:
-          profitProtectionFullExit
+          fixedSupportResistance
+            ? "fixed_hold"
+          : profitProtectionFullExit
             ? "profit_protection_exit_full"
             : historyEntry.action === "hold"
             ? "ai_hold"
@@ -5441,6 +5726,24 @@ async function manageOpenPaperTrades(
         });
         continue;
       }
+      await recordStrategyOrderAudit({
+        accountMode: config.accountMode,
+        strategyVersion: trade.strategy_version,
+        journalTradeId: trade.id,
+        symbol: trade.symbol,
+        optionSymbol: automation.optionSymbol,
+        decisionKind: "exit",
+        action: "place_scale_out",
+        outcome: orderPlacement.fillSource,
+        ruleId: "legacy_profit_protection_inactive_v1",
+        inputQuote: {
+          bid: optionQuote.bid,
+          ask: optionQuote.ask,
+          mid: optionQuote.mid,
+          underlyingLast: underlyingQuote.last,
+        },
+        note: scaleNote,
+      });
 
       const journalExitPrice = chooseJournalExitPrice({
         brokerAverageFillPrice: orderPlacement.averageFillPrice,
@@ -5511,7 +5814,10 @@ async function manageOpenPaperTrades(
         exit_timestamp: nowIso,
         quantity_closed: scaleQuantity,
         fees_usd: 0,
-        slippage_usd: 0,
+        slippage_usd:
+          optionQuote.bid !== null
+            ? Number((Math.max(0, optionQuote.bid - optionExitPrice) * scaleQuantity * 100).toFixed(2))
+            : 0,
         exit_notes: joinNoteParts([
           `TradeStation automation profit-protection scale-out. ${scaleNote}`,
           journalExitPrice.note,
@@ -5556,7 +5862,8 @@ async function manageOpenPaperTrades(
         automation: effectiveAutomation,
         todayChicago,
         underlyingLast: underlyingQuote.last,
-        optionMid: optionQuote.mid,
+        optionBid: optionQuote.bid,
+        optionLossExitEnabled: fixedSupportResistance,
       });
       if (inferredDecision) {
         decision = inferredDecision;
@@ -5567,7 +5874,9 @@ async function manageOpenPaperTrades(
     if (!decision) {
       const weekendCarryGuard = evaluateWeekendCarryGuard({
         accountMode: config.accountMode,
-        weekendGuardEnabled: config.weekendGuardEnabled,
+        weekendGuardEnabled:
+          !fixedSupportResistance
+          && config.accountMode === "live",
         nowIso,
         exitCutoffMinutesCt: config.weekendExitCutoffMinutesCt,
         profitProtectionState: profitProtectionDecision.state,
@@ -5600,24 +5909,29 @@ async function manageOpenPaperTrades(
       continue;
     }
 
-    const openingExitGuard = inferredExitDecision
-      ? evaluateOpeningExitGuard({
-          accountMode: config.accountMode,
-          openingStopBypassEnabled: config.openingStopBypassEnabled,
-          nowIso,
-          decision,
-          direction: trade.direction,
-          entryUnderlyingPrice: readNumber(trade.underlying_entry_price),
-          currentUnderlyingPrice: underlyingQuote.last,
-          stopUnderlying: effectiveAutomation.activeStopUnderlying ?? activeLevels.stopUnderlying,
-          targetUnderlying: effectiveAutomation.activeTargetUnderlying ?? activeLevels.targetUnderlying,
-          originalStopUnderlying:
-            automation.intendedStopUnderlying
-            ?? readNumber(trade.intended_stop_underlying),
-          entryOptionPrice: readNumber(trade.option_entry_price),
-          currentOptionMid: optionQuote.mid,
-        })
-      : { blocked: false, note: null };
+    const openingExitGuard =
+      !fixedSupportResistance && inferredExitDecision
+        ? evaluateOpeningExitGuard({
+            accountMode: config.accountMode,
+            openingStopBypassEnabled: config.openingStopBypassEnabled,
+            nowIso,
+            decision,
+            direction: trade.direction,
+            entryUnderlyingPrice: readNumber(trade.underlying_entry_price),
+            currentUnderlyingPrice: underlyingQuote.last,
+            stopUnderlying:
+              effectiveAutomation.activeStopUnderlying
+              ?? activeLevels.stopUnderlying,
+            targetUnderlying:
+              effectiveAutomation.activeTargetUnderlying
+              ?? activeLevels.targetUnderlying,
+            originalStopUnderlying:
+              automation.intendedStopUnderlying
+              ?? readNumber(trade.intended_stop_underlying),
+            currentOptionMid: optionQuote.mid,
+            entryOptionPrice: readNumber(trade.option_entry_price),
+          })
+        : { blocked: false, note: null };
     if (openingExitGuard.blocked) {
       decisionLog = appendDecisionLog(decisionLog, {
         timestamp: nowIso,
@@ -5825,6 +6139,24 @@ async function manageOpenPaperTrades(
       });
       continue;
     }
+    await recordStrategyOrderAudit({
+      accountMode: config.accountMode,
+      strategyVersion: trade.strategy_version,
+      journalTradeId: trade.id,
+      symbol: trade.symbol,
+      optionSymbol: automation.optionSymbol,
+      decisionKind: "exit",
+      action: "place_sell_to_close",
+      outcome: orderPlacement.fillSource,
+      ruleId: "deterministic_exit_v1",
+      inputQuote: {
+        bid: optionQuote.bid,
+        ask: optionQuote.ask,
+        mid: optionQuote.mid,
+        underlyingLast: underlyingQuote.last,
+      },
+      note: decision.note,
+    });
 
     const journalExitPrice = chooseJournalExitPrice({
       brokerAverageFillPrice: orderPlacement.averageFillPrice,
@@ -5893,7 +6225,10 @@ async function manageOpenPaperTrades(
       exit_timestamp: nowIso,
       quantity_closed: exitQuantity,
       fees_usd: 0,
-      slippage_usd: 0,
+      slippage_usd:
+        optionQuote.bid !== null
+          ? Number((Math.max(0, optionQuote.bid - optionExitPrice) * exitQuantity * 100).toFixed(2))
+          : 0,
       exit_notes: joinNoteParts([
         `TradeStation automation auto-exit. ${decision.note}`,
         journalExitPrice.note,
@@ -5927,6 +6262,7 @@ async function manageOpenPaperTrades(
 
 async function maybeEnterNewPaperTrade(params: {
   config: PaperTraderConfig;
+  strategies: DirectionalStrategyStates;
   dryRun: boolean;
   allTrades: JournalTradeDetail[];
   openPaperTrades: JournalTradeDetail[];
@@ -5934,15 +6270,35 @@ async function maybeEnterNewPaperTrade(params: {
 }): Promise<PaperTraderRunResult["entry"]> {
   const {
     config,
+    strategies,
     dryRun,
     allTrades,
     openPaperTrades,
     prompt,
   } = params;
+  const recordEntryCandidateAudit = (
+    input: Parameters<typeof writeEntryCandidateAudit>[1],
+  ) => {
+    const scanDirection = (
+      input.scan as { direction?: string | null } | undefined
+    )?.direction;
+    const inferredVersion = config.accountMode === "live"
+      ? SUPPORT_RESISTANCE_V1
+      : scanDirection === "bullish"
+        ? strategyVersionForDirection("CALL")
+        : scanDirection === "bearish"
+          ? strategyVersionForDirection("PUT")
+          : undefined;
+    return writeEntryCandidateAudit(config.accountMode, {
+      ...input,
+      ...(input.strategyVersion
+        ? { strategyVersion: input.strategyVersion }
+        : inferredVersion
+          ? { strategyVersion: inferredVersion }
+          : {}),
+    });
+  };
 
-  const learningTrades = filterRecordsForPaperLearning(allTrades);
-  const entryRewardModel = trainEntryRewardModel(learningTrades);
-  const learningOutcomeAudit = buildLearningOutcomeAudit(learningTrades);
   const openSymbols = openPaperTrades.map((trade) => trade.symbol);
   const loadedScanState = await loadResumableAutomatedScanState(config.accountMode, dryRun);
   const resumableScanState = canResumeAutomatedEntryScanState(loadedScanState, {
@@ -5952,9 +6308,7 @@ async function maybeEnterNewPaperTrade(params: {
     ? loadedScanState
     : null;
   const scanRunId = resumableScanState?.scanRunId ?? buildScanRunId();
-  const paperLearningPreferences =
-    resumableScanState?.paperLearningPreferences
-    ?? buildPaperLearningPreferences(entryRewardModel, learningOutcomeAudit);
+  const paperLearningPreferences: [] = [];
   const policySkippedSymbols: string[] = [];
   const policySkipReasons: string[] = [];
   const evaluatedCandidates: PaperTraderEntryCandidateEvaluation[] = [];
@@ -5966,21 +6320,14 @@ async function maybeEnterNewPaperTrade(params: {
     paperLearningPreferences,
     state: resumableScanState,
     onCandidate: async (candidate) => {
-      const features = buildEntryRewardFeatureInputFromScan({
-        scan: candidate.scan,
-        entryTimestamp: new Date(),
-      });
-      const entryPolicy = features
-        ? recommendEntryPolicy(entryRewardModel, features)
-        : null;
       await recordEntryCandidateAudit({
         scanRunId,
         dryRun,
         symbol: candidate.symbol,
         decision: candidate.decision,
         decisionReason: candidate.reason,
-        features,
-        entryPolicy,
+        features: null,
+        entryPolicy: null,
         scan: candidate.scan,
       });
     },
@@ -5992,9 +6339,7 @@ async function maybeEnterNewPaperTrade(params: {
     chunkCount: automatedScan.chunkCount,
     finalistCount: automatedScan.finalistCount,
     confirmedCandidateCount: automatedScan.confirmedCandidates.length,
-    mlAdjustmentSummary: automatedScan.chunkSummaries
-      .flatMap((chunk) => chunk.reason.match(/Paper learning[^.]+\./g) ?? [])
-      .slice(0, 8),
+    mlAdjustmentSummary: [],
   };
   let selectedScan: Awaited<ReturnType<typeof runScan>> | null = null;
   let selectedTradeCard: TradeConstructionResult | null = null;
@@ -6006,6 +6351,31 @@ async function maybeEnterNewPaperTrade(params: {
     const scan = candidate.scan;
     const tradeCard = candidate.tradeCard;
     try {
+      if (config.accountMode === "live" && !isSupportResistanceScanEligible(scan)) {
+        const reason =
+          "Support/Resistance v1 requires a confirmed setup with confidence of at least 75%.";
+        policySkippedSymbols.push(scan.ticker ?? "unknown");
+        policySkipReasons.push(`${scan.ticker ?? "unknown"}: ${reason}`);
+        evaluatedCandidates.push({
+          symbol: scan.ticker ?? tradeCard.ticker,
+          decision: "support_resistance_eligibility_blocked",
+          reason,
+          entryPolicy: null,
+          features: null,
+        });
+        await recordEntryCandidateAudit({
+          scanRunId,
+          dryRun,
+          symbol: scan.ticker,
+          decision: "support_resistance_eligibility_blocked",
+          decisionReason: reason,
+          entryPolicy: null,
+          strategyVersion: SUPPORT_RESISTANCE_V1,
+          scan,
+          tradeCard,
+        });
+        continue;
+      }
       const entryFeatures = buildEntryRewardFeatureInput({
         scan,
         tradeCard,
@@ -6017,7 +6387,7 @@ async function maybeEnterNewPaperTrade(params: {
         policySkippedSymbols.push(symbol);
         policySkipReasons.push(`${symbol}: ${geometryError}`);
         evaluatedCandidates.push({
-          symbol: scan.ticker,
+          symbol: scan.ticker ?? tradeCard.ticker,
           decision: "trade_card_blocked",
           reason: geometryError,
           entryPolicy: null,
@@ -6036,99 +6406,43 @@ async function maybeEnterNewPaperTrade(params: {
         });
         continue;
       }
-      const entryPolicy = recommendEntryPolicy(
-        entryRewardModel,
-        entryFeatures,
-      );
-
-      if (entryPolicy.decision === "block") {
-        const decisionReason = entryPolicy.summary;
-        const symbol = scan.ticker ?? "unknown";
-        policySkippedSymbols.push(symbol);
-        policySkipReasons.push(`${symbol}: ${decisionReason}`);
-        evaluatedCandidates.push({
-          symbol: scan.ticker,
-          decision: "policy_blocked",
-          reason: decisionReason,
-          entryPolicy,
-          features: entryFeatures,
-        });
-        await recordEntryCandidateAudit({
-          scanRunId,
-          dryRun,
-          symbol: scan.ticker,
-          decision: "policy_blocked",
-          decisionReason,
-          features: entryFeatures,
-          entryPolicy,
-          scan,
-          tradeCard,
-        });
-        continue;
-      }
-
-      const liveContinuationGate = evaluateLiveContinuationEntryGate({
-        accountMode: config.accountMode,
+      const strategyVersion = config.accountMode === "live"
+        ? SUPPORT_RESISTANCE_V1
+        : strategyVersionForDirection(tradeCard.plannedJournalFields.direction);
+      const entryPolicy: EntryPolicyRecommendation = {
+        decision: "allow",
+        matchedKey: strategyVersion,
+        sampleSize: 0,
+        averageRewardR: null,
+        winRate: null,
+        summary: `Frozen ${strategyVersion} rules; adaptive entry rewards are disabled.`,
+      };
+      await recordEntryCandidateAudit({
+        scanRunId,
+        dryRun,
         symbol: scan.ticker,
+        decision: "deterministic_candidate",
+        decisionReason: entryPolicy.summary,
+        features: entryFeatures,
         entryPolicy,
-        entryFeatures,
-        scanReason: scan.reason,
+        strategyVersion,
+        scan,
+        tradeCard,
       });
-      if (!liveContinuationGate.allowed) {
-        const decisionReason = liveContinuationGate.reason ?? "Live continuation gate blocked this candidate.";
-        const symbol = scan.ticker ?? "unknown";
-        policySkippedSymbols.push(symbol);
-        policySkipReasons.push(`${symbol}: ${decisionReason}`);
-        evaluatedCandidates.push({
-          symbol: scan.ticker,
-          decision: "policy_blocked",
-          reason: decisionReason,
-          entryPolicy,
-          features: entryFeatures,
-        });
-        await recordEntryCandidateAudit({
-          scanRunId,
-          dryRun,
-          symbol: scan.ticker,
-          decision: "policy_blocked",
-          decisionReason,
-          features: entryFeatures,
-          entryPolicy,
-          scan,
-          tradeCard,
-        });
-        continue;
-      }
-
-      if (liveContinuationGate.applied && liveContinuationGate.reason) {
-        await recordEntryCandidateAudit({
-          scanRunId,
-          dryRun,
-          symbol: scan.ticker,
-          decision: "live_continuation_gate_passed",
-          decisionReason: liveContinuationGate.reason,
-          features: entryFeatures,
-          entryPolicy,
-          scan,
-          tradeCard,
-        });
-      }
-
-      selectedScan = scan;
-      selectedTradeCard = tradeCard;
-      selectedEntryReasoning = buildEntryReasoning(scan, tradeCard);
-      selectedEntryPolicy = entryPolicy;
-      selectedEntryFeatures = entryFeatures;
       evaluatedCandidates.push({
         symbol: scan.ticker,
         decision: entryPolicy.decision,
-        reason: [entryPolicy.summary, liveContinuationGate.reason]
-          .filter((item): item is string => typeof item === "string" && item.length > 0)
-          .join(" "),
+        reason: entryPolicy.summary,
         entryPolicy,
         features: entryFeatures,
       });
-      break;
+      if (!selectedScan) {
+        selectedScan = scan;
+        selectedTradeCard = tradeCard;
+        selectedEntryReasoning = buildEntryReasoning(scan, tradeCard);
+        selectedEntryPolicy = entryPolicy;
+        selectedEntryFeatures = entryFeatures;
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Trade construction failed.";
       policySkippedSymbols.push(scan.ticker ?? "unknown");
@@ -6174,6 +6488,9 @@ async function maybeEnterNewPaperTrade(params: {
   const entryPolicyRecommendation = selectedEntryPolicy;
   const entryFeatures = selectedEntryFeatures;
   const remainingAutomatedScanState = automatedScan.completed ? null : automatedScan.state;
+  const strategyVersion = config.accountMode === "live"
+    ? SUPPORT_RESISTANCE_V1
+    : strategyVersionForDirection(selectedTradeCard.plannedJournalFields.direction);
 
   try {
     const automation = tradeCard.automationMetadata;
@@ -6434,13 +6751,16 @@ async function maybeEnterNewPaperTrade(params: {
     const positionCap = computePositionCap({
       requestedContracts: automation.contracts,
       limitPrice: entryLimitPrice,
+      requestedPlannedRiskUsd: tradeCard.plannedJournalFields.planned_risk_usd,
       accountValueUsd,
       entryBuyingPowerUsd,
       maxPositionPct: config.maxPositionPct,
+      maxPlannedRiskPct: config.riskLimits.maxPositionPlannedRiskPct,
     });
     if (positionCap.cappedContracts < 1) {
       const capParts = [
         `${(config.maxPositionPct * 100).toFixed(0)}% account-value cap allows $${positionCap.maxPositionCostUsd.toFixed(2)}`,
+        `${(config.riskLimits.maxPositionPlannedRiskPct * 100).toFixed(0)}% planned-risk cap allows $${positionCap.maxPlannedRiskUsd.toFixed(2)} risk`,
         positionCap.entryBuyingPowerUsd !== null
           ? `available TradeStation buying power allows $${positionCap.entryBuyingPowerUsd.toFixed(2)}`
           : null,
@@ -6472,6 +6792,142 @@ async function maybeEnterNewPaperTrade(params: {
     }
 
     const initialContracts = positionCap.cappedContracts;
+    if (config.accountMode === "live") {
+      const sizing = await loadPaperTraderSizingSnapshot(config);
+      const today = formatChicagoParts(new Date()).date;
+      const entriesToday = allTrades.filter((trade) =>
+        trade.account_mode === "live"
+        && trade.entry_date === today
+        && trade.strategy_version !== LEGACY_STRATEGY_VERSION
+      ).length;
+      const dailyRiskSnapshot =
+        sizing.accountValueUsd !== null && sizing.accountValueUsd > 0
+          ? await upsertDailyRiskSnapshot({
+              accountMode: "live",
+              sessionDate: today,
+              accountValueUsd: sizing.accountValueUsd,
+              realizedPlUsd: computeTodayRealizedPlUsd(allTrades, today, "live"),
+              openUnrealizedPlUsd: sizing.unrealizedPlUsd,
+              entryCount: entriesToday,
+            })
+          : null;
+      const riskPositions: PortfolioRiskPosition[] = sizing.positions.map((position) => {
+        const linkedTrade = openPaperTrades.find((trade) =>
+          readAutomationSnapshot(trade)?.optionSymbol === position.symbol
+        );
+        return {
+          symbol: linkedTrade?.symbol ?? position.symbol,
+          direction: linkedTrade?.direction ?? null,
+          premiumExposureUsd:
+            position.marketValueUsd !== null
+              ? Math.abs(position.marketValueUsd)
+              : position.estimatedCostUsd !== null
+                ? Math.abs(position.estimatedCostUsd)
+                : null,
+          plannedRiskUsd: linkedTrade
+            ? readNumber(linkedTrade.planned_risk_usd)
+            : null,
+          linkedJournalTradeId: linkedTrade?.id ?? null,
+        };
+      });
+      const currentStrategyClosedTrades = allTrades.filter((trade) =>
+        trade.account_mode === "live"
+        && trade.strategy_version === strategyVersion
+        && trade.status === "closed"
+        && trade.data_quality === "usable"
+        && trade.latest_exit?.broker_confirmed === true
+      );
+      const liveHealth = evaluateLiveHealth({
+        realizedPlUsd: currentStrategyClosedTrades
+          .map((trade) => readNumber(trade.review?.realized_pl_usd ?? null))
+          .filter((value): value is number => value !== null),
+        equityPeakUsd: await readAccountEquityPeakUsd(
+          "live",
+          sizing.accountValueUsd,
+        ),
+        currentEquityUsd: sizing.accountValueUsd,
+        limits: config.riskLimits,
+      });
+      const plannedRiskUsd = positionCap.cappedPlannedRiskUsd;
+      const riskGuard = evaluatePortfolioEntryGuard({
+        accountValueUsd: sizing.accountValueUsd,
+        startOfDayAccountValueUsd:
+          readNumber(dailyRiskSnapshot?.account_value_usd ?? null)
+          ?? sizing.beginningOfDayAccountValueUsd,
+        realizedTodayUsd: computeTodayRealizedPlUsd(
+          allTrades,
+          today,
+          "live",
+        ),
+        openUnrealizedUsd: sizing.unrealizedPlUsd,
+        entriesToday,
+        positions: riskPositions,
+        candidate: {
+          symbol: scan.ticker ?? tradeCard.ticker,
+          direction: tradeCard.plannedJournalFields.direction,
+          premiumCostUsd: positionCap.cappedPositionCostUsd,
+          plannedRiskUsd,
+        },
+        limits: config.riskLimits,
+        liveHealthAllowed: liveHealth.allowed,
+        liveHealthReason: liveHealth.blockReasons.join(" ") || null,
+      });
+      if (!riskGuard.allowed) {
+        const reason = `Hard portfolio guard blocked ${strategyVersion}: ${riskGuard.blockReasons.join(" ")}`;
+        await recordStrategyOrderAudit({
+          accountMode: "live",
+          strategyVersion,
+          symbol: scan.ticker,
+          optionSymbol: automation.optionSymbol,
+          decisionKind: "entry",
+          action: "blocked",
+          outcome: "portfolio_risk_blocked",
+          ruleId: "portfolio_risk_v1",
+          inputQuote: automation.entryPricing ?? null,
+          riskSnapshot: riskGuard.snapshot as unknown as Record<string, unknown>,
+          note: reason,
+        });
+        await recordEntryCandidateAudit({
+          scanRunId,
+          dryRun,
+          symbol: scan.ticker,
+          decision: "portfolio_risk_blocked",
+          decisionReason: reason,
+          features: entryFeatures,
+          entryPolicy: entryPolicyRecommendation,
+          selected: true,
+          strategyVersion,
+          scan,
+          tradeCard,
+        });
+        return {
+          attempted: true,
+          outcome: "trade_card_blocked",
+          symbol: scan.ticker,
+          reason,
+          tradeCard,
+          reasoning: entryReasoning,
+          evaluatedCandidates,
+          scanSummary: entryScanSummary,
+          automatedScanState: remainingAutomatedScanState,
+          strategyVersion,
+          blockReasons: riskGuard.blockReasons,
+          riskSnapshot: riskGuard.snapshot,
+          liveHealth,
+        };
+      }
+      if (sizing.accountValueUsd !== null && sizing.accountValueUsd > 0) {
+        await upsertDailyRiskSnapshot({
+          accountMode: "live",
+          sessionDate: today,
+          accountValueUsd: sizing.accountValueUsd,
+          realizedPlUsd: computeTodayRealizedPlUsd(allTrades, today, "live"),
+          openUnrealizedPlUsd: sizing.unrealizedPlUsd,
+          entryCount: entriesToday,
+          riskSnapshot: riskGuard.snapshot as unknown as Record<string, unknown>,
+        });
+      }
+    }
     const capReasons = [
       initialContracts < automation.contracts && initialContracts === MAX_TRADESTATION_CONTRACTS_PER_ORDER
         ? `TradeStation's ${MAX_TRADESTATION_CONTRACTS_PER_ORDER}-contract per-order cap`
@@ -6678,6 +7134,19 @@ async function maybeEnterNewPaperTrade(params: {
         automatedScanState: remainingAutomatedScanState,
       };
     }
+    await recordStrategyOrderAudit({
+      accountMode: config.accountMode,
+      strategyVersion,
+      symbol: scan.ticker,
+      optionSymbol: automation.optionSymbol,
+      decisionKind: "entry",
+      action: "place_buy_to_open",
+      outcome: orderResult.status,
+      ruleId: "deterministic_entry_v1",
+      inputQuote: automation.entryPricing as unknown as Record<string, unknown>,
+      brokerState: asRecord(orderResult.raw),
+      note: `Placed ${entryOrder.quantity} contract(s) at deterministic limit ${entryLimitPrice.toFixed(2)}.`,
+    });
 
     let optionEntryPrice = orderResult.averageFillPrice ?? entryLimitPrice;
     if (orderResult.orderId) {
@@ -6696,6 +7165,9 @@ async function maybeEnterNewPaperTrade(params: {
     const positionScale = finalContracts / automation.contracts;
     const cappedPlannedJournalFields = {
       ...tradeCard.plannedJournalFields,
+      ...(config.accountMode === "live"
+        ? { setup_subtype: "support_resistance_ai" }
+        : {}),
       position_cost_usd: finalPositionCostUsdAtLimit,
       planned_risk_usd: Number((tradeCard.plannedJournalFields.planned_risk_usd * positionScale).toFixed(2)),
       planned_profit_usd: Number((tradeCard.plannedJournalFields.planned_profit_usd * positionScale).toFixed(2)),
@@ -6718,14 +7190,14 @@ async function maybeEnterNewPaperTrade(params: {
       targetUnderlying: automation.intendedTargetUnderlying,
       timeExitDate: automation.timeExitDate,
     });
-    const entryPolicyModelSummary = summarizeEntryRewardModel(entryRewardModel);
+    const entryPolicyModelSummary = null;
     const entryDecisionLog: PaperTraderDecisionLogEntry[] = [{
       timestamp: now.toISOString(),
       symbol: scan.ticker,
       kind: "entry",
       action: "entered_automation_trade",
       outcome: "entered_automation_trade",
-      note: `AI selected ${scan.ticker} and entered ${finalContracts}x ${automation.optionSymbol}.${sizeNote} Entry policy: ${entryPolicyRecommendation.summary}`,
+      note: `${strategyVersion} selected ${scan.ticker} and entered ${finalContracts}x ${automation.optionSymbol}.${sizeNote}`,
       thesis: entryReasoning.whyThisWon ?? entryReasoning.tradeRationale,
       plainEnglishExplanation: entryReasoning.conciseReasoning,
       optionSymbol: automation.optionSymbol,
@@ -6746,6 +7218,7 @@ async function maybeEnterNewPaperTrade(params: {
 
     const createdTrade = await createJournalTrade({
       account_mode: config.accountMode,
+      strategy_version: strategyVersion,
       entry_date: chicagoNow.date,
       entry_time: chicagoNow.time,
       contracts: finalContracts,
@@ -6778,8 +7251,9 @@ async function maybeEnterNewPaperTrade(params: {
           timeExit: tradeCard.timeExit,
         },
         automation: {
-          lane: "paper_trader_v1",
+          lane: strategyVersion,
           paperTrader: {
+            strategyVersion,
             accountId: config.accountId,
             optionSymbol: automation.optionSymbol,
             quantity: finalContracts,
@@ -6798,11 +7272,17 @@ async function maybeEnterNewPaperTrade(params: {
             activeTargetUnderlying: automation.intendedTargetUnderlying,
             timeExitDate: automation.timeExitDate,
             orderId: orderResult.orderId,
-            managementStyle: "ai",
+            managementStyle: config.accountMode === "live"
+              ? SUPPORT_RESISTANCE_MANAGEMENT_STYLE
+              : "deterministic_v1",
             lastManagementAction: "hold",
             lastManagementConfidence: "medium",
-            lastManagementNote: "Trade entered. AI manager is waiting for the next review cycle.",
-            lastManagementThesis: "Original thesis accepted at entry.",
+            lastManagementNote: config.accountMode === "live"
+              ? "Trade entered. Recorded chart levels, time exit, and 25% option-loss threshold control all exits."
+              : "Trade entered under fixed stop, target, premium-loss, and time-exit rules.",
+            lastManagementThesis: config.accountMode === "live"
+              ? "Original chart support, resistance, and time-exit levels are fixed."
+              : "Original thesis accepted at entry.",
             lastManagementAt: now.toISOString(),
             managementHistory: [],
             entryOrderManagementHistory: [],
@@ -6836,6 +7316,7 @@ async function maybeEnterNewPaperTrade(params: {
       features: entryFeatures,
       entryPolicy: entryPolicyRecommendation,
       selected: true,
+      strategyVersion,
       scan,
       tradeCard,
     });
@@ -6851,6 +7332,8 @@ async function maybeEnterNewPaperTrade(params: {
       reasoning: entryReasoning,
       evaluatedCandidates,
       scanSummary: entryScanSummary,
+      strategyVersion,
+      blockReasons: [],
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Trade construction failed.";
@@ -6884,20 +7367,38 @@ export async function runPaperTraderCycle(
 ): Promise<PaperTraderRunResult> {
   const config = readPaperTraderConfig(options.mode ?? "paper");
   assertPaperTraderConfig(config);
+  const strategies = await loadDirectionalStrategyStates();
+  let shadowValidation = emptyShadowValidationResult();
 
   const requestedDryRun = options.dryRun === true;
-  const dryRun = config.allowOrderPlacement
-    ? requestedDryRun
-    : true;
+  const entryDryRun = requestedDryRun || !config.allowEntryOrders;
+  const exitDryRun = requestedDryRun || !config.allowExitOrders;
+  const dryRun = entryDryRun;
   const dryRunReason = dryRun
     ? options.reconcileOnly
       ? "Monitor-only run uses read-only TradeStation checks and does not place orders."
       : requestedDryRun
       ? "Dry run was requested explicitly."
-      : `${config.lane === "live" ? "LIVE" : "PAPER"}_AUTO_TRADER_ALLOW_ORDER_PLACEMENT is not enabled, so this run used preview-only mode.`
+      : "Paper entry orders are disabled, so this run used preview-only mode."
     : null;
   let allTrades = await loadPaperTraderCycleTrades(config);
-  const shouldReconcileOrders = options.reconcileOrders === true || !dryRun;
+  const unresolvedMarked = await markFilledClosedTradesWithoutExitUnresolved(
+    config,
+    allTrades,
+  ).catch((error) => {
+    console.warn(
+      "unresolved live trade audit failed",
+      error instanceof Error ? error.message : String(error),
+    );
+    return 0;
+  });
+  if (unresolvedMarked > 0) {
+    allTrades = await loadPaperTraderCycleTrades(config);
+  }
+  const shouldReconcileOrders =
+    options.reconcileOrders === true
+    || config.allowEntryOrders
+    || config.allowExitOrders;
   const reconciliation = await reconcileOpenPaperOrders(
     config,
     allTrades,
@@ -6928,23 +7429,31 @@ export async function runPaperTraderCycle(
     todayChicago,
     closedExitReconciliation,
   );
-
   const includeHistory = options.includeHistory !== false;
 
   if (options.reconcileOnly) {
-    const entryOrderManagement = await manageWorkingEntryOrders(config, true, allTrades, false);
+    const entryOrderManagement = await manageWorkingEntryOrders(
+      config,
+      requestedDryRun,
+      allTrades,
+      shouldReconcileOrders,
+    );
     return await finalizePaperTraderRunResult({
       mode: config.accountMode,
       timestamp: new Date().toISOString(),
       dryRun,
       dryRunReason,
-      config: buildRunResultConfig(config),
+      config: buildRunResultConfig(config, strategies),
+      shadowValidation,
       guards: {
         openPaperTrades: openPaperTrades.length,
         liveSimPositions: null,
         staleOpenJournalTrades: reconciliation.staleArchived,
         todayRealizedPlUsd,
         newEntriesAllowed: false,
+        blockReasons: ["Monitor-only run requested."],
+        riskSnapshot: null,
+        liveHealth: null,
       },
       reconciliation,
       closedExitReconciliation,
@@ -6960,24 +7469,28 @@ export async function runPaperTraderCycle(
         attempted: false,
         outcome: "monitor_only",
         symbol: null,
-        reason: `Monitor-only run reconciled open ${config.accountMode} orders and skipped AI exits plus new entries.`,
+        reason: `Monitor-only run reconciled open ${config.accountMode} orders and skipped exits plus new entries.`,
       },
     }, allTrades, includeHistory);
   }
 
-  if (!dryRun && !isRegularUsEquitySession(new Date())) {
+  if (!requestedDryRun && !isRegularUsEquitySession(new Date())) {
     return await finalizePaperTraderRunResult({
       mode: config.accountMode,
       timestamp: new Date().toISOString(),
       dryRun,
       dryRunReason,
-      config: buildRunResultConfig(config),
+      config: buildRunResultConfig(config, strategies),
+      shadowValidation,
       guards: {
         openPaperTrades: openPaperTrades.length,
         liveSimPositions: null,
         staleOpenJournalTrades: reconciliation.staleArchived,
         todayRealizedPlUsd,
         newEntriesAllowed: false,
+        blockReasons: ["Outside regular US equity market hours."],
+        riskSnapshot: null,
+        liveHealth: null,
       },
       reconciliation,
       closedExitReconciliation,
@@ -6998,7 +7511,12 @@ export async function runPaperTraderCycle(
     }, allTrades, includeHistory);
   }
 
-  const entryOrderManagement = await manageWorkingEntryOrders(config, dryRun, allTrades, !dryRun);
+  const entryOrderManagement = await manageWorkingEntryOrders(
+    config,
+    requestedDryRun,
+    allTrades,
+    shouldReconcileOrders,
+  );
   if (entryOrderManagement.updated > 0) {
     allTrades = await loadPaperTraderCycleTrades(config);
     openPaperTrades = allTrades.filter(
@@ -7006,7 +7524,7 @@ export async function runPaperTraderCycle(
     );
   }
 
-  const management = await manageOpenPaperTrades(config, dryRun, allTrades);
+  const management = await manageOpenPaperTrades(config, exitDryRun, allTrades);
   const remainingOpenPaperTrades = openPaperTrades.filter(
     (trade) =>
       !management.exitsTriggered.some(
@@ -7019,12 +7537,13 @@ export async function runPaperTraderCycle(
     nowIso: new Date().toISOString(),
     entryCutoffMinutesCt: config.weekendEntryCutoffMinutesCt,
   });
-  const entry = options.skipNewEntry
+  const entry: PaperTraderRunResult["entry"] = options.skipNewEntry
       ? {
         attempted: false,
         outcome: "monitor_only" as const,
         symbol: null,
         reason: "This run skipped new entries by request.",
+        blockReasons: ["New entries were skipped by request."],
       }
     : weekendEntryGuard.blocked
       ? {
@@ -7032,16 +7551,20 @@ export async function runPaperTraderCycle(
         outcome: "skipped_after_guard" as const,
         symbol: null,
         reason: weekendEntryGuard.note ?? "Weekend carry guard blocked new entries.",
+        blockReasons: [
+          weekendEntryGuard.note ?? "Weekend carry guard blocked new entries.",
+        ],
       }
     : await maybeEnterNewPaperTrade({
         config,
-        dryRun,
+        strategies,
+        dryRun: entryDryRun,
         allTrades,
         openPaperTrades: remainingOpenPaperTrades,
         prompt: options.prompt ?? config.scanPrompt,
       });
 
-  const decisionLogTrades = !dryRun || reconciliation.updated > 0
+  const decisionLogTrades = !entryDryRun || !exitDryRun || reconciliation.updated > 0
     ? await loadPaperTraderCycleTrades(config)
     : allTrades;
 
@@ -7050,13 +7573,23 @@ export async function runPaperTraderCycle(
     timestamp: new Date().toISOString(),
     dryRun,
     dryRunReason,
-    config: buildRunResultConfig(config),
+    config: buildRunResultConfig(config, strategies),
+    shadowValidation,
     guards: {
       openPaperTrades: remainingOpenPaperTrades.length,
       liveSimPositions: null,
       staleOpenJournalTrades: reconciliation.staleArchived,
       todayRealizedPlUsd,
-      newEntriesAllowed: !weekendEntryGuard.blocked,
+      newEntriesAllowed:
+        !weekendEntryGuard.blocked
+        && (entry.blockReasons?.length ?? 0) === 0,
+      blockReasons: entry.blockReasons ?? (
+        weekendEntryGuard.blocked
+          ? [weekendEntryGuard.note ?? "Weekend carry guard blocked new entries."]
+          : []
+      ),
+      riskSnapshot: entry.riskSnapshot ?? null,
+      liveHealth: entry.liveHealth ?? null,
     },
     reconciliation,
     closedExitReconciliation,

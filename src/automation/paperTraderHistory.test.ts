@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { listRecentPaperTraderRuns, recordPaperTraderRun } from "./paperTraderHistory.js";
+import { DEFAULT_LIVE_RISK_LIMITS } from "./config.js";
+import { SUPPORT_RESISTANCE_V1 } from "./strategyVersion.js";
 
 const originalFetch = globalThis.fetch;
 const savedEnv = {
@@ -81,6 +83,14 @@ test("run history stores compact broker-truth and live-audit summaries", async (
     reason: null,
     rawResult: {
       mode: "live",
+      config: {
+        strategyVersion: SUPPORT_RESISTANCE_V1,
+        managementStyle: "fixed_support_resistance",
+        riskLimits: DEFAULT_LIVE_RISK_LIMITS,
+        allowEntryOrders: true,
+        allowExitOrders: true,
+        entryOrderManagementEnabled: true,
+      },
       closedExitReconciliation: {
         inspected: 2,
         repaired: 1,
@@ -110,10 +120,14 @@ test("run history stores compact broker-truth and live-audit summaries", async (
   const compact = ((requestBody as unknown) as Record<string, unknown>).raw_result_json as Record<string, unknown>;
   const closedExitReconciliation = compact.closedExitReconciliation as Record<string, unknown>;
   const liveDailyAudit = compact.liveDailyAudit as Record<string, unknown>;
+  const config = compact.config as Record<string, unknown>;
   const runRawResult = run?.raw_result_json as Record<string, unknown> | null;
   const runClosedExitReconciliation = runRawResult?.closedExitReconciliation as Record<string, unknown> | undefined;
   assert.equal(runClosedExitReconciliation?.repaired, 1);
   assert.equal(closedExitReconciliation.repaired, 1);
   assert.equal(closedExitReconciliation.realizedPlDeltaUsd, -199.9);
   assert.equal(liveDailyAudit.date, "2026-06-17");
+  assert.equal(config.strategyVersion, SUPPORT_RESISTANCE_V1);
+  assert.equal(config.managementStyle, "fixed_support_resistance");
+  assert.deepEqual(config.riskLimits, DEFAULT_LIVE_RISK_LIMITS);
 });

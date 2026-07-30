@@ -8,12 +8,17 @@ import {
   paperAutomationColumnFilter,
   type PaperAutomationKey,
 } from "./paperAutomationBots.js";
+import {
+  LEGACY_STRATEGY_VERSION,
+  type StrategyVersionId,
+} from "./strategyVersion.js";
 
 export type PaperTraderRunRecord = {
   id: string;
   created_at: string;
   mode: AccountMode;
   paper_automation_key?: PaperAutomationKey;
+  strategy_version?: StrategyVersionId;
   dry_run: boolean;
   outcome: string;
   symbol: string | null;
@@ -24,6 +29,7 @@ export type PaperTraderRunRecord = {
 export type PaperTraderRunCreateInput = {
   mode: AccountMode;
   paperAutomationKey?: PaperAutomationKey;
+  strategyVersion?: StrategyVersionId;
   dryRun: boolean;
   outcome: string;
   symbol: string | null;
@@ -55,6 +61,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function buildCompactRunResult(rawResult: Record<string, unknown>): Record<string, unknown> {
+  const config = asRecord(rawResult.config);
   const reconciliation = asRecord(rawResult.reconciliation);
   const closedExitReconciliation = asRecord(rawResult.closedExitReconciliation);
   const entryOrderManagement = asRecord(rawResult.entryOrderManagement);
@@ -67,6 +74,16 @@ function buildCompactRunResult(rawResult: Record<string, unknown>): Record<strin
     timestamp: rawResult.timestamp ?? null,
     dryRun: rawResult.dryRun ?? null,
     dryRunReason: rawResult.dryRunReason ?? null,
+    config: config
+      ? {
+          strategyVersion: config.strategyVersion ?? LEGACY_STRATEGY_VERSION,
+          managementStyle: config.managementStyle ?? null,
+          riskLimits: config.riskLimits ?? null,
+          allowEntryOrders: config.allowEntryOrders ?? null,
+          allowExitOrders: config.allowExitOrders ?? null,
+          entryOrderManagementEnabled: config.entryOrderManagementEnabled ?? null,
+        }
+      : null,
     guards: rawResult.guards ?? null,
     reconciliation: reconciliation
       ? {
@@ -157,6 +174,7 @@ export async function recordPaperTraderRun(
       values: {
         mode: input.mode,
         paper_automation_key: input.paperAutomationKey ?? LEGACY_PAPER_AUTOMATION_KEY,
+        strategy_version: input.strategyVersion ?? LEGACY_STRATEGY_VERSION,
         dry_run: input.dryRun,
         outcome: input.outcome,
         symbol: input.symbol,
@@ -174,17 +192,25 @@ export async function recordPaperTraderRun(
 
 export async function listRecentPaperTraderRuns(
   limit = 50,
-  options: { includeRawResult?: boolean; mode?: AccountMode; paperAutomationKey?: PaperAutomationKey } = {},
+  options: {
+    includeRawResult?: boolean;
+    mode?: AccountMode;
+    paperAutomationKey?: PaperAutomationKey;
+    strategyVersion?: StrategyVersionId;
+  } = {},
 ): Promise<PaperTraderRunHistoryResult> {
   try {
     const runs = await supabaseSelect<PaperTraderRunRecord>({
       table: "paper_trader_runs",
       select: options.includeRawResult
-        ? "id,created_at,mode,paper_automation_key,dry_run,outcome,symbol,reason,raw_result_json"
-        : "id,created_at,mode,paper_automation_key,dry_run,outcome,symbol,reason",
+        ? "id,created_at,mode,paper_automation_key,strategy_version,dry_run,outcome,symbol,reason,raw_result_json"
+        : "id,created_at,mode,paper_automation_key,strategy_version,dry_run,outcome,symbol,reason",
       filters: [
         ...(options.mode ? [`mode=eq.${options.mode}`] : []),
         paperAutomationColumnFilter(options.paperAutomationKey ?? LEGACY_PAPER_AUTOMATION_KEY),
+        ...(options.strategyVersion
+          ? [`strategy_version=eq.${encodeURIComponent(options.strategyVersion)}`]
+          : []),
       ],
       order: ["created_at.desc"],
       limit,

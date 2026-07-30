@@ -226,31 +226,25 @@ A separate automation module supports explicit TradeStation SIM paper trading an
 
 What one automation cycle does:
 
-1. Load open trades for the configured account mode from the journal
-2. Let the AI manager reassess open trades using current quotes, the original thesis, recent management history, and rewarded feedback from similar closed paper/live trades
-3. Feed the AI manager a first-pass trained policy prior that is learned from closed paper and live trades
-4. Tighten active stop/target levels or exit early when the AI manager decides the thesis has weakened or protecting gains is better than waiting
-5. Train an entry reward model from closed paper/live entries using realized R as the reward signal
-6. Run a fresh scan, excluding tickers already open in the paper trader
-7. Build a trade card, then consult the entry reward model before placement
-8. Skip historically poor entry contexts with enough evidence and rescan for another candidate
-9. Preview the TradeStation order
-10. Enforce the configured per-position account-value cap against the configured TradeStation account balance
-11. Optionally place the order in the configured TradeStation environment
-12. Journal the new paper or live trade with execution metadata, entry-policy context, and the AI decision log for later management
-13. Save the evaluated entry candidate to the candidate audit log when the migration is applied
+1. Reconcile broker orders and positions with the isolated account-mode journal.
+2. Run LIVE entries through the shared `support_resistance_v1` scan profile at ≥75% confidence and clean chart-anchored ≥2:1 structure.
+3. Place the existing buy-to-open limit at bid plus one tick, capped at the decision midpoint; reprice once after 90 seconds and cancel any unfilled remainder after five minutes.
+4. Manage new `support_resistance_v1` positions only from their recorded chart stop, chart target, fixed time exit, or 25% executable-bid premium loss.
+5. Keep legacy LIVE positions on their recorded AI-management behavior until closed.
+6. Apply the fixed portfolio and live-health gates and audit the decision quote, strategy version, risk snapshot, and broker state.
 
-New automation trades seed AI management state in `signal_snapshot_json`, including active stop/target levels, entry reward-policy context, plus a short decision log so later 5-minute reviews can explain what the AI entered, held, tightened, or exited.
+Adaptive reward and policy models remain available only as legacy diagnostics. They do not rank candidates, move levels, reprice orders, scale positions, or choose exits.
 
 Automation exits store structured journal-exit truth fields for dashboard/accounting use: manual exits remain `manual`, broker fill prices record the TradeStation fill source, and quote fallbacks are marked `provisional_quote` instead of being inferred from note text.
 
-Safety defaults:
+LIVE behavior:
 
-- Order placement stays off until you set the lane-specific placement flag, such as `PAPER_AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1` or `LIVE_AUTO_TRADER_ALLOW_ORDER_PLACEMENT=1`
+- Non-dry LIVE cron and manual cycles are order-enabled automatically; there are no activation, shadow, promotion, prompt, sizing, or order-placement environment gates.
+- LIVE prompt overrides are rejected. The LIVE lane always uses `support_resistance_v1`.
 - The automation module only accepts official TradeStation SIM (`https://sim-api.tradestation.com/v3`) or LIVE (`https://api.tradestation.com/v3`) base URLs
-- New entries are capped by the lane-specific max-position setting, defaulting to 10% of the configured TradeStation account value
-- There is no open-trade-count cap; each full 5-minute cron cycle can add one new non-duplicate setup if the scan and trade card both pass
-- Daily losses are not capped; the automation keeps collecting trade outcomes so the policy memory can learn from both winners and losers
+- Live risk is capped at 5% premium and 1% planned loss per position, 10% aggregate premium, 2% aggregate planned risk, two positions, one position per direction, and two entries per day.
+- Entries halt when realized plus open P/L reaches -1% of start-of-day account value. A 5% account drawdown or a sub-1.0 rolling 20-trade profit factor also halts entries.
+- Missing account values, baselines, quotes, broker positions, or exposure links fail closed.
 - Live runs skip themselves outside regular US equity market hours; dry runs still work anytime
 - Vercel Pro cron runs the full paper-trader cycle every 5 minutes on weekdays during the configured UTC window
 
@@ -266,13 +260,14 @@ PAPER_AUTO_TRADER_SCAN_PROMPT=Run a new Scan for this week
 
 LIVE_TRADESTATION_AUTOMATION_BASE_URL=https://api.tradestation.com/v3
 LIVE_TRADESTATION_AUTOMATION_ACCOUNT_ID=your_live_account_id
-LIVE_AUTO_TRADER_ALLOW_ORDER_PLACEMENT=0
-LIVE_AUTO_TRADER_MANAGE_ENTRY_ORDERS=1
-LIVE_AUTO_TRADER_MAX_POSITION_PCT=0.10
-LIVE_AUTO_TRADER_SCAN_PROMPT=Run a new Scan for this week
+
+AUTO_TRADER_API_SECRET=long_random_operator_bearer_secret
+CRON_SECRET=vercel_cron_bearer_secret
 ```
 
-The legacy `TRADESTATION_AUTOMATION_BASE_URL`, `TRADESTATION_AUTOMATION_ACCOUNT_ID`, and `TRADESTATION_ACCOUNT_ID` variables are treated as LIVE-lane fallbacks only. The PAPER lane does not inherit them.
+The legacy TradeStation account/base-URL variables are LIVE-lane fallbacks only. Credentials, tokens, and the TradeStation account ID remain environment variables for security; behavioral LIVE gates are ignored.
+
+All dashboard, status, journal, workflow, validation, and mutation routes require `Authorization: Bearer $AUTO_TRADER_API_SECRET`. The cron route accepts its cron bearer credential. Apply `supabase/migrations/20260730162857_live_trader_recovery.sql` before deploying code that reads strategy-version fields.
 
 ### Virtual paper automation dashboards
 
@@ -286,8 +281,10 @@ The website also exposes four paper-only virtual automations that share read-onl
 Use `automation=<key>` with the existing paper endpoints, for example:
 
 ```bash
-curl "https://your-deployment.vercel.app/api/paper-dashboard?mode=paper&automation=politician_replica"
-curl "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&automation=news_reasoning_ai"
+curl -H "Authorization: Bearer $AUTO_TRADER_API_SECRET" \
+  "https://your-deployment.vercel.app/api/paper-dashboard?mode=paper&automation=politician_replica"
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&automation=news_reasoning_ai"
 ```
 
 These virtual bots never place TradeStation orders. They write journal-only entries and exits scoped by `paper_automation_key`, while the live lane remains unchanged. Congressional-disclosure and news-backed bots use Financial Modeling Prep when `FMP_API_KEY` is configured; without it they record a no-trade/source-warning cycle.
@@ -302,6 +299,7 @@ API trigger example:
 
 ```bash
 curl -X POST https://your-deployment.vercel.app/api/paper-trader \
+  -H "Authorization: Bearer $AUTO_TRADER_API_SECRET" \
   -H "Content-Type: application/json" \
   -d '{"mode":"paper","dryRun":true}'
 ```
@@ -309,33 +307,36 @@ curl -X POST https://your-deployment.vercel.app/api/paper-trader \
 Cron/manual GET example:
 
 ```bash
-curl "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&dryRun=true"
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&dryRun=true"
 ```
 
 Read-only order monitor example:
 
 ```bash
-curl "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&reconcileOnly=true&reconcileOrders=true&skipNewEntry=true"
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&reconcileOnly=true&reconcileOrders=true&skipNewEntry=true"
 ```
 
 Full automation run example:
 
 ```bash
-curl "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&reconcileOrders=true"
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  "https://your-deployment.vercel.app/api/paper-trader-run?mode=paper&reconcileOrders=true"
 ```
 
 Notes:
 
 - This module is intentionally separate from `/api/workflow` and the current scanner UI.
 - It is built for long single-leg options entries only.
-- It uses the existing trade-card logic for entry planning and an AI manager for ongoing trade assessment.
-- `vercel.json` schedules both `/api/paper-trader-run?mode=paper&reconcileOrders=true` and `/api/paper-trader-run?mode=live&reconcileOrders=true`, so each deployed lane can reconcile fills, manage exits, and enter new trades when its lane-specific order-placement flag is enabled.
+- It uses the existing trade-card geometry for entry planning and frozen deterministic rules for executable management.
+- `vercel.json` schedules both lanes. The live lane continues reconciliation and protective exits when entries are disabled.
 - Use read-only monitor mode only for manual diagnostics; it reconciles partial fills and saved average entry price, but does not scan for new entries or send exit orders.
-- The current AI manager now includes a first trained contextual policy layer learned from closed paper and live trades, plus rewarded experience memory in the prompt.
-- New entries now include a separate realized-R entry reward model. It learns which entry contexts have produced better or worse closed paper/live trade R multiples, uses a 5R outlier cap to keep bad journal math from dominating, audits feature coverage for missing variables, can block repeatedly poor contexts when enough evidence exists, and then asks the scanner for another non-duplicate candidate.
-- The Paper Trader status panel shows durable run history, the AI decision log, and per-trade management history, including entry thesis, order-check changes, management decisions, exits, position size, and account-value cap details.
+- Legacy adaptive analytics are visible for postmortems only and never influence executable decisions.
+- The dashboard shows authority, block reasons, portfolio risk, broker-confirmed versus unresolved outcomes, and separate CALL/PUT validation gates.
 - Apply `supabase/migrations/202604290001_paper_trader_runs.sql` to enable persisted cron/manual run history on the website.
 - Apply `supabase/migrations/202604300001_paper_entry_candidates.sql` to enable persisted entry candidate audit history on the website.
+- Apply `supabase/migrations/20260730162857_live_trader_recovery.sql` for frozen strategy versions, prospective shadow trades, daily risk snapshots, audits, and legacy backfill.
 
 Policy-training debug:
 

@@ -82,11 +82,11 @@ test("entry order policy allows balanced repricing up to midpoint", () => {
   assert.equal(result.estimatedRewardRiskR, 2.36);
 });
 
-test("entry order policy cancels stale wait decisions once the quote has moved beyond the working limit", () => {
+test("entry order policy cancels every unfilled remainder at the five-minute deadline", () => {
   const result = evaluateEntryOrderManagementDecision(
     {
       ...baseContext,
-      orderAgeSeconds: 45 * 60,
+      orderAgeSeconds: 5 * 60,
       filledQuantity: 0,
       remainingQuantity: 19,
       originalLimitPrice: 1.05,
@@ -103,15 +103,15 @@ test("entry order policy cancels stale wait decisions once the quote has moved b
 
   assert.equal(result.allowed, true);
   assert.equal(result.action, "cancel_remaining");
-  assert.match(result.reason, /stale after 45 minutes/);
-  assert.match(result.reason, /instead of waiting indefinitely or chasing the ask/);
+  assert.match(result.reason, /deterministic 5-minute deadline/);
+  assert.match(result.reason, /instead of waiting or chasing/);
 });
 
-test("entry order policy keeps waiting when the working limit is still near the bid", () => {
+test("entry order policy keeps waiting before the five-minute deadline", () => {
   const result = evaluateEntryOrderManagementDecision(
     {
       ...baseContext,
-      orderAgeSeconds: 45 * 60,
+      orderAgeSeconds: 4 * 60,
       filledQuantity: 0,
       remainingQuantity: 8,
       originalLimitPrice: 2.4,
@@ -213,11 +213,11 @@ test("entry order policy enforces age, cooldown, and attempt caps", () => {
 
   assert.match(
     evaluateEntryOrderManagementDecision(
-      { ...baseContext, repriceAttempts: 3 },
+      { ...baseContext, repriceAttempts: 1 },
       decision({ action: "replace_limit", newLimitPrice: 5.8 }),
       5.8,
     ).reason,
-    /max is 3/,
+    /max is 1/,
   );
 
   assert.match(

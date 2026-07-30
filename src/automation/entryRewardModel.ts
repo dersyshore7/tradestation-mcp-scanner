@@ -1005,25 +1005,10 @@ function readPeakOptionReturnPct(trade: JournalTradeDetail): number | null {
 }
 
 export function calculateEntryOpportunityRewardR(
-  trade: JournalTradeDetail,
+  _trade: JournalTradeDetail,
   realizedR: number,
 ): number {
-  const peakOptionReturnPct = readPeakOptionReturnPct(trade);
-  if (peakOptionReturnPct === null || peakOptionReturnPct <= 0) {
-    return realizedR;
-  }
-
-  const positionCostUsd = asFiniteNumber(trade.position_cost_usd);
-  const plannedRiskUsd = asFiniteNumber(trade.planned_risk_usd);
-  const favorablePlUsd = positionCostUsd !== null
-    ? positionCostUsd * (peakOptionReturnPct / 100)
-    : null;
-  const favorableR =
-    favorablePlUsd !== null && plannedRiskUsd !== null && plannedRiskUsd > 0
-      ? favorablePlUsd / plannedRiskUsd
-      : peakOptionReturnPct / 100;
-
-  return Math.max(realizedR, favorableR);
+  return realizedR;
 }
 
 export function trainEntryRewardModel(trades: JournalTradeDetail[]): EntryRewardModel {

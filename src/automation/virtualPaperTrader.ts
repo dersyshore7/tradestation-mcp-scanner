@@ -22,6 +22,16 @@ import {
 import { recordPaperEntryCandidate, listRecentPaperEntryCandidates } from "./entryCandidateHistory.js";
 import { listRecentPaperTraderRuns, recordPaperTraderRun } from "./paperTraderHistory.js";
 import { createAutomationTradeStationClient, type TradeStationQuoteSnapshot } from "./tradestation.js";
+import {
+  isSupportResistanceScanEligible,
+  SUPPORT_RESISTANCE_MANAGEMENT_STYLE,
+  SUPPORT_RESISTANCE_SCAN_PROMPT,
+} from "./supportResistanceStrategy.js";
+import {
+  LEGACY_STRATEGY_VERSION,
+  SUPPORT_RESISTANCE_V1,
+  type StrategyVersionId,
+} from "./strategyVersion.js";
 
 const VIRTUAL_ENTRY_CONFIDENCE: ScanConfidence = "75-84";
 const VIRTUAL_POSITION_PCT = 0.3;
@@ -360,6 +370,14 @@ function tradeSignalFromScan(scan: ScanResult, sourceType: string): VirtualTrade
   };
 }
 
+function strategyVersionForVirtualAutomation(
+  automationKey: VirtualPaperAutomationKey,
+): StrategyVersionId {
+  return automationKey === "support_resistance_ai"
+    ? SUPPORT_RESISTANCE_V1
+    : LEGACY_STRATEGY_VERSION;
+}
+
 async function choosePoliticianSignal(excludedSymbols: string[]): Promise<{ signal: VirtualTradeSignal | null; warning: string | null }> {
   const source = await loadFmpCongressionalTradeSignals(100);
   const excluded = new Set(excludedSymbols.map((symbol) => symbol.toUpperCase()));
@@ -542,7 +560,7 @@ async function chooseVirtualTradeSignal(params: {
     case "support_resistance_ai":
       return await chooseScannerSignal({
         ...params,
-        prompt: "Run a new Scan for this week using only clean support and resistance structure, chart-anchored invalidation, and clear 2:1 room.",
+        prompt: SUPPORT_RESISTANCE_SCAN_PROMPT,
       });
   }
 }
@@ -574,6 +592,7 @@ async function maybeEnterVirtualTrade(params: {
   scanSummary?: Record<string, unknown> | null;
 }> {
   const config = readPaperTraderConfig("paper");
+  const strategyVersion = strategyVersionForVirtualAutomation(params.automationKey);
   const excludedSymbols = openSymbols(params.allTrades);
   const scanRunId = randomUUID();
   const selected = await chooseVirtualTradeSignal({
@@ -587,6 +606,7 @@ async function maybeEnterVirtualTrade(params: {
     await recordPaperEntryCandidate({
       scanRunId,
       paperAutomationKey: params.automationKey,
+      strategyVersion,
       dryRun: params.dryRun,
       symbol: null,
       decision: "no_trade_today",
@@ -603,6 +623,19 @@ async function maybeEnterVirtualTrade(params: {
   }
 
   const signal = selected.signal;
+  if (
+    params.automationKey === "support_resistance_ai"
+    && signal.scan
+    && !isSupportResistanceScanEligible(signal.scan)
+  ) {
+    return {
+      attempted: true,
+      outcome: "support_resistance_eligibility_blocked",
+      symbol: signal.symbol,
+      reason: "Support/Resistance v1 requires a confirmed setup with confidence of at least 75%.",
+      orderId: null,
+    };
+  }
   try {
     const tradeCard = await constructTradeCard({
       prompt: `build trade ${signal.symbol}`,
@@ -626,6 +659,7 @@ async function maybeEnterVirtualTrade(params: {
       await recordPaperEntryCandidate({
         scanRunId,
         paperAutomationKey: params.automationKey,
+        strategyVersion,
         dryRun: params.dryRun,
         symbol: signal.symbol,
         decision: "position_cap_blocked",
@@ -650,6 +684,7 @@ async function maybeEnterVirtualTrade(params: {
     const created = await createJournalTrade({
       account_mode: "paper",
       paper_automation_key: params.automationKey,
+      strategy_version: strategyVersion,
       entry_date: now.toISOString().slice(0, 10),
       entry_time: now.toISOString().slice(11, 19),
       contracts,
@@ -678,6 +713,10 @@ async function maybeEnterVirtualTrade(params: {
           lane: params.automationKey,
           virtualPaperBot: {
             automationKey: params.automationKey,
+            strategyVersion,
+            managementStyle: params.automationKey === "support_resistance_ai"
+              ? SUPPORT_RESISTANCE_MANAGEMENT_STYLE
+              : "virtual_fixed",
             optionSymbol: automation.optionSymbol,
             direction: signal.direction,
             quantity: contracts,
@@ -703,6 +742,7 @@ async function maybeEnterVirtualTrade(params: {
     await recordPaperEntryCandidate({
       scanRunId,
       paperAutomationKey: params.automationKey,
+      strategyVersion,
       dryRun: params.dryRun,
       symbol: signal.symbol,
       decision: "entered_virtual_trade",
@@ -740,6 +780,7 @@ async function maybeEnterVirtualTrade(params: {
     await recordPaperEntryCandidate({
       scanRunId,
       paperAutomationKey: params.automationKey,
+      strategyVersion,
       dryRun: params.dryRun,
       symbol: signal.symbol,
       decision: "trade_card_blocked",
@@ -792,6 +833,7 @@ async function loadVirtualHistories(automationKey: VirtualPaperAutomationKey, in
       paperAutomationKey: automationKey,
     }),
     listRecentPaperEntryCandidates(50, {
+      accountMode: "paper",
       paperAutomationKey: automationKey,
     }),
   ]);
@@ -853,6 +895,10 @@ export async function runVirtualPaperAutomationCycle(options: VirtualRunOptions)
       ? "Dry run requested; this virtual automation did not create or close journal positions."
       : "Virtual ledger run; TradeStation usage is read-only and no broker orders are placed.",
     config: {
+      strategyVersion: strategyVersionForVirtualAutomation(options.automationKey),
+      managementStyle: options.automationKey === "support_resistance_ai"
+        ? SUPPORT_RESISTANCE_MANAGEMENT_STYLE
+        : "virtual_fixed",
       automationBaseUrl: readPaperTraderConfig("paper").automationBaseUrl,
       tradeStationEnvironment: "sim",
       accountMode: "paper",
@@ -896,6 +942,7 @@ export async function runVirtualPaperAutomationCycle(options: VirtualRunOptions)
     await recordPaperTraderRun({
       mode: "paper",
       paperAutomationKey: options.automationKey,
+      strategyVersion: strategyVersionForVirtualAutomation(options.automationKey),
       dryRun,
       outcome: entry.outcome,
       symbol: entry.symbol,

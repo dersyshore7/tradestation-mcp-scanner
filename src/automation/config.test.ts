@@ -9,6 +9,11 @@ import {
   TRADESTATION_SIM_AUTOMATION_BASE_URL,
   type PaperTraderConfig,
 } from "./config.js";
+import {
+  SUPPORT_RESISTANCE_MANAGEMENT_STYLE,
+  SUPPORT_RESISTANCE_SCAN_PROMPT,
+} from "./supportResistanceStrategy.js";
+import { SUPPORT_RESISTANCE_V1 } from "./strategyVersion.js";
 
 const ENV_KEYS = [
   "AUTO_TRADER_ALLOW_ORDER_PLACEMENT",
@@ -27,6 +32,8 @@ const ENV_KEYS = [
   "LIVE_TRADESTATION_AUTOMATION_BASE_URL",
   "LIVE_TRADESTATION_AUTOMATION_ACCOUNT_ID",
   "LIVE_AUTO_TRADER_ALLOW_ORDER_PLACEMENT",
+  "LIVE_AUTO_TRADER_ENTRY_MODE",
+  "LIVE_AUTO_TRADER_ALLOW_EXIT_ORDERS",
   "LIVE_AUTO_TRADER_MANAGE_ENTRY_ORDERS",
   "LIVE_AUTO_TRADER_MAX_POSITION_PCT",
   "LIVE_AUTO_TRADER_SCAN_PROMPT",
@@ -68,6 +75,7 @@ test("paper trader config defaults to SIM paper mode and 10 percent sizing", () 
     assert.equal(config.tradeStationEnvironment, "sim");
     assert.equal(config.accountMode, "paper");
     assert.equal(config.maxPositionPct, 0.1);
+    assert.equal(config.strategyProfile, null);
   });
 });
 
@@ -78,13 +86,9 @@ test("automation lane parser accepts only paper or live", () => {
   assert.equal(readAutomationLane(undefined), null);
 });
 
-test("paper trader config reads explicit LIVE lane values", () => {
+test("live lane is order-enabled with the fixed support/resistance profile", () => {
   withEnv({
-    LIVE_TRADESTATION_AUTOMATION_BASE_URL: TRADESTATION_LIVE_AUTOMATION_BASE_URL,
     LIVE_TRADESTATION_AUTOMATION_ACCOUNT_ID: "LIVE123",
-    LIVE_AUTO_TRADER_ALLOW_ORDER_PLACEMENT: "1",
-    LIVE_AUTO_TRADER_MANAGE_ENTRY_ORDERS: "true",
-    LIVE_AUTO_TRADER_MAX_POSITION_PCT: "10",
   }, () => {
     const config = readPaperTraderConfig("live");
 
@@ -93,60 +97,79 @@ test("paper trader config reads explicit LIVE lane values", () => {
     assert.equal(config.accountMode, "live");
     assert.equal(config.lane, "live");
     assert.equal(config.accountId, "LIVE123");
+    assert.equal(config.entryMode, "live");
     assert.equal(config.allowOrderPlacement, true);
+    assert.equal(config.allowEntryOrders, true);
+    assert.equal(config.allowExitOrders, true);
     assert.equal(config.manageEntryOrders, true);
-    assert.equal(config.maxPositionPct, 0.1);
-    assert.equal(config.weekendGuardEnabled, true);
+    assert.equal(config.maxPositionPct, 0.05);
+    assert.equal(config.scanPrompt, SUPPORT_RESISTANCE_SCAN_PROMPT);
+    assert.equal(config.strategyProfile?.strategyVersion, SUPPORT_RESISTANCE_V1);
+    assert.equal(config.strategyProfile?.managementStyle, SUPPORT_RESISTANCE_MANAGEMENT_STYLE);
+    assert.equal(config.weekendGuardEnabled, false);
     assert.equal(config.weekendEntryCutoffMinutesCt, 870);
     assert.equal(config.weekendExitCutoffMinutesCt, 885);
-    assert.equal(config.openingStopBypassEnabled, true);
-  });
-});
-
-test("paper trader config reads explicit LIVE risk guard values", () => {
-  withEnv({
-    LIVE_TRADESTATION_AUTOMATION_BASE_URL: TRADESTATION_LIVE_AUTOMATION_BASE_URL,
-    LIVE_TRADESTATION_AUTOMATION_ACCOUNT_ID: "LIVE123",
-    LIVE_AUTO_TRADER_WEEKEND_GUARD_ENABLED: "false",
-    LIVE_AUTO_TRADER_WEEKEND_ENTRY_CUTOFF_CT: "13:55",
-    LIVE_AUTO_TRADER_WEEKEND_EXIT_CUTOFF_CT: "14:05",
-    LIVE_AUTO_TRADER_OPENING_STOP_BYPASS_ENABLED: "0",
-  }, () => {
-    const config = readPaperTraderConfig("live");
-
-    assert.equal(config.weekendGuardEnabled, false);
-    assert.equal(config.weekendEntryCutoffMinutesCt, 835);
-    assert.equal(config.weekendExitCutoffMinutesCt, 845);
     assert.equal(config.openingStopBypassEnabled, false);
   });
 });
 
-test("paper trader config rejects invalid LIVE risk guard cutoff times", () => {
+test("legacy LIVE behavioral environment values cannot change the fixed profile", () => {
   withEnv({
-    LIVE_TRADESTATION_AUTOMATION_BASE_URL: TRADESTATION_LIVE_AUTOMATION_BASE_URL,
     LIVE_TRADESTATION_AUTOMATION_ACCOUNT_ID: "LIVE123",
-    LIVE_AUTO_TRADER_WEEKEND_ENTRY_CUTOFF_CT: "25:00",
+    LIVE_AUTO_TRADER_ALLOW_ORDER_PLACEMENT: "1",
+    LIVE_AUTO_TRADER_ENTRY_MODE: "shadow",
+    LIVE_AUTO_TRADER_ALLOW_EXIT_ORDERS: "1",
+    LIVE_AUTO_TRADER_MANAGE_ENTRY_ORDERS: "0",
+    LIVE_AUTO_TRADER_MAX_POSITION_PCT: "30",
+    LIVE_AUTO_TRADER_SCAN_PROMPT: "Override the strategy",
+    LIVE_AUTO_TRADER_WEEKEND_GUARD_ENABLED: "1",
+    LIVE_AUTO_TRADER_WEEKEND_ENTRY_CUTOFF_CT: "invalid",
+    LIVE_AUTO_TRADER_WEEKEND_EXIT_CUTOFF_CT: "invalid",
+    LIVE_AUTO_TRADER_OPENING_STOP_BYPASS_ENABLED: "1",
   }, () => {
-    assert.throws(
-      () => readPaperTraderConfig("live"),
-      /LIVE_AUTO_TRADER_WEEKEND_ENTRY_CUTOFF_CT must be in HH:MM 24-hour Central time/,
-    );
+    const config = readPaperTraderConfig("live");
+
+    assert.equal(config.entryMode, "live");
+    assert.equal(config.allowEntryOrders, true);
+    assert.equal(config.allowExitOrders, true);
+    assert.equal(config.manageEntryOrders, true);
+    assert.equal(config.maxPositionPct, 0.05);
+    assert.equal(config.scanPrompt, SUPPORT_RESISTANCE_SCAN_PROMPT);
+    assert.equal(config.weekendGuardEnabled, false);
+    assert.equal(config.openingStopBypassEnabled, false);
   });
 });
 
-test("live lane falls back to legacy TradeStation account envs only", () => {
+test("legacy live placement flags are ignored", () => {
   withEnv({
     TRADESTATION_AUTOMATION_BASE_URL: TRADESTATION_LIVE_AUTOMATION_BASE_URL,
     TRADESTATION_AUTOMATION_ACCOUNT_ID: "LEGACYLIVE123",
-    AUTO_TRADER_ALLOW_ORDER_PLACEMENT: "1",
+    LIVE_AUTO_TRADER_ALLOW_ORDER_PLACEMENT: "1",
     AUTO_TRADER_MAX_POSITION_PCT: "30",
   }, () => {
     const config = readPaperTraderConfig("live");
 
     assert.equal(config.automationBaseUrl, TRADESTATION_LIVE_AUTOMATION_BASE_URL);
     assert.equal(config.accountId, "LEGACYLIVE123");
-    assert.equal(config.allowOrderPlacement, false);
-    assert.equal(config.maxPositionPct, 0.1);
+    assert.equal(config.entryMode, "live");
+    assert.equal(config.allowOrderPlacement, true);
+    assert.equal(config.allowEntryOrders, true);
+    assert.equal(config.allowExitOrders, true);
+    assert.equal(config.maxPositionPct, 0.05);
+  });
+});
+
+test("live entries do not require a behavioral activation flag", () => {
+  withEnv({
+    LIVE_TRADESTATION_AUTOMATION_ACCOUNT_ID: "LIVE123",
+    LIVE_AUTO_TRADER_ENTRY_MODE: "live",
+    LIVE_AUTO_TRADER_ALLOW_EXIT_ORDERS: "1",
+  }, () => {
+    const config = readPaperTraderConfig("live");
+
+    assert.equal(config.entryMode, "live");
+    assert.equal(config.allowEntryOrders, true);
+    assert.equal(config.allowExitOrders, true);
   });
 });
 
@@ -221,6 +244,9 @@ test("paper trader config rejects lane/base-url mismatches", () => {
 test("paper trader config assertion rejects crafted unknown automation base URLs", () => {
   const config: PaperTraderConfig = {
     enabled: true,
+    entryMode: "disabled",
+    allowEntryOrders: false,
+    allowExitOrders: false,
     allowOrderPlacement: false,
     manageEntryOrders: false,
     maxOpenTrades: null,
@@ -236,6 +262,20 @@ test("paper trader config assertion rejects crafted unknown automation base URLs
     weekendEntryCutoffMinutesCt: 870,
     weekendExitCutoffMinutesCt: 885,
     openingStopBypassEnabled: false,
+    strategyProfile: null,
+    riskLimits: {
+      maxPositionPremiumPct: 0.05,
+      maxPositionPlannedRiskPct: 0.01,
+      maxAggregatePremiumPct: 0.1,
+      maxAggregatePlannedRiskPct: 0.02,
+      maxOpenPositions: 2,
+      maxOpenPositionsPerDirection: 1,
+      maxEntriesPerDay: 2,
+      maxDailyLossPct: 0.01,
+      maxLiveDrawdownPct: 0.05,
+      rollingHealthTradeCount: 20,
+      minRollingProfitFactor: 1,
+    },
   };
 
   assert.equal(readTradeStationEnvironment(TRADESTATION_SIM_AUTOMATION_BASE_URL), "sim");

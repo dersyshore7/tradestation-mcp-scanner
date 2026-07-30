@@ -7,6 +7,11 @@ async function main(): Promise<void> {
   const prompt = promptArg ? promptArg.slice("--prompt=".length) : undefined;
   const mode = readAutomationLane(modeArg ? modeArg.slice("--mode=".length) : undefined) ?? "paper";
   const dryRun = process.argv.includes("--dry-run");
+  if (mode === "live" && prompt?.trim()) {
+    throw new Error(
+      "LIVE prompt overrides are disabled; LIVE always uses support_resistance_v1.",
+    );
+  }
   const result = await runPaperTraderCycle({
     mode,
     ...(prompt ? { prompt } : {}),

@@ -1,5 +1,4 @@
 import type { AccountMode, JournalTradeDetail, TradeDirection } from "../journal/types.js";
-import { decideProfitProtection } from "./profitProtection.js";
 
 export type PolicyAction = "hold" | "update_levels" | "exit_now" | "scale_out";
 
@@ -251,25 +250,6 @@ function readAction(value: unknown): PolicyAction | null {
     : null;
 }
 
-function readEntryUnderlying(trade: JournalTradeDetail): number | null {
-  return asFiniteNumber(trade.underlying_entry_price);
-}
-
-function isProfitProtectionState(item: PaperTraderManagementHistoryEntry, trade: JournalTradeDetail): boolean {
-  return decideProfitProtection({
-    direction: trade.direction,
-    quantity: Math.max(2, trade.contracts ?? 2),
-    entryOptionPrice: asFiniteNumber(trade.option_entry_price),
-    optionReturnPct: asFiniteNumber(item.optionReturnPct),
-    progressToTargetPct: asFiniteNumber(item.progressToTargetPct),
-    currentStopUnderlying: asFiniteNumber(item.stopUnderlying),
-    entryUnderlyingPrice: readEntryUnderlying(trade),
-    currentUnderlyingPrice: asFiniteNumber(item.currentUnderlyingPrice),
-    currentOptionMid: asFiniteNumber(item.currentOptionMid),
-    nowIso: typeof item.timestamp === "string" ? item.timestamp : new Date().toISOString(),
-  }).action !== "none";
-}
-
 function extractPolicyExperiences(trades: JournalTradeDetail[]): PolicyExperience[] {
   const experiences: PolicyExperience[] = [];
 
@@ -283,49 +263,28 @@ function extractPolicyExperiences(trades: JournalTradeDetail[]): PolicyExperienc
       continue;
     }
 
-    const managementHistory = readManagementHistory(trade);
-    if (managementHistory.length === 0) {
+    const finalObservation = [...readManagementHistory(trade)]
+      .reverse()
+      .find((item) => readAction(item.action) !== null);
+    if (!finalObservation) {
       continue;
     }
-
-    for (const [index, item] of managementHistory.entries()) {
-      const action = readAction(item.action);
-      if (!action) {
-        continue;
-      }
-
-      const recencyWeight = (index + 1) / managementHistory.length;
-      experiences.push({
-        action,
-        rewardR: Number((realizedR * recencyWeight).toFixed(3)),
-        buckets: buildFeatureBuckets({
-          direction: trade.direction,
-          setupType: trade.setup_type,
-          confidenceBucket: trade.confidence_bucket,
-          progressToTargetPct: asFiniteNumber(item.progressToTargetPct),
-          optionReturnPct: asFiniteNumber(item.optionReturnPct),
-          dteAtEntry: trade.dte_at_entry,
-        }),
-      });
-
-      if (action === "hold" && isProfitProtectionState(item, trade)) {
-        const protectReward = realizedR < 0
-          ? Math.max(0.25, Math.abs(realizedR))
-          : Math.max(0.1, realizedR * recencyWeight);
-        experiences.push({
-          action: "scale_out",
-          rewardR: Number(protectReward.toFixed(3)),
-          buckets: buildFeatureBuckets({
-            direction: trade.direction,
-            setupType: trade.setup_type,
-            confidenceBucket: trade.confidence_bucket,
-            progressToTargetPct: asFiniteNumber(item.progressToTargetPct),
-            optionReturnPct: asFiniteNumber(item.optionReturnPct),
-            dteAtEntry: trade.dte_at_entry,
-          }),
-        });
-      }
+    const action = readAction(finalObservation.action);
+    if (!action) {
+      continue;
     }
+    experiences.push({
+      action,
+      rewardR: Number(realizedR.toFixed(3)),
+      buckets: buildFeatureBuckets({
+        direction: trade.direction,
+        setupType: trade.setup_type,
+        confidenceBucket: trade.confidence_bucket,
+        progressToTargetPct: asFiniteNumber(finalObservation.progressToTargetPct),
+        optionReturnPct: asFiniteNumber(finalObservation.optionReturnPct),
+        dteAtEntry: trade.dte_at_entry,
+      }),
+    });
   }
 
   return experiences;

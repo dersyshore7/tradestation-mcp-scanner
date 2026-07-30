@@ -1573,7 +1573,7 @@
         <div class="panel-header">
           <div>
             <h2>Live Trader Controls</h2>
-            <p class="section-description">TradeStation LIVE automation lane for status checks, dry runs, and order-enabled cycles.</p>
+            <p class="section-description">TradeStation LIVE support/resistance v1 lane for status checks, dry runs, and order-enabled cycles.</p>
           </div>
           <div class="actions">
             <button id="loadLiveTraderStatusButton" class="secondary">Load Status</button>
@@ -1582,14 +1582,6 @@
             <button id="runLiveTraderLiveButton">Run Order Cycle</button>
           </div>
         </div>
-
-        <details>
-          <summary>Optional prompt override</summary>
-          <div id="liveTraderPromptFields">
-            <label for="liveTraderPrompt">Prompt override</label>
-            <input id="liveTraderPrompt" placeholder="Optional custom prompt for this automation cycle" />
-          </div>
-        </details>
 
         <div id="liveTraderArea" class="muted">Load status to confirm the TradeStation automation configuration.</div>
       </div>
@@ -1870,6 +1862,34 @@
       let selectedTradeToClose = null;
       let selectedTradeToEdit = null;
       let selectedRecommendationForJournal = null;
+      const API_TOKEN_SESSION_KEY = "liveTraderApiToken";
+
+      function requestApiToken() {
+        const existing = window.sessionStorage.getItem(API_TOKEN_SESSION_KEY);
+        if (existing) {
+          return existing;
+        }
+        const entered = window.prompt("Enter the trader dashboard API secret.");
+        const token = entered?.trim() ?? "";
+        if (token) {
+          window.sessionStorage.setItem(API_TOKEN_SESSION_KEY, token);
+        }
+        return token;
+      }
+
+      async function apiFetch(input, init = {}, retryUnauthorized = true) {
+        const token = requestApiToken();
+        const headers = new Headers(init.headers ?? {});
+        if (token) {
+          headers.set("Authorization", `Bearer ${token}`);
+        }
+        const response = await window.fetch(input, { ...init, headers });
+        if (response.status === 401 && retryUnauthorized) {
+          window.sessionStorage.removeItem(API_TOKEN_SESSION_KEY);
+          return apiFetch(input, init, false);
+        }
+        return response;
+      }
 
       const menuToggle = document.getElementById("menuToggle");
       const menuClose = document.getElementById("menuClose");
@@ -1976,7 +1996,6 @@
       const checkSupportTraderOrdersButton = document.getElementById("checkSupportTraderOrdersButton");
       const runSupportTraderDryButton = document.getElementById("runSupportTraderDryButton");
       const runSupportTraderLiveButton = document.getElementById("runSupportTraderLiveButton");
-      const liveTraderPromptInput = document.getElementById("liveTraderPrompt");
       const liveDashboardArea = document.getElementById("liveDashboardArea");
       const refreshLiveDashboardButton = document.getElementById("refreshLiveDashboardButton");
       const liveAutomationActivityArea = document.getElementById("liveAutomationActivityArea");
@@ -2137,7 +2156,7 @@
           checkOrdersButton: checkLiveTraderOrdersButton,
           runDryButton: runLiveTraderDryButton,
           runOrderButton: runLiveTraderLiveButton,
-          promptInput: liveTraderPromptInput,
+          promptInput: null,
           dashboardHasLoaded: false,
           activityHasLoaded: false,
           outcomeDetailsExpanded: false,
@@ -3707,7 +3726,7 @@
         button.disabled = true;
 
         try {
-          const response = await fetch("/api/loss-postmortem", {
+          const response = await apiFetch("/api/loss-postmortem", {
             method: "POST",
             headers: buildPaperTraderHeaders(page, true),
             body: JSON.stringify({ tradeId }),
@@ -3972,6 +3991,7 @@
         const liveDailyAudit = status?.liveDailyAudit || null;
         const biggestLoserCount = Array.isArray(liveDailyAudit?.biggestLosers) ? liveDailyAudit.biggestLosers.length : 0;
         const earlyWinnerCount = Array.isArray(liveDailyAudit?.winnersExitedBeforeTarget) ? liveDailyAudit.winnersExitedBeforeTarget.length : 0;
+        const riskLimits = status?.riskLimits || {};
 
         page.traderArea.innerHTML = `
           <div class="stats-grid" style="margin-top: 12px;">
@@ -3980,8 +4000,12 @@
               <div class="stat-value">${escapeHtml(formatBoolean(status?.enabled))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Order Placement</div>
-              <div class="stat-value">${escapeHtml(status?.allowOrderPlacement ? `${environmentLabel} Orders` : "Preview Only")}</div>
+              <div class="stat-label">Strategy</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(status?.strategyVersion, "legacy_unversioned"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Protective Exits</div>
+              <div class="stat-value">${escapeHtml(status?.allowExitOrders ? "Authorized" : "Disabled")}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Entry Order Mgmt</div>
@@ -3990,6 +4014,22 @@
             <div class="stat-card">
               <div class="stat-label">Live Run Ready</div>
               <div class="stat-value">${escapeHtml(status?.liveRunReady ? "Ready" : "Not Ready")}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Management</div>
+              <div class="stat-value">${escapeHtml(renderMaybe(status?.managementStyle, "ai"))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Minimum Confidence</div>
+              <div class="stat-value">${escapeHtml(status?.strategyVersion === "support_resistance_v1" ? "75%" : "n/a")}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Aggregate Premium Cap</div>
+              <div class="stat-value">${escapeHtml(formatPercent(riskLimits?.maxAggregatePremiumPct, 0))}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Aggregate Risk Cap</div>
+              <div class="stat-value">${escapeHtml(formatPercent(riskLimits?.maxAggregatePlannedRiskPct, 0))}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">${escapeHtml(environmentLabel)} Account Configured</div>
@@ -4017,7 +4057,7 @@
             </div>
             <div class="stat-card">
               <div class="stat-label">Daily Loss Guard</div>
-              <div class="stat-value">${escapeHtml(formatDailyLossGuard(status?.maxDailyLossUsd))}</div>
+              <div class="stat-value">${escapeHtml(formatPercent(riskLimits?.maxDailyLossPct, 0))}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">Max Position</div>
@@ -4068,7 +4108,7 @@
               <div class="stat-value">${escapeHtml(formatMoney(sizing?.equitiesBuyingPowerUsd))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Learning Outcomes</div>
+              <div class="stat-label">Legacy Analytics</div>
               <div class="stat-value">${escapeHtml(renderMaybe(learning?.entryExperiences, "0"))}</div>
             </div>
             <div class="stat-card">
@@ -4084,18 +4124,18 @@
           <div class="journal-trade">
             <div class="row"><strong>Automation base URL:</strong> ${escapeHtml(renderMaybe(status?.automationBaseUrl))}</div>
             <div class="row"><strong>Account mode:</strong> ${escapeHtml(accountModeLabel)} | <strong>TradeStation environment:</strong> ${escapeHtml(environmentLabel)}</div>
+            <div class="row"><strong>Execution authority:</strong> entries ${escapeHtml(status?.allowEntryOrders ? "authorized" : "preview-only")}; protective exits ${escapeHtml(status?.allowExitOrders ? "authorized" : "disabled")}.</div>
+            <div class="row"><strong>Strategy:</strong> ${escapeHtml(renderMaybe(status?.strategyVersion))}; management ${escapeHtml(renderMaybe(status?.managementStyle))}.</div>
             <div class="row"><strong>Configuration checks:</strong> ${configurationIssues.length > 0 ? renderList(configurationIssues) : `<span class="muted">${escapeHtml(environmentLabel)} configuration is ready.</span>`}</div>
             ${dataWarnings.length > 0 ? `<div class="row"><strong>Data warnings:</strong> ${renderList(dataWarnings)}</div>` : ""}
             <div class="row"><strong>Autonomous cron:</strong> ${page.virtual ? `Staggered weekdays via <code>/api/paper-trader-run?mode=paper&amp;automation=${escapeHtml(page.automationKey)}</code>; uses read-only quotes and journal-only virtual fills.` : `Every 5 minutes on weekdays via <code>/api/paper-trader-run?mode=${escapeHtml(page.mode)}&amp;reconcileOrders=true</code>; can reconcile fills, manage exits, and enter new ${escapeHtml(accountModeLabel.toLowerCase())} trades when guards allow.`}</div>
-            <div class="row"><strong>Entry order management:</strong> ${escapeHtml(page.virtual ? "Not applicable; virtual bots do not create working broker orders." : status?.entryOrderManagementEnabled ? `Enabled for working ${environmentLabel} buy-to-open limits.` : "Off; working entry orders are monitored but not repriced/canceled by AI.")}</div>
-            <div class="row"><strong>Entry cadence:</strong> ${escapeHtml(page.virtual ? "Each virtual cycle manages open journal-only positions, then may enter one new non-duplicate virtual trade if the source and trade card pass." : "Every full cron cycle can scan for another excellent setup and enter one additional non-duplicate ticker if the trade card passes.")}</div>
+            <div class="row"><strong>Entry order management:</strong> ${escapeHtml(page.virtual ? "Not applicable; virtual bots do not create working broker orders." : "Deterministic: one bounded reprice after 90 seconds, then cancel the remainder at five minutes.")}</div>
+            <div class="row"><strong>Entry cadence:</strong> ${escapeHtml(page.virtual ? "Each virtual cycle manages open journal-only positions, then may enter one new non-duplicate virtual trade if the source and trade card pass." : `At most ${renderMaybe(riskLimits?.maxEntriesPerDay, "2")} live entries per session after all capital, concentration, account-state, and health checks.`)}</div>
             <div class="row"><strong>Position size guard:</strong> ${escapeHtml(page.virtual ? `New virtual entries are capped at ${formatPercent(status?.maxPositionPct, 0)} of that bot's virtual book.` : `New ${accountModeLabel.toLowerCase()} entries are capped at ${formatPercent(status?.maxPositionPct, 0)} of the TradeStation ${environmentLabel} account value${sizing?.maxPositionCostUsd === null || sizing?.maxPositionCostUsd === undefined ? "." : ` (${formatMoney(sizing.maxPositionCostUsd)}).`}`)}</div>
             ${sizing?.error ? `<div class="row"><strong>Sizing read:</strong> ${escapeHtml(sizing.error)}</div>` : ""}
-            <div class="row"><strong>Daily loss guard:</strong> ${escapeHtml(page.virtual ? "Virtual book drawdown is isolated to this bot and cannot affect live trading." : "Unlimited for automation learning, so the system can keep collecting loss examples and improve its policy memory.")}</div>
+            <div class="row"><strong>Daily loss guard:</strong> ${escapeHtml(page.virtual ? "Virtual book drawdown is isolated to this bot and cannot affect live trading." : `New entries halt at ${formatPercent(riskLimits?.maxDailyLossPct, 0)} of start-of-day equity; exits and reconciliation continue.`)}</div>
             <div class="row"><strong>Manual monitor:</strong> ${escapeHtml(page.virtual ? "Run Monitor manages existing virtual positions without opening a new one." : "The Check Orders button still uses read-only monitor mode for diagnostics.")}</div>
-            <div class="row"><strong>Learning set:</strong> ${escapeHtml(renderMaybe(closedLearningTrades, "0"))} closed automation trade(s) since ${escapeHtml(formatCentralTimestamp(learning?.learningStartAt))} (${escapeHtml(renderMaybe(closedPaperTrades, "0"))} paper, ${escapeHtml(renderMaybe(closedLiveTrades, "0"))} live), ${escapeHtml(renderMaybe(learning?.learnedContexts, "0"))} management contexts, ${escapeHtml(renderMaybe(learning?.entryLearnedContexts, "0"))} entry contexts${Number.isFinite(Number(learning?.excludedLearningTrades)) ? `; ${escapeHtml(renderMaybe(learning?.excludedLearningTrades, "0"))} earlier trade(s) kept in history but excluded from learning` : ""}</div>
-            <div class="row"><strong>Entry policy:</strong></div>
-            <pre>${escapeHtml(learning?.entryPolicySummary || "No closed automation-entry outcomes yet; new entries use the scanner/trade-card rules and become training data after close.")}</pre>
+            <div class="row"><strong>Legacy analytics only:</strong> ${escapeHtml(renderMaybe(closedLearningTrades, "0"))} closed trade(s). These metrics use realized outcomes and cannot place, rank, reprice, manage, or exit a trade.</div>
           </div>
 
           ${renderLiveDailyAuditCard(liveDailyAudit)}
@@ -4142,6 +4182,7 @@
         const earlyWinnerCount = Array.isArray(liveDailyAudit?.winnersExitedBeforeTarget) ? liveDailyAudit.winnersExitedBeforeTarget.length : 0;
         const environmentLabel = formatTradeStationEnvironmentLabel(result?.config?.tradeStationEnvironment || (result?.mode === "live" ? "live" : "sim"));
         const reasoning = result?.entry?.reasoning || null;
+        const blockReasons = Array.isArray(result?.guards?.blockReasons) ? result.guards.blockReasons : [];
         const reasoningItems = [
           reasoning?.optionChosen ? `Option: ${reasoning.optionChosen}` : null,
           reasoning?.whyThisWon ? `Why selected: ${reasoning.whyThisWon}` : null,
@@ -4157,6 +4198,8 @@
             <div class="row"><strong>Entry outcome:</strong> ${escapeHtml(renderMaybe(result?.entry?.outcome))}</div>
             <div class="row"><strong>Reason:</strong> ${escapeHtml(renderMaybe(result?.entry?.reason))}</div>
             <div class="row"><strong>Symbol:</strong> ${escapeHtml(renderMaybe(result?.entry?.symbol))}</div>
+            <div class="row"><strong>Strategy:</strong> ${escapeHtml(renderMaybe(result?.config?.strategyVersion))} | <strong>Management:</strong> ${escapeHtml(renderMaybe(result?.config?.managementStyle))} | <strong>Protective exits:</strong> ${escapeHtml(result?.config?.allowExitOrders ? "authorized" : "disabled")}</div>
+            ${blockReasons.length > 0 ? `<div class="row"><strong>Entry blockers:</strong> ${renderList(blockReasons)}</div>` : ""}
           </div>
 
           <div class="stats-grid">
@@ -4300,7 +4343,7 @@
           if (page.automationKey) {
             params.set("automation", page.automationKey);
           }
-          const response = await fetch(`/api/paper-dashboard?${params.toString()}`, {
+          const response = await apiFetch(`/api/paper-dashboard?${params.toString()}`, {
             headers: buildPaperTraderHeaders(page),
           });
           const data = await readJsonResponse(response, `Failed to load ${page.tradeLabel} dashboard.`);
@@ -4333,7 +4376,7 @@
           if (page.automationKey) {
             params.set("automation", page.automationKey);
           }
-          const response = await fetch(`/api/paper-activity?${params.toString()}`, {
+          const response = await apiFetch(`/api/paper-activity?${params.toString()}`, {
             headers: buildPaperTraderHeaders(page),
           });
           const data = await readJsonResponse(response, "Failed to load automation activity.");
@@ -4360,7 +4403,7 @@
           if (page.automationKey) {
             params.set("automation", page.automationKey);
           }
-          const response = await fetch(`/api/paper-trader?${params.toString()}`, {
+          const response = await apiFetch(`/api/paper-trader?${params.toString()}`, {
             headers: buildPaperTraderHeaders(page),
           });
           const data = await readJsonResponse(response, `Failed to load ${page.tradeLabel}-trader status.`);
@@ -4380,7 +4423,7 @@
 
         try {
           const prompt = page.promptInput?.value?.trim() || "";
-          const response = await fetch("/api/paper-trader", {
+          const response = await apiFetch("/api/paper-trader", {
             method: "POST",
             headers: buildPaperTraderHeaders(page, true),
             body: JSON.stringify({
@@ -4417,7 +4460,7 @@
           if (page.automationKey) {
             params.set("automation", page.automationKey);
           }
-          const response = await fetch(`/api/paper-trader-run?${params.toString()}`, {
+          const response = await apiFetch(`/api/paper-trader-run?${params.toString()}`, {
             method: "GET",
             headers: buildPaperTraderHeaders(page, true),
           });
@@ -4557,7 +4600,7 @@
         lateReviewArea.innerHTML = '<div class="muted">Reviewing late trade...</div>';
 
         try {
-          const response = await fetch("/api/late-trade-review", {
+          const response = await apiFetch("/api/late-trade-review", {
             method: "POST",
             headers: buildPaperTraderHeaders(traderPages.paper, true),
             body: JSON.stringify(buildLateTradeReviewPayload()),
@@ -4782,7 +4825,7 @@
         editTradeModal.style.display = "flex";
 
         try {
-          const response = await fetch(`/api/journal/${encodeURIComponent(tradeId)}`);
+          const response = await apiFetch(`/api/journal/${encodeURIComponent(tradeId)}`);
           const data = await response.json();
           if (!response.ok) {
             throw new Error(data?.message || "Failed to load journal trade.");
@@ -4819,7 +4862,7 @@
 
       async function loadDefaults() {
         try {
-          const response = await fetch("/api/defaults");
+          const response = await apiFetch("/api/defaults");
           const data = await response.json();
           defaultScanPrompt = typeof data.defaultScanPrompt === "string" ? data.defaultScanPrompt : "";
           if (defaultPromptText) {
@@ -4841,7 +4884,7 @@
         }
 
         try {
-          const response = await fetch("/api/journal");
+          const response = await apiFetch("/api/journal");
           const data = await response.json();
           if (!response.ok) {
             throw new Error(data?.message || "Failed to load journal trades.");
@@ -4870,7 +4913,7 @@
             params.set("limit", "75");
           }
           const query = params.toString();
-          const response = await fetch(`/api/journal/insights${query ? `?${query}` : ""}`);
+          const response = await apiFetch(`/api/journal/insights${query ? `?${query}` : ""}`);
           const data = await response.json();
           if (!response.ok) {
             throw new Error(data?.message || "Failed to load journal insights.");
@@ -4890,7 +4933,7 @@
         }
 
         try {
-          const response = await fetch("/api/recommendations");
+          const response = await apiFetch("/api/recommendations");
           const data = await response.json();
           if (!response.ok) {
             throw new Error(data?.message || "Failed to load trade recommendations.");
@@ -4917,7 +4960,7 @@
           return;
         }
 
-        const response = await fetch(`/api/recommendations/${encodeURIComponent(recommendationId)}`, {
+        const response = await apiFetch(`/api/recommendations/${encodeURIComponent(recommendationId)}`, {
           method: "PATCH",
           headers: buildPaperTraderHeaders(traderPages.paper, true),
           body: JSON.stringify({ journal_trade_id: journalTradeId }),
@@ -5698,7 +5741,7 @@
         try {
           let state = loadOriginalProcessState();
           for (;;) {
-            const response = await fetch("/api/original-process", {
+            const response = await apiFetch("/api/original-process", {
               method: "POST",
               headers: { "content-type": "application/json" },
               body: JSON.stringify({ state }),
@@ -5806,7 +5849,7 @@
       }
 
       async function runSingleWorkflowRequest(requestBody) {
-        const response = await fetch("/api/workflow", {
+        const response = await apiFetch("/api/workflow", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(requestBody),
@@ -5821,7 +5864,7 @@
         }
 
         for (;;) {
-          const response = await fetch("/api/manual-scan", {
+          const response = await apiFetch("/api/manual-scan", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
@@ -5974,7 +6017,7 @@
 
         (async () => {
           try {
-            const response = await fetch(`/api/journal/${encodeURIComponent(tradeId)}`, {
+            const response = await apiFetch(`/api/journal/${encodeURIComponent(tradeId)}`, {
               method: "DELETE",
               headers: buildPaperTraderHeaders(traderPages.paper),
             });
@@ -6035,7 +6078,7 @@
             },
           };
 
-          const response = await fetch("/api/journal", {
+          const response = await apiFetch("/api/journal", {
             method: "POST",
             headers: buildPaperTraderHeaders(traderPages.paper, true),
             body: JSON.stringify(payload),
@@ -6128,7 +6171,7 @@
             editTradeStatus.textContent = "Saving changes...";
           }
 
-          const response = await fetch(`/api/journal/${encodeURIComponent(selectedTradeToEdit.id)}`, {
+          const response = await apiFetch(`/api/journal/${encodeURIComponent(selectedTradeToEdit.id)}`, {
             method: "PUT",
             headers: buildPaperTraderHeaders(traderPages.paper, true),
             body: JSON.stringify(payload),
@@ -6179,7 +6222,7 @@
             review_notes: closeReviewNotesInput.value || null,
           };
 
-          const response = await fetch(`/api/journal/${encodeURIComponent(selectedTradeToClose.id)}`, {
+          const response = await apiFetch(`/api/journal/${encodeURIComponent(selectedTradeToClose.id)}`, {
             method: "PATCH",
             headers: buildPaperTraderHeaders(traderPages.paper, true),
             body: JSON.stringify(payload),

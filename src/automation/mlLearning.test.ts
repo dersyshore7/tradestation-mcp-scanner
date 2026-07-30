@@ -960,7 +960,8 @@ test("weekend entry guard runs after reconciliation and open-trade management", 
   assert.ok(managementIndex > closedExitReconciliationIndex);
   assert.ok(weekendGuardIndex > managementIndex);
   assert.ok(entryIndex > weekendGuardIndex);
-  assert.ok(source.includes("newEntriesAllowed: !weekendEntryGuard.blocked"));
+  assert.ok(source.includes("newEntriesAllowed:"));
+  assert.ok(source.includes("!weekendEntryGuard.blocked"));
 });
 
 test("paper trader cancels partial opening remainders before live exit orders", () => {
@@ -1106,7 +1107,7 @@ test("AI management prompt includes thesis checklist and chart-review safeguards
 test("paper trader wires fresh chart review into normal management telemetry", () => {
   const source = readFileSync(new URL("./paperTrader.ts", import.meta.url), "utf8");
 
-  assert.ok(source.includes("const chartReview = await readCurrentChartReview"));
+  assert.ok(source.includes(": await readCurrentChartReview"));
   assert.ok(source.includes("const currentChartReviewSummary = buildChartReviewSummary(chartReview);"));
   assert.ok(source.includes("currentChartReviewSummary"));
   assert.ok(source.includes("chartReviewConclusion: chartReview.conclusion"));
@@ -2078,7 +2079,7 @@ test("weak candle and volume history creates penalties but not hard blocks", () 
   assert.equal(preferences.some((preference) => preference.effect === "hard_block"), false);
 });
 
-test("learning audit classifies entry quality and emits soft repeated-symbol penalties", () => {
+test("learning audit uses realized outcomes and emits soft repeated-symbol penalties", () => {
   const nkeTrades = [-1.2, -0.7, -0.4].map((realizedR, index) =>
     buildLearningTrade({
       id: `nke-weak-${index}`,
@@ -2095,12 +2096,12 @@ test("learning audit classifies entry quality and emits soft repeated-symbol pen
   const penalties = buildSymbolLearningPenaltyPreferences(audit);
   const nkePenalty = penalties.find((preference) => preference.symbol === "NKE");
 
-  assert.equal(audit.classificationCounts.bad_or_unproven_entry, 3);
-  assert.equal(audit.classificationCounts.good_entry_major_giveback, 1);
+  assert.equal(audit.classificationCounts.bad_or_unproven_entry, 4);
+  assert.equal(audit.classificationCounts.good_entry_major_giveback, 0);
   assert.equal(audit.missingRealizedRCount, 1);
   assert.match(audit.dataWarnings.join(" "), /missing realized R/);
-  assert.equal(bkrClassification?.outcomeClass, "good_entry_major_giveback");
-  assert.ok((bkrClassification?.opportunityR ?? 0) > 0);
+  assert.equal(bkrClassification?.outcomeClass, "bad_or_unproven_entry");
+  assert.equal(bkrClassification?.opportunityR, -0.73);
   assert.ok(nkePenalty);
   assert.equal(nkePenalty.effect, "penalty");
   assert.equal(nkePenalty.decision, "avoid");
@@ -2380,7 +2381,7 @@ test("progress-only protection does not activate premium trail below 20% option 
   assert.equal(decision.state.premiumTrailActivatedAt, undefined);
 });
 
-test("BKR replay with scale-out preserves profit instead of learning setup failure", () => {
+test("BKR replay demonstrates scale-out value without rewriting historical learning reward", () => {
   const scaled = calculateScaleOutQuantity(13);
   assert.deepEqual(scaled, { scaleQuantity: 7, remainingQuantity: 6 });
 
@@ -2408,7 +2409,7 @@ test("BKR replay with scale-out preserves profit instead of learning setup failu
   assert.ok((replay.realizedRMultiple ?? 0) > 0);
 
   const bkr = buildBkrGivebackTrade();
-  assert.ok(calculateEntryOpportunityRewardR(bkr, -0.73) > 0);
+  assert.equal(calculateEntryOpportunityRewardR(bkr, -0.73), -0.73);
   const recommendation = recommendPolicyAction(trainPolicyModel([bkr]), {
     direction: "CALL",
     setupType: "bullish_continuation",
@@ -2418,7 +2419,8 @@ test("BKR replay with scale-out preserves profit instead of learning setup failu
     dteAtEntry: 30,
   });
 
-  assert.equal(recommendation.recommendedAction, "scale_out");
+  assert.equal(recommendation.recommendedAction, null);
+  assert.equal(recommendation.sampleSize, 1);
   assert.ok((recommendation.actionSummaries.hold?.averageRewardR ?? 0) < 0);
 });
 
