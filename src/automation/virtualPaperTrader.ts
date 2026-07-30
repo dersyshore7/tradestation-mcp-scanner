@@ -26,7 +26,7 @@ import {
   isSupportResistanceScanEligible,
   SUPPORT_RESISTANCE_MANAGEMENT_STYLE,
   SUPPORT_RESISTANCE_POSITION_PCT,
-  SUPPORT_RESISTANCE_SCAN_PROMPT,
+  runSupportResistanceScan,
 } from "./supportResistanceStrategy.js";
 import {
   LEGACY_STRATEGY_VERSION,
@@ -559,10 +559,16 @@ async function chooseVirtualTradeSignal(params: {
         prompt: "Run a new Scan for this week, favoring durable multi-month trends suitable for a long LEAPS call or put.",
       });
     case "support_resistance_ai":
-      return await chooseScannerSignal({
-        ...params,
-        prompt: SUPPORT_RESISTANCE_SCAN_PROMPT,
-      });
+      {
+        const scan = await runSupportResistanceScan({
+          excludedSymbols: params.excludedSymbols,
+          tradestationBaseUrlOverride: params.tradestationBaseUrlOverride,
+        });
+        return {
+          signal: tradeSignalFromScan(scan, params.automationKey),
+          warning: scan.conclusion === "confirmed" ? null : scan.reason,
+        };
+      }
   }
 }
 

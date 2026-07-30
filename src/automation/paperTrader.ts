@@ -1,7 +1,10 @@
 import { buildWorkflowPresentationSummary } from "../app/resultPresentation.js";
 import { MINIMUM_CONFIRMABLE_RISK_REWARD_RATIO } from "../app/chartAnchoredTradability.js";
 import { runScan } from "../app/runScan.js";
-import type { TradeConstructionResult } from "../app/runTradeConstruction.js";
+import {
+  constructTradeCard,
+  type TradeConstructionResult,
+} from "../app/runTradeConstruction.js";
 import {
   archiveJournalTradeWithoutReview,
   closeJournalTrade,
@@ -103,6 +106,7 @@ import {
 } from "./strategyVersion.js";
 import {
   isSupportResistanceScanEligible,
+  runSupportResistanceScan,
   SUPPORT_RESISTANCE_ENTRY_CANCEL_AFTER_SECONDS,
   SUPPORT_RESISTANCE_ENTRY_REPRICE_AFTER_SECONDS,
   SUPPORT_RESISTANCE_MANAGEMENT_STYLE,
@@ -6250,7 +6254,9 @@ async function maybeEnterNewPaperTrade(params: {
   };
 
   const openSymbols = openPaperTrades.map((trade) => trade.symbol);
-  const loadedScanState = await loadResumableAutomatedScanState(config.accountMode, dryRun);
+  const loadedScanState = config.accountMode === "live"
+    ? null
+    : await loadResumableAutomatedScanState(config.accountMode, dryRun);
   const resumableScanState = canResumeAutomatedEntryScanState(loadedScanState, {
     prompt,
     excludedTickers: openSymbols,
@@ -6262,26 +6268,70 @@ async function maybeEnterNewPaperTrade(params: {
   const policySkippedSymbols: string[] = [];
   const policySkipReasons: string[] = [];
   const evaluatedCandidates: PaperTraderEntryCandidateEvaluation[] = [];
-  const automatedScan = await runAutomatedEntryScan({
-    scanRunId,
-    prompt,
-    excludedTickers: openSymbols,
-    tradestationBaseUrlOverride: config.automationBaseUrl,
-    paperLearningPreferences,
-    state: resumableScanState,
-    onCandidate: async (candidate) => {
-      await recordEntryCandidateAudit({
+  const automatedScan = config.accountMode === "live"
+    ? await (async () => {
+        const scan = await runSupportResistanceScan({
+          excludedSymbols: openSymbols,
+          tradestationBaseUrlOverride: config.automationBaseUrl,
+        });
+        const confirmedCandidates: Array<{
+          scan: Awaited<ReturnType<typeof runScan>>;
+          tradeCard: TradeConstructionResult;
+        }> = [];
+        if (isSupportResistanceScanEligible(scan)) {
+          try {
+            confirmedCandidates.push({
+              scan,
+              tradeCard: await constructTradeCard({
+                prompt: `build trade ${scan.ticker}`,
+                confirmedDirection: scan.direction!,
+                confirmedConfidence: scan.confidence!,
+                tradestationBaseUrlOverride: config.automationBaseUrl,
+              }),
+            });
+          } catch (error) {
+            policySkippedSymbols.push(scan.ticker ?? "unknown");
+            policySkipReasons.push(
+              `${scan.ticker ?? "unknown"}: ${
+                error instanceof Error ? error.message : "Trade construction failed."
+              }`,
+            );
+          }
+        } else {
+          policySkipReasons.push(scan.reason);
+        }
+        const counts = scan.telemetry?.cumulativeStageCounts;
+        return {
+          status: "completed" as const,
+          completed: true,
+          scannedSymbolCount: counts?.stage1Entered ?? 0,
+          totalSymbolCount: counts?.stage1Entered ?? 0,
+          chunkCount: 1,
+          finalistCount: counts?.finalRanking ?? 0,
+          confirmedCandidates,
+          state: null,
+        };
+      })()
+    : await runAutomatedEntryScan({
         scanRunId,
-        dryRun,
-        symbol: candidate.symbol,
-        decision: candidate.decision,
-        decisionReason: candidate.reason,
-        features: null,
-        entryPolicy: null,
-        scan: candidate.scan,
+        prompt,
+        excludedTickers: openSymbols,
+        tradestationBaseUrlOverride: config.automationBaseUrl,
+        paperLearningPreferences,
+        state: resumableScanState,
+        onCandidate: async (candidate) => {
+          await recordEntryCandidateAudit({
+            scanRunId,
+            dryRun,
+            symbol: candidate.symbol,
+            decision: candidate.decision,
+            decisionReason: candidate.reason,
+            features: null,
+            entryPolicy: null,
+            scan: candidate.scan,
+          });
+        },
       });
-    },
-  });
   const entryScanSummary = {
     status: automatedScan.status,
     scannedSymbolCount: automatedScan.scannedSymbolCount,
@@ -6331,7 +6381,9 @@ async function maybeEnterNewPaperTrade(params: {
         tradeCard,
         entryTimestamp: new Date(),
       });
-      const geometryError = validateEntryGeometry(tradeCard);
+      const geometryError = config.accountMode === "live"
+        ? null
+        : validateEntryGeometry(tradeCard);
       if (geometryError) {
         const symbol = scan.ticker ?? "unknown";
         policySkippedSymbols.push(symbol);
@@ -6365,7 +6417,7 @@ async function maybeEnterNewPaperTrade(params: {
         sampleSize: 0,
         averageRewardR: null,
         winRate: null,
-        summary: `Frozen ${strategyVersion} rules; adaptive entry rewards are disabled.`,
+        summary: `${strategyVersion} selected this candidate; the personal/adaptive entry policy is not consulted.`,
       };
       await recordEntryCandidateAudit({
         scanRunId,
@@ -6425,7 +6477,7 @@ async function maybeEnterNewPaperTrade(params: {
       attempted: true,
       outcome: "no_trade_today",
       symbol: policySkippedSymbols.at(-1) ?? null,
-      reason: `${scanSummary}${resumeNote} No eligible entry survived final automation policy/risk checks: ${policySkipReasons.join(" ") || "no confirmed candidate was available in the scanned slice."}`,
+      reason: `${scanSummary}${resumeNote} No support/resistance entry was available: ${policySkipReasons.join(" ") || "no confirmed candidate was available."}`,
       evaluatedCandidates,
       scanSummary: entryScanSummary,
       automatedScanState: automatedScan.completed ? null : automatedScan.state,

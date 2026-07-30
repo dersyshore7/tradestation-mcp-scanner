@@ -1,4 +1,4 @@
-import type { ScanResult } from "../app/runScan.js";
+import { runScan, type ScanResult } from "../app/runScan.js";
 import { SUPPORT_RESISTANCE_V1 } from "./strategyVersion.js";
 
 export const SUPPORT_RESISTANCE_SCAN_PROMPT =
@@ -27,6 +27,17 @@ export const SUPPORT_RESISTANCE_PROFILE: SupportResistanceProfile = {
   minimumConfidence: SUPPORT_RESISTANCE_MIN_CONFIDENCE,
   positionPct: SUPPORT_RESISTANCE_POSITION_PCT,
 };
+
+export async function runSupportResistanceScan(params: {
+  excludedSymbols: string[];
+  tradestationBaseUrlOverride: string;
+}): Promise<ScanResult> {
+  return runScan({
+    prompt: SUPPORT_RESISTANCE_SCAN_PROMPT,
+    excludedTickers: params.excludedSymbols,
+    tradestationBaseUrlOverride: params.tradestationBaseUrlOverride,
+  });
+}
 
 export function isSupportResistanceScanEligible(scan: ScanResult): boolean {
   return (
