@@ -5,7 +5,6 @@ import {
   type VirtualPaperAutomationKey,
 } from "../src/automation/paperAutomationBots.js";
 import { runVirtualPaperAutomationCycle } from "../src/automation/virtualPaperTrader.js";
-import { requireApiBearerAuth } from "./auth.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 type RequestWithHeaders = VercelRequestLike & {
@@ -36,9 +35,6 @@ export default async function handler(req: VercelRequestLike, res: VercelRespons
 
   if (req.method !== "GET" && req.method !== "POST") {
     sendError(res, 404, "Use GET /api/paper-trader-run");
-    return;
-  }
-  if (!requireApiBearerAuth(req, res, "cron")) {
     return;
   }
 

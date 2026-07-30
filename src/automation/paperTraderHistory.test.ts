@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { listRecentPaperTraderRuns, recordPaperTraderRun } from "./paperTraderHistory.js";
-import { DEFAULT_LIVE_RISK_LIMITS } from "./config.js";
 import { SUPPORT_RESISTANCE_V1 } from "./strategyVersion.js";
 
 const originalFetch = globalThis.fetch;
@@ -86,7 +85,6 @@ test("run history stores compact broker-truth and live-audit summaries", async (
       config: {
         strategyVersion: SUPPORT_RESISTANCE_V1,
         managementStyle: "fixed_support_resistance",
-        riskLimits: DEFAULT_LIVE_RISK_LIMITS,
         allowEntryOrders: true,
         allowExitOrders: true,
         entryOrderManagementEnabled: true,
@@ -129,5 +127,4 @@ test("run history stores compact broker-truth and live-audit summaries", async (
   assert.equal(liveDailyAudit.date, "2026-06-17");
   assert.equal(config.strategyVersion, SUPPORT_RESISTANCE_V1);
   assert.equal(config.managementStyle, "fixed_support_resistance");
-  assert.deepEqual(config.riskLimits, DEFAULT_LIVE_RISK_LIMITS);
 });

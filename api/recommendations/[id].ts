@@ -2,7 +2,6 @@ import {
   isTradeRecommendationsTableMissing,
   markTradeRecommendationJournaled,
 } from "../../src/recommendations/repository.js";
-import { requireApiBearerAuth } from "../auth.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "../journal/shared.js";
 
 function readId(req: VercelRequestLike): string | null {
@@ -30,9 +29,6 @@ function readJournalTradeId(body: unknown): string {
 }
 
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
-  if (!requireApiBearerAuth(req, res)) {
-    return;
-  }
   const id = readId(req);
   if (!id) {
     sendError(res, 400, "Missing trade recommendation id.");

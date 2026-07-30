@@ -1,6 +1,5 @@
 import { closeJournalTrade, deleteJournalTrade, getJournalTradeById, updateJournalTrade } from "../../src/journal/repository.js";
 import { validateJournalTradeClosePayload, validateJournalTradeUpdatePayload } from "../../src/journal/validation.js";
-import { requireApiBearerAuth } from "../auth.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "../journal/shared.js";
 
 function readId(req: VercelRequestLike): string | null {
@@ -15,9 +14,6 @@ function readId(req: VercelRequestLike): string | null {
 }
 
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
-  if (!requireApiBearerAuth(req, res)) {
-    return;
-  }
   const id = readId(req);
   if (!id) {
     sendError(res, 400, "Missing journal trade id.");

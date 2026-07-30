@@ -78,7 +78,6 @@ function buildCompactRunResult(rawResult: Record<string, unknown>): Record<strin
       ? {
           strategyVersion: config.strategyVersion ?? LEGACY_STRATEGY_VERSION,
           managementStyle: config.managementStyle ?? null,
-          riskLimits: config.riskLimits ?? null,
           allowEntryOrders: config.allowEntryOrders ?? null,
           allowExitOrders: config.allowExitOrders ?? null,
           entryOrderManagementEnabled: config.entryOrderManagementEnabled ?? null,

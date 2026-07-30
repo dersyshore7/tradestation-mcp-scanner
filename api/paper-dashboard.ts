@@ -7,7 +7,6 @@ import {
   isVirtualPaperAutomationKey,
   type PaperAutomationKey,
 } from "../src/automation/paperAutomationBots.js";
-import { requireApiBearerAuth } from "./auth.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 function firstQueryValue(value: string | string[] | undefined): string | undefined {
@@ -48,9 +47,6 @@ function formatWarning(label: string, error: unknown): string {
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
   if (req.method !== "GET") {
     sendError(res, 404, "Use GET /api/paper-dashboard");
-    return;
-  }
-  if (!requireApiBearerAuth(req, res)) {
     return;
   }
 

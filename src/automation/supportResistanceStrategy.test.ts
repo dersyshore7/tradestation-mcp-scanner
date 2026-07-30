@@ -18,6 +18,7 @@ const confirmedScan: ScanResult = {
 test("support/resistance profile has a stable strategy version", () => {
   assert.equal(SUPPORT_RESISTANCE_PROFILE.strategyVersion, SUPPORT_RESISTANCE_V1);
   assert.equal(SUPPORT_RESISTANCE_PROFILE.minimumConfidence, 75);
+  assert.equal(SUPPORT_RESISTANCE_PROFILE.positionPct, 0.3);
 });
 
 test("support/resistance eligibility accepts confirmed setups at 75 percent or higher", () => {

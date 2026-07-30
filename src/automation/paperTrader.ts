@@ -110,23 +110,13 @@ import {
   SUPPORT_RESISTANCE_OPTION_LOSS_EXIT_PCT,
 } from "./supportResistanceStrategy.js";
 import {
-  evaluateLiveHealth,
-  evaluatePortfolioEntryGuard,
-  type LiveHealthResult,
-  type PortfolioRiskPosition,
-  type PortfolioRiskSnapshot,
-} from "./riskEngine.js";
-import {
-  readAccountEquityPeakUsd,
   recordStrategyOrderAudit,
-  upsertDailyRiskSnapshot,
 } from "./riskRepository.js";
 import {
   getStrategyValidation,
   type StrategyValidationSummary,
   type StrategyVersionRecord,
 } from "./strategyValidation.js";
-import type { ShadowValidationCycleResult } from "./shadowValidation.js";
 
 const MAX_TRADESTATION_CONTRACTS_PER_ORDER = 2000;
 // Paper entries are daily/weekly continuation trades, not penny-distance scalps.
@@ -411,16 +401,6 @@ type DirectionalStrategyState = {
 
 type DirectionalStrategyStates = Record<TradeDirection, DirectionalStrategyState>;
 
-function emptyShadowValidationResult(): ShadowValidationCycleResult {
-  return {
-    inspected: 0,
-    opened: 0,
-    updated: 0,
-    closed: 0,
-    skipped: [],
-  };
-}
-
 export type PaperTraderStatus = {
   enabled: boolean;
   entryMode: PaperTraderConfig["entryMode"];
@@ -435,7 +415,6 @@ export type PaperTraderStatus = {
   maxOpenTrades: number | null;
   maxDailyLossUsd: number | null;
   maxPositionPct: number;
-  riskLimits: PaperTraderConfig["riskLimits"];
   strategyVersion: StrategyVersionId;
   strategies: DirectionalStrategyStates;
   managementStyle: "ai" | typeof SUPPORT_RESISTANCE_MANAGEMENT_STYLE;
@@ -535,12 +514,10 @@ type PaperTraderRunResult = {
     weekendEntryCutoffMinutesCt: number;
     weekendExitCutoffMinutesCt: number;
     openingStopBypassEnabled: boolean;
-    riskLimits: PaperTraderConfig["riskLimits"];
     strategyVersion: StrategyVersionId;
     strategies: DirectionalStrategyStates;
     managementStyle: "ai" | typeof SUPPORT_RESISTANCE_MANAGEMENT_STYLE;
   };
-  shadowValidation: ShadowValidationCycleResult;
   guards: {
     openPaperTrades: number;
     liveSimPositions: number | null;
@@ -548,8 +525,6 @@ type PaperTraderRunResult = {
     todayRealizedPlUsd: number;
     newEntriesAllowed: boolean;
     blockReasons: string[];
-    riskSnapshot: PortfolioRiskSnapshot | null;
-    liveHealth: LiveHealthResult | null;
   };
   reconciliation: {
     inspected: number;
@@ -724,8 +699,6 @@ type PaperTraderRunResult = {
     strategyVersion?: StrategyVersionId | null;
     strategyStatus?: StrategyVersionRecord["status"] | "unavailable" | null;
     blockReasons?: string[];
-    riskSnapshot?: PortfolioRiskSnapshot | null;
-    liveHealth?: LiveHealthResult | null;
   };
   decisionLog: PaperTraderDecisionLogEntry[];
   paperTradeHistory: PaperTraderTradeHistoryItem[];
@@ -1051,7 +1024,6 @@ function buildRunResultConfig(
     weekendEntryCutoffMinutesCt: config.weekendEntryCutoffMinutesCt,
     weekendExitCutoffMinutesCt: config.weekendExitCutoffMinutesCt,
     openingStopBypassEnabled: config.openingStopBypassEnabled,
-    riskLimits: config.riskLimits,
     strategyVersion: strategyVersionForConfig(config),
     strategies,
     managementStyle: managementStyleForConfig(config),
@@ -2517,11 +2489,9 @@ async function buildDuplicateLiveOpeningOrderBlockReason(params: {
 function computePositionCap(params: {
   requestedContracts: number;
   limitPrice: number;
-  requestedPlannedRiskUsd: number;
   accountValueUsd: number;
   entryBuyingPowerUsd: number | null;
   maxPositionPct: number;
-  maxPlannedRiskPct: number;
 }): {
   cappedContracts: number;
   cappedPositionCostUsd: number;
@@ -2529,8 +2499,6 @@ function computePositionCap(params: {
   effectiveMaxPositionCostUsd: number;
   entryBuyingPowerUsd: number | null;
   positionPct: number | null;
-  cappedPlannedRiskUsd: number;
-  maxPlannedRiskUsd: number;
 } {
   const maxPositionCostUsd = params.accountValueUsd * params.maxPositionPct;
   const effectiveMaxPositionCostUsd =
@@ -2538,26 +2506,11 @@ function computePositionCap(params: {
       ? Math.min(maxPositionCostUsd, params.entryBuyingPowerUsd)
       : maxPositionCostUsd;
   const maxContractsByCap = Math.floor(effectiveMaxPositionCostUsd / (params.limitPrice * 100));
-  const plannedRiskPerContract =
-    params.requestedContracts > 0
-      ? params.requestedPlannedRiskUsd / params.requestedContracts
-      : Number.POSITIVE_INFINITY;
-  const maxPlannedRiskUsd = params.accountValueUsd * params.maxPlannedRiskPct;
-  const maxContractsByPlannedRisk =
-    plannedRiskPerContract > 0 && Number.isFinite(plannedRiskPerContract)
-      ? Math.floor(maxPlannedRiskUsd / plannedRiskPerContract)
-      : 0;
   const cappedContracts = Math.max(
     0,
-    Math.min(
-      params.requestedContracts,
-      maxContractsByCap,
-      maxContractsByPlannedRisk,
-      MAX_TRADESTATION_CONTRACTS_PER_ORDER,
-    ),
+    Math.min(params.requestedContracts, maxContractsByCap, MAX_TRADESTATION_CONTRACTS_PER_ORDER),
   );
   const cappedPositionCostUsd = Number((cappedContracts * params.limitPrice * 100).toFixed(2));
-  const cappedPlannedRiskUsd = Number((cappedContracts * plannedRiskPerContract).toFixed(2));
 
   return {
     cappedContracts,
@@ -2572,8 +2525,6 @@ function computePositionCap(params: {
       params.accountValueUsd > 0
         ? Number((cappedPositionCostUsd / params.accountValueUsd).toFixed(4))
         : null,
-    cappedPlannedRiskUsd,
-    maxPlannedRiskUsd: Number(maxPlannedRiskUsd.toFixed(2)),
   };
 }
 
@@ -3964,7 +3915,6 @@ export async function getPaperTraderStatus(mode: AutomationLane = "paper"): Prom
     maxOpenTrades: config.maxOpenTrades,
     maxDailyLossUsd: config.maxDailyLossUsd,
     maxPositionPct: config.maxPositionPct,
-    riskLimits: config.riskLimits,
     strategyVersion: strategyVersionForConfig(config),
     strategies,
     managementStyle: managementStyleForConfig(config),
@@ -6751,16 +6701,13 @@ async function maybeEnterNewPaperTrade(params: {
     const positionCap = computePositionCap({
       requestedContracts: automation.contracts,
       limitPrice: entryLimitPrice,
-      requestedPlannedRiskUsd: tradeCard.plannedJournalFields.planned_risk_usd,
       accountValueUsd,
       entryBuyingPowerUsd,
       maxPositionPct: config.maxPositionPct,
-      maxPlannedRiskPct: config.riskLimits.maxPositionPlannedRiskPct,
     });
     if (positionCap.cappedContracts < 1) {
       const capParts = [
         `${(config.maxPositionPct * 100).toFixed(0)}% account-value cap allows $${positionCap.maxPositionCostUsd.toFixed(2)}`,
-        `${(config.riskLimits.maxPositionPlannedRiskPct * 100).toFixed(0)}% planned-risk cap allows $${positionCap.maxPlannedRiskUsd.toFixed(2)} risk`,
         positionCap.entryBuyingPowerUsd !== null
           ? `available TradeStation buying power allows $${positionCap.entryBuyingPowerUsd.toFixed(2)}`
           : null,
@@ -6792,142 +6739,6 @@ async function maybeEnterNewPaperTrade(params: {
     }
 
     const initialContracts = positionCap.cappedContracts;
-    if (config.accountMode === "live") {
-      const sizing = await loadPaperTraderSizingSnapshot(config);
-      const today = formatChicagoParts(new Date()).date;
-      const entriesToday = allTrades.filter((trade) =>
-        trade.account_mode === "live"
-        && trade.entry_date === today
-        && trade.strategy_version !== LEGACY_STRATEGY_VERSION
-      ).length;
-      const dailyRiskSnapshot =
-        sizing.accountValueUsd !== null && sizing.accountValueUsd > 0
-          ? await upsertDailyRiskSnapshot({
-              accountMode: "live",
-              sessionDate: today,
-              accountValueUsd: sizing.accountValueUsd,
-              realizedPlUsd: computeTodayRealizedPlUsd(allTrades, today, "live"),
-              openUnrealizedPlUsd: sizing.unrealizedPlUsd,
-              entryCount: entriesToday,
-            })
-          : null;
-      const riskPositions: PortfolioRiskPosition[] = sizing.positions.map((position) => {
-        const linkedTrade = openPaperTrades.find((trade) =>
-          readAutomationSnapshot(trade)?.optionSymbol === position.symbol
-        );
-        return {
-          symbol: linkedTrade?.symbol ?? position.symbol,
-          direction: linkedTrade?.direction ?? null,
-          premiumExposureUsd:
-            position.marketValueUsd !== null
-              ? Math.abs(position.marketValueUsd)
-              : position.estimatedCostUsd !== null
-                ? Math.abs(position.estimatedCostUsd)
-                : null,
-          plannedRiskUsd: linkedTrade
-            ? readNumber(linkedTrade.planned_risk_usd)
-            : null,
-          linkedJournalTradeId: linkedTrade?.id ?? null,
-        };
-      });
-      const currentStrategyClosedTrades = allTrades.filter((trade) =>
-        trade.account_mode === "live"
-        && trade.strategy_version === strategyVersion
-        && trade.status === "closed"
-        && trade.data_quality === "usable"
-        && trade.latest_exit?.broker_confirmed === true
-      );
-      const liveHealth = evaluateLiveHealth({
-        realizedPlUsd: currentStrategyClosedTrades
-          .map((trade) => readNumber(trade.review?.realized_pl_usd ?? null))
-          .filter((value): value is number => value !== null),
-        equityPeakUsd: await readAccountEquityPeakUsd(
-          "live",
-          sizing.accountValueUsd,
-        ),
-        currentEquityUsd: sizing.accountValueUsd,
-        limits: config.riskLimits,
-      });
-      const plannedRiskUsd = positionCap.cappedPlannedRiskUsd;
-      const riskGuard = evaluatePortfolioEntryGuard({
-        accountValueUsd: sizing.accountValueUsd,
-        startOfDayAccountValueUsd:
-          readNumber(dailyRiskSnapshot?.account_value_usd ?? null)
-          ?? sizing.beginningOfDayAccountValueUsd,
-        realizedTodayUsd: computeTodayRealizedPlUsd(
-          allTrades,
-          today,
-          "live",
-        ),
-        openUnrealizedUsd: sizing.unrealizedPlUsd,
-        entriesToday,
-        positions: riskPositions,
-        candidate: {
-          symbol: scan.ticker ?? tradeCard.ticker,
-          direction: tradeCard.plannedJournalFields.direction,
-          premiumCostUsd: positionCap.cappedPositionCostUsd,
-          plannedRiskUsd,
-        },
-        limits: config.riskLimits,
-        liveHealthAllowed: liveHealth.allowed,
-        liveHealthReason: liveHealth.blockReasons.join(" ") || null,
-      });
-      if (!riskGuard.allowed) {
-        const reason = `Hard portfolio guard blocked ${strategyVersion}: ${riskGuard.blockReasons.join(" ")}`;
-        await recordStrategyOrderAudit({
-          accountMode: "live",
-          strategyVersion,
-          symbol: scan.ticker,
-          optionSymbol: automation.optionSymbol,
-          decisionKind: "entry",
-          action: "blocked",
-          outcome: "portfolio_risk_blocked",
-          ruleId: "portfolio_risk_v1",
-          inputQuote: automation.entryPricing ?? null,
-          riskSnapshot: riskGuard.snapshot as unknown as Record<string, unknown>,
-          note: reason,
-        });
-        await recordEntryCandidateAudit({
-          scanRunId,
-          dryRun,
-          symbol: scan.ticker,
-          decision: "portfolio_risk_blocked",
-          decisionReason: reason,
-          features: entryFeatures,
-          entryPolicy: entryPolicyRecommendation,
-          selected: true,
-          strategyVersion,
-          scan,
-          tradeCard,
-        });
-        return {
-          attempted: true,
-          outcome: "trade_card_blocked",
-          symbol: scan.ticker,
-          reason,
-          tradeCard,
-          reasoning: entryReasoning,
-          evaluatedCandidates,
-          scanSummary: entryScanSummary,
-          automatedScanState: remainingAutomatedScanState,
-          strategyVersion,
-          blockReasons: riskGuard.blockReasons,
-          riskSnapshot: riskGuard.snapshot,
-          liveHealth,
-        };
-      }
-      if (sizing.accountValueUsd !== null && sizing.accountValueUsd > 0) {
-        await upsertDailyRiskSnapshot({
-          accountMode: "live",
-          sessionDate: today,
-          accountValueUsd: sizing.accountValueUsd,
-          realizedPlUsd: computeTodayRealizedPlUsd(allTrades, today, "live"),
-          openUnrealizedPlUsd: sizing.unrealizedPlUsd,
-          entryCount: entriesToday,
-          riskSnapshot: riskGuard.snapshot as unknown as Record<string, unknown>,
-        });
-      }
-    }
     const capReasons = [
       initialContracts < automation.contracts && initialContracts === MAX_TRADESTATION_CONTRACTS_PER_ORDER
         ? `TradeStation's ${MAX_TRADESTATION_CONTRACTS_PER_ORDER}-contract per-order cap`
@@ -7368,7 +7179,6 @@ export async function runPaperTraderCycle(
   const config = readPaperTraderConfig(options.mode ?? "paper");
   assertPaperTraderConfig(config);
   const strategies = await loadDirectionalStrategyStates();
-  let shadowValidation = emptyShadowValidationResult();
 
   const requestedDryRun = options.dryRun === true;
   const entryDryRun = requestedDryRun || !config.allowEntryOrders;
@@ -7444,7 +7254,6 @@ export async function runPaperTraderCycle(
       dryRun,
       dryRunReason,
       config: buildRunResultConfig(config, strategies),
-      shadowValidation,
       guards: {
         openPaperTrades: openPaperTrades.length,
         liveSimPositions: null,
@@ -7452,8 +7261,6 @@ export async function runPaperTraderCycle(
         todayRealizedPlUsd,
         newEntriesAllowed: false,
         blockReasons: ["Monitor-only run requested."],
-        riskSnapshot: null,
-        liveHealth: null,
       },
       reconciliation,
       closedExitReconciliation,
@@ -7481,7 +7288,6 @@ export async function runPaperTraderCycle(
       dryRun,
       dryRunReason,
       config: buildRunResultConfig(config, strategies),
-      shadowValidation,
       guards: {
         openPaperTrades: openPaperTrades.length,
         liveSimPositions: null,
@@ -7489,8 +7295,6 @@ export async function runPaperTraderCycle(
         todayRealizedPlUsd,
         newEntriesAllowed: false,
         blockReasons: ["Outside regular US equity market hours."],
-        riskSnapshot: null,
-        liveHealth: null,
       },
       reconciliation,
       closedExitReconciliation,
@@ -7574,7 +7378,6 @@ export async function runPaperTraderCycle(
     dryRun,
     dryRunReason,
     config: buildRunResultConfig(config, strategies),
-    shadowValidation,
     guards: {
       openPaperTrades: remainingOpenPaperTrades.length,
       liveSimPositions: null,
@@ -7588,8 +7391,6 @@ export async function runPaperTraderCycle(
           ? [weekendEntryGuard.note ?? "Weekend carry guard blocked new entries."]
           : []
       ),
-      riskSnapshot: entry.riskSnapshot ?? null,
-      liveHealth: entry.liveHealth ?? null,
     },
     reconciliation,
     closedExitReconciliation,

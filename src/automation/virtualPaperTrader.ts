@@ -25,6 +25,7 @@ import { createAutomationTradeStationClient, type TradeStationQuoteSnapshot } fr
 import {
   isSupportResistanceScanEligible,
   SUPPORT_RESISTANCE_MANAGEMENT_STYLE,
+  SUPPORT_RESISTANCE_POSITION_PCT,
   SUPPORT_RESISTANCE_SCAN_PROMPT,
 } from "./supportResistanceStrategy.js";
 import {
@@ -34,7 +35,7 @@ import {
 } from "./strategyVersion.js";
 
 const VIRTUAL_ENTRY_CONFIDENCE: ScanConfidence = "75-84";
-const VIRTUAL_POSITION_PCT = 0.3;
+const VIRTUAL_POSITION_PCT = SUPPORT_RESISTANCE_POSITION_PCT;
 const VIRTUAL_TRADE_HISTORY_LIMIT = 1000;
 const VIRTUAL_LEAPS_DTE_MIN = 180;
 const VIRTUAL_LEAPS_DTE_MAX = 730;

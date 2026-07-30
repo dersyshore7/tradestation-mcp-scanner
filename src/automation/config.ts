@@ -24,34 +24,6 @@ export type TradeStationEnvironment = "sim" | "live";
 export type AutomationLane = AccountMode;
 export type LiveEntryMode = "disabled" | "shadow" | "live";
 
-export type PaperTraderRiskLimits = {
-  maxPositionPremiumPct: number;
-  maxPositionPlannedRiskPct: number;
-  maxAggregatePremiumPct: number;
-  maxAggregatePlannedRiskPct: number;
-  maxOpenPositions: number;
-  maxOpenPositionsPerDirection: number;
-  maxEntriesPerDay: number;
-  maxDailyLossPct: number;
-  maxLiveDrawdownPct: number;
-  rollingHealthTradeCount: number;
-  minRollingProfitFactor: number;
-};
-
-export const DEFAULT_LIVE_RISK_LIMITS: PaperTraderRiskLimits = {
-  maxPositionPremiumPct: 0.05,
-  maxPositionPlannedRiskPct: 0.01,
-  maxAggregatePremiumPct: 0.10,
-  maxAggregatePlannedRiskPct: 0.02,
-  maxOpenPositions: 2,
-  maxOpenPositionsPerDirection: 1,
-  maxEntriesPerDay: 2,
-  maxDailyLossPct: 0.01,
-  maxLiveDrawdownPct: 0.05,
-  rollingHealthTradeCount: 20,
-  minRollingProfitFactor: 1,
-};
-
 export type PaperTraderConfig = {
   enabled: boolean;
   entryMode: LiveEntryMode;
@@ -73,7 +45,6 @@ export type PaperTraderConfig = {
   weekendEntryCutoffMinutesCt: number;
   weekendExitCutoffMinutesCt: number;
   openingStopBypassEnabled: boolean;
-  riskLimits: PaperTraderRiskLimits;
   strategyProfile: SupportResistanceProfile | null;
 };
 
@@ -245,10 +216,10 @@ export function readPaperTraderConfig(lane: AutomationLane = "paper"): PaperTrad
     manageEntryOrders: lane === "live"
       ? true
       : readBooleanEnvFrom([PAPER_AUTO_TRADER_MANAGE_ENTRY_ORDERS_ENV], false),
-    maxOpenTrades: DEFAULT_LIVE_RISK_LIMITS.maxOpenPositions,
+    maxOpenTrades: null,
     maxDailyLossUsd: null,
     maxPositionPct: lane === "live"
-      ? DEFAULT_LIVE_RISK_LIMITS.maxPositionPremiumPct
+      ? SUPPORT_RESISTANCE_PROFILE.positionPct
       : readPositiveRatioEnvFrom([PAPER_AUTO_TRADER_MAX_POSITION_PCT_ENV], 0.1),
     scanPrompt: lane === "live"
       ? SUPPORT_RESISTANCE_PROFILE.scanPrompt
@@ -268,7 +239,6 @@ export function readPaperTraderConfig(lane: AutomationLane = "paper"): PaperTrad
       "DEFAULT_LIVE_WEEKEND_EXIT_CUTOFF_CT",
     ),
     openingStopBypassEnabled: false,
-    riskLimits: DEFAULT_LIVE_RISK_LIMITS,
     strategyProfile: lane === "live" ? SUPPORT_RESISTANCE_PROFILE : null,
   };
 }

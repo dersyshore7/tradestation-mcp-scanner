@@ -6,6 +6,7 @@ export const SUPPORT_RESISTANCE_SCAN_PROMPT =
 
 export const SUPPORT_RESISTANCE_MANAGEMENT_STYLE = "fixed_support_resistance";
 export const SUPPORT_RESISTANCE_MIN_CONFIDENCE = 75;
+export const SUPPORT_RESISTANCE_POSITION_PCT = 0.3;
 export const SUPPORT_RESISTANCE_ENTRY_REPRICE_AFTER_SECONDS = 90;
 export const SUPPORT_RESISTANCE_MAX_REPRICES = 1;
 export const SUPPORT_RESISTANCE_ENTRY_CANCEL_AFTER_SECONDS = 300;
@@ -16,6 +17,7 @@ export type SupportResistanceProfile = {
   scanPrompt: typeof SUPPORT_RESISTANCE_SCAN_PROMPT;
   managementStyle: typeof SUPPORT_RESISTANCE_MANAGEMENT_STYLE;
   minimumConfidence: typeof SUPPORT_RESISTANCE_MIN_CONFIDENCE;
+  positionPct: typeof SUPPORT_RESISTANCE_POSITION_PCT;
 };
 
 export const SUPPORT_RESISTANCE_PROFILE: SupportResistanceProfile = {
@@ -23,6 +25,7 @@ export const SUPPORT_RESISTANCE_PROFILE: SupportResistanceProfile = {
   scanPrompt: SUPPORT_RESISTANCE_SCAN_PROMPT,
   managementStyle: SUPPORT_RESISTANCE_MANAGEMENT_STYLE,
   minimumConfidence: SUPPORT_RESISTANCE_MIN_CONFIDENCE,
+  positionPct: SUPPORT_RESISTANCE_POSITION_PCT,
 };
 
 export function isSupportResistanceScanEligible(scan: ScanResult): boolean {

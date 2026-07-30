@@ -15,7 +15,6 @@ import {
   type ScanUniverseTierKey,
 } from "../src/config/scanUniverseTiers.js";
 import { createTradeRecommendation } from "../src/recommendations/repository.js";
-import { requireApiBearerAuth } from "./auth.js";
 
 type VercelRequestLike = {
   method?: string;
@@ -1322,9 +1321,6 @@ function buildRunningResponse(state: ManualScanState): Record<string, unknown> {
 }
 
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
-  if (!requireApiBearerAuth(req, res)) {
-    return;
-  }
   if (req.method !== "POST") {
     sendJson(res, 404, {
       error: true,

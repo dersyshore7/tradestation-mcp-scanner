@@ -102,7 +102,8 @@ test("live lane is order-enabled with the fixed support/resistance profile", () 
     assert.equal(config.allowEntryOrders, true);
     assert.equal(config.allowExitOrders, true);
     assert.equal(config.manageEntryOrders, true);
-    assert.equal(config.maxPositionPct, 0.05);
+    assert.equal(config.maxPositionPct, 0.3);
+    assert.equal(config.maxOpenTrades, null);
     assert.equal(config.scanPrompt, SUPPORT_RESISTANCE_SCAN_PROMPT);
     assert.equal(config.strategyProfile?.strategyVersion, SUPPORT_RESISTANCE_V1);
     assert.equal(config.strategyProfile?.managementStyle, SUPPORT_RESISTANCE_MANAGEMENT_STYLE);
@@ -133,7 +134,7 @@ test("legacy LIVE behavioral environment values cannot change the fixed profile"
     assert.equal(config.allowEntryOrders, true);
     assert.equal(config.allowExitOrders, true);
     assert.equal(config.manageEntryOrders, true);
-    assert.equal(config.maxPositionPct, 0.05);
+    assert.equal(config.maxPositionPct, 0.3);
     assert.equal(config.scanPrompt, SUPPORT_RESISTANCE_SCAN_PROMPT);
     assert.equal(config.weekendGuardEnabled, false);
     assert.equal(config.openingStopBypassEnabled, false);
@@ -155,7 +156,7 @@ test("legacy live placement flags are ignored", () => {
     assert.equal(config.allowOrderPlacement, true);
     assert.equal(config.allowEntryOrders, true);
     assert.equal(config.allowExitOrders, true);
-    assert.equal(config.maxPositionPct, 0.05);
+    assert.equal(config.maxPositionPct, 0.3);
   });
 });
 
@@ -263,19 +264,6 @@ test("paper trader config assertion rejects crafted unknown automation base URLs
     weekendExitCutoffMinutesCt: 885,
     openingStopBypassEnabled: false,
     strategyProfile: null,
-    riskLimits: {
-      maxPositionPremiumPct: 0.05,
-      maxPositionPlannedRiskPct: 0.01,
-      maxAggregatePremiumPct: 0.1,
-      maxAggregatePlannedRiskPct: 0.02,
-      maxOpenPositions: 2,
-      maxOpenPositionsPerDirection: 1,
-      maxEntriesPerDay: 2,
-      maxDailyLossPct: 0.01,
-      maxLiveDrawdownPct: 0.05,
-      rollingHealthTradeCount: 20,
-      minRollingProfitFactor: 1,
-    },
   };
 
   assert.equal(readTradeStationEnvironment(TRADESTATION_SIM_AUTOMATION_BASE_URL), "sim");

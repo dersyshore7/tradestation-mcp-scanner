@@ -4,7 +4,6 @@ import {
   listStrategyVersions,
 } from "../src/automation/strategyValidation.js";
 import type { StrategyLifecycleStatus } from "../src/automation/strategyVersion.js";
-import { requireApiBearerAuth } from "./auth.js";
 import {
   sendError,
   sendJson,
@@ -32,9 +31,6 @@ export default async function handler(
   req: VercelRequestLike,
   res: VercelResponseLike,
 ): Promise<void> {
-  if (!requireApiBearerAuth(req, res)) {
-    return;
-  }
 
   try {
     if (req.method === "GET") {

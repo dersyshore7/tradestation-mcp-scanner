@@ -1,5 +1,4 @@
 import { reviewLateTrade, validateLateTradeReviewPayload } from "../src/review/lateTradeReview.js";
-import { requireApiBearerAuth } from "./auth.js";
 import { sendError, sendJson, type VercelRequestLike, type VercelResponseLike } from "./journal/shared.js";
 
 function isValidationError(message: string): boolean {
@@ -11,9 +10,6 @@ function isValidationError(message: string): boolean {
 }
 
 export default async function handler(req: VercelRequestLike, res: VercelResponseLike): Promise<void> {
-  if (!requireApiBearerAuth(req, res)) {
-    return;
-  }
   if (req.method !== "POST") {
     sendError(res, 404, "Use POST /api/late-trade-review");
     return;

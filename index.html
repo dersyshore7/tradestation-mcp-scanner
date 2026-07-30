@@ -1862,33 +1862,8 @@
       let selectedTradeToClose = null;
       let selectedTradeToEdit = null;
       let selectedRecommendationForJournal = null;
-      const API_TOKEN_SESSION_KEY = "liveTraderApiToken";
-
-      function requestApiToken() {
-        const existing = window.sessionStorage.getItem(API_TOKEN_SESSION_KEY);
-        if (existing) {
-          return existing;
-        }
-        const entered = window.prompt("Enter the trader dashboard API secret.");
-        const token = entered?.trim() ?? "";
-        if (token) {
-          window.sessionStorage.setItem(API_TOKEN_SESSION_KEY, token);
-        }
-        return token;
-      }
-
-      async function apiFetch(input, init = {}, retryUnauthorized = true) {
-        const token = requestApiToken();
-        const headers = new Headers(init.headers ?? {});
-        if (token) {
-          headers.set("Authorization", `Bearer ${token}`);
-        }
-        const response = await window.fetch(input, { ...init, headers });
-        if (response.status === 401 && retryUnauthorized) {
-          window.sessionStorage.removeItem(API_TOKEN_SESSION_KEY);
-          return apiFetch(input, init, false);
-        }
-        return response;
+      async function apiFetch(input, init = {}) {
+        return window.fetch(input, init);
       }
 
       const menuToggle = document.getElementById("menuToggle");
@@ -3991,7 +3966,6 @@
         const liveDailyAudit = status?.liveDailyAudit || null;
         const biggestLoserCount = Array.isArray(liveDailyAudit?.biggestLosers) ? liveDailyAudit.biggestLosers.length : 0;
         const earlyWinnerCount = Array.isArray(liveDailyAudit?.winnersExitedBeforeTarget) ? liveDailyAudit.winnersExitedBeforeTarget.length : 0;
-        const riskLimits = status?.riskLimits || {};
 
         page.traderArea.innerHTML = `
           <div class="stats-grid" style="margin-top: 12px;">
@@ -4024,14 +3998,6 @@
               <div class="stat-value">${escapeHtml(status?.strategyVersion === "support_resistance_v1" ? "75%" : "n/a")}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Aggregate Premium Cap</div>
-              <div class="stat-value">${escapeHtml(formatPercent(riskLimits?.maxAggregatePremiumPct, 0))}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-label">Aggregate Risk Cap</div>
-              <div class="stat-value">${escapeHtml(formatPercent(riskLimits?.maxAggregatePlannedRiskPct, 0))}</div>
-            </div>
-            <div class="stat-card">
               <div class="stat-label">${escapeHtml(environmentLabel)} Account Configured</div>
               <div class="stat-value">${escapeHtml(formatBoolean(status?.accountIdConfigured))}</div>
             </div>
@@ -4052,15 +4018,7 @@
               <div class="stat-value">${escapeHtml(renderMaybe(status?.staleOpenJournalTrades, "0"))}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Open Trade Cap</div>
-              <div class="stat-value">${escapeHtml(renderMaybe(status?.maxOpenTrades, "Unlimited"))}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-label">Daily Loss Guard</div>
-              <div class="stat-value">${escapeHtml(formatPercent(riskLimits?.maxDailyLossPct, 0))}</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-label">Max Position</div>
+              <div class="stat-label">Strategy Allocation</div>
               <div class="stat-value">${escapeHtml(formatPercent(status?.maxPositionPct, 0))}</div>
             </div>
             <div class="stat-card">
@@ -4128,12 +4086,11 @@
             <div class="row"><strong>Strategy:</strong> ${escapeHtml(renderMaybe(status?.strategyVersion))}; management ${escapeHtml(renderMaybe(status?.managementStyle))}.</div>
             <div class="row"><strong>Configuration checks:</strong> ${configurationIssues.length > 0 ? renderList(configurationIssues) : `<span class="muted">${escapeHtml(environmentLabel)} configuration is ready.</span>`}</div>
             ${dataWarnings.length > 0 ? `<div class="row"><strong>Data warnings:</strong> ${renderList(dataWarnings)}</div>` : ""}
-            <div class="row"><strong>Autonomous cron:</strong> ${page.virtual ? `Staggered weekdays via <code>/api/paper-trader-run?mode=paper&amp;automation=${escapeHtml(page.automationKey)}</code>; uses read-only quotes and journal-only virtual fills.` : `Every 5 minutes on weekdays via <code>/api/paper-trader-run?mode=${escapeHtml(page.mode)}&amp;reconcileOrders=true</code>; can reconcile fills, manage exits, and enter new ${escapeHtml(accountModeLabel.toLowerCase())} trades when guards allow.`}</div>
+            <div class="row"><strong>Autonomous cron:</strong> ${page.virtual ? `Staggered weekdays via <code>/api/paper-trader-run?mode=paper&amp;automation=${escapeHtml(page.automationKey)}</code>; uses read-only quotes and journal-only virtual fills.` : `Every 5 minutes on weekdays via <code>/api/paper-trader-run?mode=${escapeHtml(page.mode)}&amp;reconcileOrders=true</code>; reconciles fills, manages exits, and enters new ${escapeHtml(accountModeLabel.toLowerCase())} trades when the support/resistance setup and broker checks pass.`}</div>
             <div class="row"><strong>Entry order management:</strong> ${escapeHtml(page.virtual ? "Not applicable; virtual bots do not create working broker orders." : "Deterministic: one bounded reprice after 90 seconds, then cancel the remainder at five minutes.")}</div>
-            <div class="row"><strong>Entry cadence:</strong> ${escapeHtml(page.virtual ? "Each virtual cycle manages open journal-only positions, then may enter one new non-duplicate virtual trade if the source and trade card pass." : `At most ${renderMaybe(riskLimits?.maxEntriesPerDay, "2")} live entries per session after all capital, concentration, account-state, and health checks.`)}</div>
-            <div class="row"><strong>Position size guard:</strong> ${escapeHtml(page.virtual ? `New virtual entries are capped at ${formatPercent(status?.maxPositionPct, 0)} of that bot's virtual book.` : `New ${accountModeLabel.toLowerCase()} entries are capped at ${formatPercent(status?.maxPositionPct, 0)} of the TradeStation ${environmentLabel} account value${sizing?.maxPositionCostUsd === null || sizing?.maxPositionCostUsd === undefined ? "." : ` (${formatMoney(sizing.maxPositionCostUsd)}).`}`)}</div>
+            <div class="row"><strong>Entry cadence:</strong> ${escapeHtml(page.virtual ? "Each virtual cycle manages open journal-only positions, then may enter one new non-duplicate virtual trade if the source and trade card pass." : "Each cycle may enter the support/resistance strategy's selected non-duplicate setup.")}</div>
+            <div class="row"><strong>Strategy allocation:</strong> ${escapeHtml(page.virtual ? `New virtual entries use up to ${formatPercent(status?.maxPositionPct, 0)} of that bot's virtual book.` : `New ${accountModeLabel.toLowerCase()} entries use up to ${formatPercent(status?.maxPositionPct, 0)} of the TradeStation ${environmentLabel} account value${sizing?.maxPositionCostUsd === null || sizing?.maxPositionCostUsd === undefined ? "." : ` (${formatMoney(sizing.maxPositionCostUsd)}).`}`)}</div>
             ${sizing?.error ? `<div class="row"><strong>Sizing read:</strong> ${escapeHtml(sizing.error)}</div>` : ""}
-            <div class="row"><strong>Daily loss guard:</strong> ${escapeHtml(page.virtual ? "Virtual book drawdown is isolated to this bot and cannot affect live trading." : `New entries halt at ${formatPercent(riskLimits?.maxDailyLossPct, 0)} of start-of-day equity; exits and reconciliation continue.`)}</div>
             <div class="row"><strong>Manual monitor:</strong> ${escapeHtml(page.virtual ? "Run Monitor manages existing virtual positions without opening a new one." : "The Check Orders button still uses read-only monitor mode for diagnostics.")}</div>
             <div class="row"><strong>Legacy analytics only:</strong> ${escapeHtml(renderMaybe(closedLearningTrades, "0"))} closed trade(s). These metrics use realized outcomes and cannot place, rank, reprice, manage, or exit a trade.</div>
           </div>
